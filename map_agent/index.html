@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>地图知识图谱智能体 · 智能制图</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Segoe UI', Roboto, system-ui, -apple-system, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .app-container {
+            width: 1400px;
+            max-width: 100%;
+            height: 900px;
+            max-height: 90vh;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 32px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* 头部 */
+        .app-header {
+            padding: 1.2rem 2rem;
+            background: white;
+            border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+        }
+        .app-header h1 {
+            font-size: 1.8rem;
+            font-weight: 500;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: inline-block;
+        }
+        .app-header p {
+            color: #666;
+            margin-top: 4px;
+            font-size: 0.9rem;
+        }
+
+        /* 主内容区：左右布局 */
+        .main-content {
+            flex: 1;
+            display: flex;
+            padding: 1.5rem;
+            gap: 1.5rem;
+            min-height: 0;
+        }
+
+        /* 左侧对话面板 */
+        .chat-panel {
+            width: 380px;
+            background: #f8fafd;
+            border-radius: 24px;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.02), 0 8px 16px -4px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .chat-header {
+            padding: 1.2rem 1.5rem;
+            background: white;
+            border-bottom: 1px solid #eef2f6;
+        }
+        .chat-header h3 {
+            font-weight: 600;
+            color: #1a2639;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .chat-header h3 i {
+            font-size: 1.4rem;
+            color: #667eea;
+        }
+
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        /* 消息通用样式 */
+        .message {
+            display: flex;
+            align-items: flex-end;
+            gap: 8px;
+            max-width: 100%;
+            animation: slideIn 0.2s ease;
+        }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .message.user-message {
+            flex-direction: row-reverse;
+        }
+
+        .avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: #eef2f6;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            flex-shrink: 0;
+        }
+        .user-message .avatar {
+            background: #667eea;
+            color: white;
+        }
+        .bot-message .avatar {
+            background: #764ba2;
+            color: white;
+        }
+
+        .bubble {
+            max-width: calc(100% - 50px);
+            padding: 0.9rem 1.2rem;
+            border-radius: 20px;
+            line-height: 1.5;
+            font-size: 0.95rem;
+            word-wrap: break-word;
+            position: relative;
+        }
+        .user-message .bubble {
+            background: #667eea;
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+        .bot-message .bubble {
+            background: white;
+            color: #1a2639;
+            border-bottom-left-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+
+        .timestamp {
+            font-size: 0.7rem;
+            color: #999;
+            margin-top: 4px;
+            text-align: right;
+        }
+
+        .input-area {
+            padding: 1.2rem 1.5rem;
+            background: white;
+            border-top: 1px solid #eef2f6;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        #userInput {
+            flex: 1;
+            padding: 0.9rem 1.2rem;
+            border: 1px solid #e0e7ed;
+            border-radius: 30px;
+            font-size: 0.95rem;
+            outline: none;
+            transition: border 0.2s, box-shadow 0.2s;
+        }
+        #userInput:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102,126,234,0.1);
+        }
+        #sendBtn {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border: none;
+            color: white;
+            font-size: 1.2rem;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #sendBtn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 12px rgba(102,126,234,0.4);
+        }
+        #sendBtn:disabled {
+            opacity: 0.5;
+            transform: none;
+            box-shadow: none;
+            cursor: not-allowed;
+        }
+
+        /* 右侧地图面板 */
+        .map-panel {
+            flex: 1;
+            background: #f8fafd;
+            border-radius: 24px;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.02), 0 8px 16px -4px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .map-header {
+            padding: 1rem 1.5rem;
+            background: white;
+            border-bottom: 1px solid #eef2f6;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .status-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #6c757d;
+            transition: background 0.3s, box-shadow 0.3s;
+        }
+        .status-indicator.active {
+            background: #28a745;
+            box-shadow: 0 0 0 3px rgba(40,167,69,0.2);
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(40,167,69,0.4); }
+            70% { box-shadow: 0 0 0 6px rgba(40,167,69,0); }
+            100% { box-shadow: 0 0 0 0 rgba(40,167,69,0); }
+        }
+        .status-text {
+            font-size: 0.9rem;
+            color: #495057;
+        }
+        .map-actions {
+            display: flex;
+            gap: 8px;
+        }
+        .map-actions button {
+            background: #f1f3f5;
+            border: none;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: background 0.2s;
+            color: #495057;
+            font-size: 1.1rem;
+        }
+        .map-actions button:hover {
+            background: #e2e6ea;
+        }
+
+        .map-container {
+            flex: 1;
+            position: relative;
+            background: #e9ecef;
+        }
+        .map-frame {
+            width: 100%;
+            height: 100%;
+            border: none;
+            display: block;
+        }
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255,255,255,0.85);
+            backdrop-filter: blur(4px);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+            transition: opacity 0.3s;
+        }
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid #f1f3f5;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 1rem;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .loading-text {
+            color: #495057;
+            font-weight: 500;
+        }
+        .placeholder-text {
+            color: #adb5bd;
+            font-size: 1rem;
+            text-align: center;
+            padding: 2rem;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        /* 响应式 */
+        @media (max-width: 800px) {
+            .main-content {
+                flex-direction: column;
+            }
+            .chat-panel {
+                width: 100%;
+                height: 350px;
+            }
+        }
+
+        /* 字体图标（简单用 unicode 代替，实际可使用 Font Awesome） */
+        .icon-user::before { content: "👤"; }
+        .icon-robot::before { content: "🤖"; }
+        .icon-fullscreen::before { content: "⛶"; }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <div class="app-header">
+            <h1>🗺️ 地图知识图谱智能体</h1>
+            <p>自然语言对话 · 智能制图</p>
+        </div>
+        <div class="main-content">
+            <!-- 左侧对话面板 -->
+            <div class="chat-panel">
+                <div class="chat-header">
+                    <h3>
+                        <span>💬 对话历史</span>
+                    </h3>
+                </div>
+                <div class="messages" id="messages">
+                    <!-- 初始欢迎消息 -->
+                    <div class="message bot-message">
+                        <div class="avatar icon-robot">🤖</div>
+                        <div>
+                            <div class="bubble">
+                                你好！我是地图知识图谱智能体。你可以问我地图学问题，或者让我帮你画一张地图。例如：“武汉市有哪些主要河流？” 或 “帮我画一张武汉市的交通图”。
+                            </div>
+                            <div class="timestamp">刚刚</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="input-area">
+                    <input type="text" id="userInput" placeholder="输入你的需求..." autofocus>
+                    <button id="sendBtn">➤</button>
+                </div>
+            </div>
+            <!-- 右侧地图面板 -->
+            <div class="map-panel">
+                <div class="map-header">
+                    <div class="status-wrapper">
+                        <span class="status-indicator" id="statusIndicator"></span>
+                        <span class="status-text" id="statusText">等待指令</span>
+                    </div>
+                    <div class="map-actions">
+                        <button id="fullscreenBtn" title="全屏">⛶</button>
+                    </div>
+                </div>
+                <div class="map-container" id="mapContainer">
+                    <div class="placeholder-text" id="mapPlaceholder">请输入指令，生成的地图将显示在这里</div>
+                    <div class="loading-overlay" id="loadingOverlay" style="display: none;">
+                        <div class="spinner"></div>
+                        <div class="loading-text" id="loadingText">正在生成地图...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 获取元素
+        const messagesDiv = document.getElementById('messages');
+        const userInput = document.getElementById('userInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const mapContainer = document.getElementById('mapContainer');
+        const mapPlaceholder = document.getElementById('mapPlaceholder');
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const loadingText = document.getElementById('loadingText');
+        const statusIndicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
+        const fullscreenBtn = document.getElementById('fullscreenBtn');
+
+        // 添加一条消息到左侧聊天区域
+        function addMessage(text, isUser = false) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${isUser ? 'user-message' : 'bot-message'}`;
+            
+            const avatar = document.createElement('div');
+            avatar.className = 'avatar';
+            avatar.textContent = isUser ? '👤' : '🤖';
+            
+            const contentWrapper = document.createElement('div');
+            const bubble = document.createElement('div');
+            bubble.className = 'bubble';
+            bubble.textContent = text;
+            
+            const timestamp = document.createElement('div');
+            timestamp.className = 'timestamp';
+            const now = new Date();
+            timestamp.textContent = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+            
+            contentWrapper.appendChild(bubble);
+            contentWrapper.appendChild(timestamp);
+            
+            messageDiv.appendChild(avatar);
+            messageDiv.appendChild(contentWrapper);
+            
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        // 更新右侧状态
+        function setStatus(active, text) {
+            statusText.textContent = text;
+            if (active) {
+                statusIndicator.classList.add('active');
+            } else {
+                statusIndicator.classList.remove('active');
+            }
+        }
+
+        // 显示加载覆盖层，并设置加载文字
+        function showLoading(message) {
+            loadingText.textContent = message;
+            loadingOverlay.style.display = 'flex';
+            mapPlaceholder.style.display = 'none';
+        }
+
+        // 隐藏加载覆盖层
+        function hideLoading() {
+            loadingOverlay.style.display = 'none';
+        }
+
+        // 在右侧显示地图 HTML
+        function displayMap(html) {
+            // 清除之前的 iframe
+            const existingIframe = document.querySelector('.map-frame');
+            if (existingIframe) existingIframe.remove();
+
+            const iframe = document.createElement('iframe');
+            iframe.className = 'map-frame';
+            // 使用 Blob URL 嵌入 HTML，避免编码问题
+            const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+            iframe.src = URL.createObjectURL(blob);
+            mapContainer.appendChild(iframe);
+            mapPlaceholder.style.display = 'none';
+        }
+
+        // 清除右侧地图（显示占位符）
+        function clearMap() {
+            const iframe = document.querySelector('.map-frame');
+            if (iframe) iframe.remove();
+            mapPlaceholder.style.display = 'block';
+        }
+
+        // 发送消息到后端
+        async function sendMessage() {
+            const text = userInput.value.trim();
+            if (!text) return;
+
+            // 显示用户消息
+            addMessage(text, true);
+            userInput.value = '';
+            sendBtn.disabled = true;
+
+            // 更新右侧状态为“处理中”
+            setStatus(true, '正在理解请求...');
+            showLoading('正在分析您的指令...');
+
+            try {
+                const response = await fetch('http://localhost:8000/agent', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                if (data.error) {
+                    addMessage('出错：' + data.error);
+                    setStatus(false, '请求失败');
+                    hideLoading();
+                    clearMap();
+                } else if (data.type === 'map') {
+                    // 制图请求成功
+                    addMessage(data.text || '已为您生成地图。');
+                    setStatus(true, '正在获取地理数据...');
+                    loadingText.textContent = '正在获取地理数据...';
+
+                    // 模拟生成过程（后端已生成，但为了体验可逐步更新状态）
+                    setTimeout(() => {
+                        setStatus(true, '正在渲染道路...');
+                        loadingText.textContent = '正在渲染道路...';
+                    }, 500);
+
+                    setTimeout(() => {
+                        hideLoading();
+                        setStatus(false, '地图已生成');
+                        displayMap(data.map_html);
+                    }, 1000);
+                } else {
+                    // 文本回答
+                    addMessage(data.text || '我不知道怎么回答。');
+                    setStatus(false, '回答完毕');
+                    hideLoading();
+                    clearMap();
+                }
+            } catch (err) {
+                addMessage('请求失败：' + err.message);
+                setStatus(false, '连接错误');
+                hideLoading();
+                clearMap();
+                console.error(err);
+            } finally {
+                sendBtn.disabled = false;
+                userInput.focus();
+            }
+        }
+
+        // 全屏功能
+        fullscreenBtn.addEventListener('click', () => {
+            const mapPanel = document.querySelector('.map-panel');
+            if (mapPanel.requestFullscreen) {
+                mapPanel.requestFullscreen();
+            } else if (mapPanel.webkitRequestFullscreen) { /* Safari */
+                mapPanel.webkitRequestFullscreen();
+            } else if (mapPanel.msRequestFullscreen) { /* IE/Edge */
+                mapPanel.msRequestFullscreen();
+            }
+        });
+
+        sendBtn.addEventListener('click', sendMessage);
+        userInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+    </script>
+</body>
+</html>
