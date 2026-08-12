@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 环境配置（含密钥）
+backend/.env
+
+# 运行时产物
+backend/runtime/
+
+# 依赖
+node_modules/
+frontend/vue-app/dist/
+
+# 运行数据（体积大，按需纳入版本控制）
+data/maps.json
+data/maps.json.bak
+data/maps_test_backup.json
+data/sessions.json
+backend/data/geo/*.geojson
+backend/data/dem/
+
+# 调试/导出产物
+output/
+
+# IDE
+.idea/
+.vscode/
+*.log

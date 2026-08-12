@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>地图制图智能体 - CartoAgent</title>
+
+    <!-- ===== CDN: Leaflet CSS ===== -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+    <!-- ===== CDN: Font Awesome ===== -->
+    <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+
+    <!-- ===== 本地CSS ===== -->
+    <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+    <!-- ==================== 顶部导航栏 ==================== -->
+    <header class="app-header">
+        <!-- 左侧：Logo + 标题 -->
+        <div class="header-left">
+            <div class="header-logo">
+                <i class="fa-solid fa-map-location-dot"></i>
+            </div>
+            <span class="header-title">地图制图智能体</span>
+            <span class="header-subtitle">CartoAgent</span>
+        </div>
+
+        <!-- 中间：LLM状态 -->
+        <div class="header-center">
+            <div class="llm-status">
+                <span id="llm-status-indicator" class="status-dot loading"></span>
+                <span id="llm-status-text" class="status-text">连接中...</span>
+            </div>
+        </div>
+
+        <!-- 右侧：操作图标 -->
+        <div class="header-right">
+            <button id="header-new-session" class="header-icon-btn" title="新会话">
+                <i class="fa-solid fa-plus"></i>
+            </button>
+            <button id="header-history" class="header-icon-btn" title="历史记录">
+                <i class="fa-solid fa-clock-rotate-left"></i>
+            </button>
+            <button id="header-share" class="header-icon-btn" title="分享">
+                <i class="fa-solid fa-share-nodes"></i>
+            </button>
+            <button id="header-download" class="header-icon-btn" title="下载">
+                <i class="fa-solid fa-download"></i>
+            </button>
+            <button id="settings-btn" class="header-icon-btn" title="设置">
+                <i class="fa-solid fa-gear"></i>
+            </button>
+        </div>
+    </header>
+
+    <!-- ==================== 主体区域 ==================== -->
+    <div class="app-body">
+
+        <!-- ========== 左侧：聊天面板 ========== -->
+        <aside id="chat-panel" class="chat-panel">
+            <!-- 消息列表 -->
+            <div id="chat-message-list" class="chat-messages">
+                <div class="chat-welcome">
+                    <div class="chat-welcome-icon">
+                        <i class="fa-solid fa-map-location-dot"></i>
+                    </div>
+                    <h2 class="chat-welcome-title">欢迎使用地图制图智能体</h2>
+                    <p class="chat-welcome-hint">描述你想要的地图效果，我来帮你生成</p>
+                </div>
+            </div>
+
+            <!-- 快捷指令 -->
+            <div id="chat-quick-commands" class="quick-commands">
+                <!-- 由chat.js动态渲染 -->
+            </div>
+
+            <!-- 输入区域 -->
+            <div class="chat-input-area">
+                <div class="chat-input-wrapper">
+                    <textarea
+                        id="chat-input-box"
+                        class="chat-input"
+                        placeholder="描述你想要的地图效果，我来帮你生成"
+                        rows="1"
+                        maxlength="2000"
+                    ></textarea>
+                    <button id="chat-send-btn" class="chat-send-btn" title="发送 (Enter)">
+                        <i class="fa-solid fa-paper-plane"></i>
+                    </button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- ========== 中间：地图画布 ========== -->
+        <main id="map-panel" class="map-panel">
+            <!-- 地图顶部栏：标题 + 控件（毛玻璃半透明，一行显示） -->
+            <div class="map-top-bar">
+                <span class="map-top-title" id="map-status-name">未加载地图</span>
+                <span id="map-version-tag" class="map-version-tag hidden">政区版</span>
+                <span class="map-top-spacer"></span>
+                <span class="map-top-ctrl-group">
+                    <span class="scale-setter-label">底图</span>
+                    <select id="map-theme-select" class="map-theme-select" title="切换底图">
+                        <option value="plain" selected>无底图（矢量）</option>
+                        <option value="standard">标准</option>
+                        <option value="positron">浅色</option>
+                        <option value="dark">深色</option>
+                        <option value="satellite">卫星</option>
+                    </select>
+                </span>
+                <span class="map-top-ctrl-group">
+                    <span class="scale-setter-label">比例尺</span>
+                    <input id="map-scale-input" class="map-scale-input" placeholder="1:100000" inputmode="numeric" />
+                </span>
+                <span class="map-top-ctrl-group">
+                    <span class="scale-setter-label">投影</span>
+                    <select id="map-proj-select" class="map-proj-select">
+                        <option value="WebMercator">Web墨卡托</option>
+                        <option value="GaussKruger">高斯-克吕格</option>
+                        <option value="Equirect">等距圆柱</option>
+                    </select>
+                </span>
+            </div>
+
+            <!-- Leaflet地图容器 -->
+            <div id="map-container"></div>
+
+            <!-- 指北针（标准制图整饰元素，图幅右上角） -->
+            <div class="map-compass" title="指北针">
+                <svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <circle cx="24" cy="24" r="21.5" fill="#ffffff" stroke="#475569" stroke-width="1.5"/>
+                    <text x="24" y="14.5" text-anchor="middle" font-size="10" font-weight="700" fill="#dc2626" font-family="'SimHei','Microsoft YaHei',sans-serif">北</text>
+                    <path d="M24 19 L28.5 31.5 L24 29 L19.5 31.5 Z" fill="#0f172a"/>
+                    <rect x="22.4" y="28.5" width="3.2" height="11.5" fill="#0f172a"/>
+                </svg>
+            </div>
+
+            <!-- 常驻精简图例框（行政区划图专用） -->
+            <!-- 右下角图例（可折叠抽屉：点击标题栏/按钮折叠展开，localStorage记忆状态） -->
+            <div id="map-mini-legend" class="map-mini-legend hidden">
+                <div id="mini-legend-header" class="mini-legend-header" title="点击折叠/展开图例">
+                    <span class="mini-legend-title">图例</span>
+                    <button id="mini-legend-fold" class="mini-legend-fold" title="折叠/展开">▼</button>
+                </div>
+                <div class="mini-legend-body">
+                    <div class="mini-legend-item"><span class="mini-line" style="background:#E03131;height:3px;"></span>武汉市域边界</div>
+                    <div class="mini-legend-item"><span class="mini-line mini-dashdot"></span>区县界（点划线）</div>
+                    <div class="mini-legend-item"><span class="mini-line" style="background:#B08968;height:2.5px;"></span>湖北周边市界</div>
+                    <div class="mini-legend-item"><span class="mini-box" style="background:#F5F0E1;opacity:0.85"></span>湖北周边地市</div>
+                    <div class="mini-legend-item"><span class="mini-box" style="background:#1e90ff;opacity:0.5"></span>湖泊水系</div>
+                    <div class="mini-legend-item"><span class="mini-sym mini-star">★</span>市级行政中心</div>
+                    <div class="mini-legend-item"><span class="mini-sym mini-dot" style="background:#D82828;border:none;width:9px;height:9px;"></span>区县级行政中心</div>
+                    <div class="mini-legend-item"><span class="mini-sym mini-poi">🏞️</span>重点地标</div>
+                </div>
+            </div>
+
+            <!-- 图内编制说明（左下角） -->
+            <div id="map-attribution" class="map-attribution hidden"></div>
+
+            <!-- 自然语言修改输入框（浮动底部） -->
+            <div class="map-modify-wrapper">
+                <input
+                    type="text"
+                    id="map-modify-input"
+                    class="map-modify-input"
+                    placeholder="自然语言修改地图，如"把道路改成红色"..."
+                />
+                <button id="map-modify-btn" class="map-modify-btn" title="执行修改">
+                    <i class="fa-solid fa-wand-magic-sparkles"></i>
+                </button>
+            </div>
+
+            <!-- 图例按钮（浮动，点击展示整套图例） -->
+            <button id="map-legend-btn" class="map-legend-btn hidden" title="显示整套图例">
+                <i class="fa-solid fa-book-open"></i>
+                <span>图例</span>
+            </button>
+
+            <!-- 整套图例面板（分组 + 搜索 + 图层联动） -->
+            <div id="map-legend-panel" class="map-legend-panel hidden">
+                <div class="legend-panel-header">
+                    <span><i class="fa-solid fa-book-open"></i> 地图图例</span>
+                    <span class="legend-header-actions">
+                        <button id="legend-pin-btn" class="legend-pin-btn" title="固定图例">
+                            <i class="fa-solid fa-thumbtack"></i>
+                        </button>
+                        <button class="legend-panel-close" title="关闭">
+                            <i class="fa-solid fa-xmark"></i>
+                        </button>
+                    </span>
+                </div>
+                <div class="legend-panel-body">
+                    <div class="legend-search-wrapper">
+                        <i class="fa-solid fa-magnifying-glass"></i>
+                        <input type="text" id="legend-search-input" class="legend-search-input"
+                               placeholder="搜索分类，如 道路 / 餐厅 / 医院 / 高速 ...">
+                    </div>
+                    <div id="legend-group-tabs" class="legend-group-tabs"></div>
+                    <div id="legend-items" class="legend-items"></div>
+                </div>
+            </div>
+
+            <!-- 图层管理面板（浮动） -->
+            <div id="map-layer-panel" class="map-layer-panel hidden">
+                <div class="layer-panel-header">
+                    <span><i class="fa-solid fa-layer-group"></i> 图层管理</span>
+                    <button class="layer-panel-close">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+                <div id="map-quality-panel" class="map-quality-panel hidden"></div>
+                <div id="map-layer-list">
+                    <div class="empty-hint">暂无图层</div>
+                </div>
+                <div id="map-metadata"></div>
+            </div>
+
+            <!-- 图层样式编辑器（浮动） -->
+            <div id="map-style-editor" class="map-style-editor hidden">
+                <!-- 内容由map.js动态渲染 -->
+            </div>
+
+            <!-- 路径规划面板（浮动） -->
+            <div id="map-route-panel" class="map-route-panel hidden">
+                <div class="route-panel-header">
+                    <span><i class="fa-solid fa-route"></i> 路径规划</span>
+                    <button class="route-panel-close">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+                <div class="route-panel-body">
+                    <div class="route-field">
+                        <label>出行方式</label>
+                        <div class="route-profile-group">
+                            <button class="route-profile-btn active" data-profile="driving">
+                                <i class="fa-solid fa-car"></i> 驾车
+                            </button>
+                            <button class="route-profile-btn" data-profile="walking">
+                                <i class="fa-solid fa-person-walking"></i> 步行
+                            </button>
+                            <button class="route-profile-btn" data-profile="cycling">
+                                <i class="fa-solid fa-bicycle"></i> 骑行
+                            </button>
+                        </div>
+                    </div>
+                    <div class="route-field">
+                        <label>
+                            <i class="fa-solid fa-circle-dot route-start-icon"></i> 起点
+                            <span class="route-hint">（在地图上点击设置）</span>
+                        </label>
+                        <div class="route-coord-input">
+                            <input type="number" id="route-start-lat" placeholder="纬度" step="0.0001" class="route-input">
+                            <input type="number" id="route-start-lng" placeholder="经度" step="0.0001" class="route-input">
+                        </div>
+                    </div>
+                    <div class="route-field">
+                        <label>
+                            <i class="fa-solid fa-location-dot route-end-icon"></i> 终点
+                            <span class="route-hint">（在地图上点击设置）</span>
+                        </label>
+                        <div class="route-coord-input">
+                            <input type="number" id="route-end-lat" placeholder="纬度" step="0.0001" class="route-input">
+                            <input type="number" id="route-end-lng" placeholder="经度" step="0.0001" class="route-input">
+                        </div>
+                    </div>
+                    <button id="route-plan-btn" class="route-plan-btn">
+                        <i class="fa-solid fa-route"></i> 开始规划
+                    </button>
+                    <div id="route-result" class="route-result hidden"></div>
+                </div>
+            </div>
+
+            <!-- 地图状态栏（底部单行） -->
+            <div class="map-status-bar">
+                <span class="status-coord" id="map-status-lat">30.5928°</span>
+                <span class="status-coord-sep">, </span>
+                <span class="status-coord" id="map-status-lng">114.3055°</span>
+                <span class="status-sep-v2">|</span>
+                <span>缩放 <strong id="map-status-zoom">12</strong></span>
+                <span class="status-sep-v2">|</span>
+                <span id="map-status-layers">0 图层</span>
+                <span class="status-sep-v2">|</span>
+                <span id="map-status-edit" class="status-edit">未编辑</span>
+            </div>
+        </main>
+
+        <!-- ========== 右侧：工具栏 ========== -->
+        <aside class="right-toolbar">
+            <button class="toolbar-icon-btn" id="toolbar-toggle-chat" title="切换聊天面板">
+                <i class="fa-solid fa-comments"></i>
+            </button>
+            <button class="toolbar-icon-btn" id="toolbar-toggle-graph" title="知识图谱">
+                <i class="fa-solid fa-diagram-project"></i>
+            </button>
+            <div class="toolbar-divider"></div>
+            <button class="toolbar-icon-btn" id="toolbar-route" title="路径规划">
+                <i class="fa-solid fa-route"></i>
+            </button>
+            <button class="toolbar-icon-btn" id="toolbar-layers" title="图层管理">
+                <i class="fa-solid fa-layer-group"></i>
+            </button>
+            <button class="toolbar-icon-btn" id="toolbar-theme" title="切换主题">
+                <i class="fa-solid fa-palette"></i>
+            </button>
+            <button class="toolbar-icon-btn" id="toolbar-edit" title="编辑模式（QGIS/ArcGIS 式几何编辑）">
+                <i class="fa-solid fa-pen-to-square"></i>
+            </button>
+            <button class="toolbar-icon-btn" id="toolbar-export" title="导出地图">
+                <i class="fa-solid fa-download"></i>
+            </button>
+            <div class="toolbar-divider"></div>
+            <button class="toolbar-icon-btn" id="toolbar-import" title="导入文档">
+                <i class="fa-solid fa-file-import"></i>
+            </button>
+            <button class="toolbar-icon-btn" id="toolbar-marker" title="添加标注（点击地图放置）">
+                <i class="fa-solid fa-location-dot"></i>
+            </button>
+            <button class="toolbar-icon-btn" id="toolbar-center" title="回到中心">
+                <i class="fa-solid fa-location-crosshairs"></i>
+            </button>
+            <button class="toolbar-icon-btn" id="toolbar-clear" title="清除地图">
+                <i class="fa-solid fa-trash-can"></i>
+            </button>
+        </aside>
+
+        <!-- ========== 编辑模式工具栏（浮动） ========== -->
+        <div id="map-edit-panel" class="map-edit-panel hidden">
+            <div class="edit-panel-header">
+                <span><i class="fa-solid fa-pen-to-square"></i> 编辑模式</span>
+                <button class="edit-panel-close" title="退出编辑"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="edit-tools">
+                <button class="edit-tool-btn" data-edit-draw="point" title="添加点要素"><i class="fa-solid fa-location-dot"></i> 画点</button>
+                <button class="edit-tool-btn" data-edit-draw="line" title="添加线要素"><i class="fa-solid fa-minus"></i> 画线</button>
+                <button class="edit-tool-btn" data-edit-draw="polygon" title="添加面要素"><i class="fa-solid fa-draw-polygon"></i> 画面</button>
+                <button class="edit-tool-btn edit-danger" id="edit-delete-feature" title="删除当前选中的要素"><i class="fa-solid fa-trash-can"></i> 删除</button>
+                <button class="edit-tool-btn" id="edit-undo-btn" title="撤销 (Ctrl+Z)"><i class="fa-solid fa-rotate-left"></i> 撤销</button>
+                <button class="edit-tool-btn" id="edit-redo-btn" title="重做 (Ctrl+Y)"><i class="fa-solid fa-rotate-right"></i> 重做</button>
+                <button class="edit-tool-btn" id="edit-copy-btn" title="复制选中的要素"><i class="fa-solid fa-copy"></i> 复制</button>
+                <button class="edit-tool-btn" id="edit-simplify-btn" title="简化选中要素（Douglas-Peucker）"><i class="fa-solid fa-compress"></i> 简化</button>
+            </div>
+            <div class="edit-attr">
+                <label for="edit-attr-name">要素名称</label>
+                <input type="text" id="edit-attr-name" placeholder="选中要素后编辑名称" disabled>
+            </div>
+            <div class="edit-coord">
+                <label for="edit-coord-input">坐标(lat,lng)</label>
+                <input type="text" id="edit-coord-input" placeholder="如 30.5928,114.3055">
+                <button class="edit-coord-btn" id="edit-coord-add" title="按坐标添加点要素">添加</button>
+            </div>
+            <div class="edit-hint">
+                点击要素编辑；拖动节点改形；Ctrl+点击线段加节点，Alt+点击节点删除。
+            </div>
+            <div class="edit-status" id="edit-status">未选择要素</div>
+            <div class="edit-actions">
+                <button class="edit-save-btn" id="edit-save-btn"><i class="fa-solid fa-floppy-disk"></i> 保存修改</button>
+                <button class="edit-exit-btn" id="edit-exit-btn">退出</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== 知识图谱覆盖层（滑出式） ==================== -->
+    <div id="graph-overlay" class="graph-overlay hidden">
+        <div class="graph-overlay-header">
+            <span class="graph-overlay-title">
+                <i class="fa-solid fa-diagram-project"></i> 知识图谱
+            </span>
+            <div class="graph-overlay-actions">
+                <button id="graph-reheat" class="graph-action-btn" title="重新布局">
+                    <i class="fa-solid fa-arrows-rotate"></i>
+                </button>
+                <button id="graph-reset-zoom" class="graph-action-btn" title="重置缩放">
+                    <i class="fa-solid fa-arrows-to-dot"></i>
+                </button>
+                <button id="graph-refresh" class="graph-action-btn" title="刷新数据">
+                    <i class="fa-solid fa-rotate-right"></i>
+                </button>
+                <button id="graph-close" class="graph-action-btn" title="关闭">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+        </div>
+        <div class="graph-search-wrapper">
+            <input type="text" id="graph-search" class="graph-search-input" placeholder="搜索节点..." />
+        </div>
+        <div id="graph-type-filters" class="graph-type-filters">
+            <!-- 由graph.js动态渲染 -->
+        </div>
+        <div id="graph-container" class="graph-container">
+            <div class="graph-loading">
+                <div class="spinner"></div>
+                <span>加载知识图谱...</span>
+            </div>
+        </div>
+        <div id="graph-node-detail" class="graph-node-detail hidden"></div>
+        <div class="graph-footer">
+            <span id="graph-node-count">0 节点 / 0 关系</span>
+            <span class="graph-footer-hint">拖拽节点 | 滚轮缩放</span>
+        </div>
+    </div>
+
+    <!-- ==================== 会话历史抽屉 ==================== -->
+    <div id="session-drawer" class="session-drawer hidden">
+        <div class="drawer-header">
+            <span><i class="fa-solid fa-clock-rotate-left"></i> 历史会话</span>
+            <button id="drawer-close" class="drawer-close-btn">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+        <div id="chat-session-list" class="session-list">
+            <div class="empty-hint">加载中...</div>
+        </div>
+    </div>
+
+    <!-- ==================== 设置弹窗 ==================== -->
+    <div id="settings-overlay" class="modal-overlay hidden"></div>
+    <div id="settings-modal" class="modal-dialog hidden">
+        <div class="modal-header">
+            <span class="modal-title">
+                <i class="fa-solid fa-gear"></i> 系统设置
+            </span>
+            <button id="settings-close" class="modal-close-btn">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+        <div class="modal-body">
+            <div class="settings-section">
+                <div class="settings-section-title">大语言模型</div>
+                <div class="settings-field">
+                    <label>LLM提供者</label>
+                    <select id="settings-provider-select" class="settings-select">
+                        <option value="">加载中...</option>
+                    </select>
+                </div>
+                <div class="settings-field">
+                    <label>模型</label>
+                    <select id="settings-model-select" class="settings-select">
+                        <option value="">请先选择提供者</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <div class="settings-section-title">
+                    <i class="fa-solid fa-key"></i> API 密钥管理
+                </div>
+
+                <!-- DeepSeek（默认推荐） -->
+                <div class="settings-field" data-provider-section="deepseek">
+                    <label>
+                        DeepSeek
+                        <span class="api-key-status not-configured" id="apikey-status-deepseek">
+                            <i class="fa-solid fa-circle-xmark"></i> 未配置
+                        </span>
+                    </label>
+                    <div class="api-key-input-wrapper">
+                        <input
+                            type="password"
+                            id="apikey-input-deepseek"
+                            class="api-key-input"
+                            placeholder="输入 DeepSeek API Key..."
+                        />
+                        <button class="api-key-save-btn" data-provider="deepseek">
+                            <i class="fa-solid fa-floppy-disk"></i> 保存
+                        </button>
+                    </div>
+                    <span class="field-hint">推荐 · 获取地址: platform.deepseek.com</span>
+                </div>
+
+                <!-- 通义千问 -->
+                <div class="settings-field" data-provider-section="qwen">
+                    <label>
+                        通义千问
+                        <span class="api-key-status not-configured" id="apikey-status-qwen">
+                            <i class="fa-solid fa-circle-xmark"></i> 未配置
+                        </span>
+                    </label>
+                    <div class="api-key-input-wrapper">
+                        <input
+                            type="password"
+                            id="apikey-input-qwen"
+                            class="api-key-input"
+                            placeholder="输入通义千问 API Key..."
+                        />
+                        <button class="api-key-save-btn" data-provider="qwen">
+                            <i class="fa-solid fa-floppy-disk"></i> 保存
+                        </button>
+                    </div>
+                    <span class="field-hint">获取地址: dashscope.aliyun.com</span>
+                </div>
+
+                <!-- OpenAI -->
+                <div class="settings-field" data-provider-section="openai">
+                    <label>
+                        OpenAI
+                        <span class="api-key-status not-configured" id="apikey-status-openai">
+                            <i class="fa-solid fa-circle-xmark"></i> 未配置
+                        </span>
+                    </label>
+                    <div class="api-key-input-wrapper">
+                        <input
+                            type="password"
+                            id="apikey-input-openai"
+                            class="api-key-input"
+                            placeholder="输入 OpenAI API Key..."
+                        />
+                        <button class="api-key-save-btn" data-provider="openai">
+                            <i class="fa-solid fa-floppy-disk"></i> 保存
+                        </button>
+                    </div>
+                    <span class="field-hint">获取地址: platform.openai.com</span>
+                </div>
+
+                <!-- 智谱GLM -->
+                <div class="settings-field" data-provider-section="zhipu">
+                    <label>
+                        智谱GLM
+                        <span class="api-key-status not-configured" id="apikey-status-zhipu">
+                            <i class="fa-solid fa-circle-xmark"></i> 未配置
+                        </span>
+                    </label>
+                    <div class="api-key-input-wrapper">
+                        <input
+                            type="password"
+                            id="apikey-input-zhipu"
+                            class="api-key-input"
+                            placeholder="输入智谱 API Key..."
+                        />
+                        <button class="api-key-save-btn" data-provider="zhipu">
+                            <i class="fa-solid fa-floppy-disk"></i> 保存
+                        </button>
+                    </div>
+                    <span class="field-hint">获取地址: open.bigmodel.cn</span>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <div class="settings-section-title">地图底图主题</div>
+                <div id="settings-themes" class="settings-themes"></div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button id="settings-cancel" class="btn btn-secondary">取消</button>
+            <button id="settings-save" class="btn btn-primary">
+                <i class="fa-solid fa-check"></i> 保存
+            </button>
+        </div>
+    </div>
+
+    <!-- ==================== 文档导入弹窗 ==================== -->
+    <div id="kg-import-overlay" class="modal-overlay hidden"></div>
+    <div id="kg-import-modal" class="modal-dialog hidden">
+        <div class="modal-header">
+            <span class="modal-title">
+                <i class="fa-solid fa-file-import"></i> 导入文档到知识图谱
+            </span>
+            <button id="kg-import-close" class="modal-close-btn">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+        <div class="modal-body">
+            <div class="kg-import-hint">
+                <i class="fa-solid fa-circle-info"></i>
+                <span>粘贴文档内容，系统将自动抽取实体与关系并添加到知识图谱中。</span>
+            </div>
+            <div class="settings-field">
+                <label>文档内容</label>
+                <textarea id="kg-import-content" class="kg-import-textarea" placeholder="在此粘贴文档内容..." rows="10"></textarea>
+            </div>
+            <div class="settings-field">
+                <label>实体标签（可选，逗号分隔）</label>
+                <input type="text" id="kg-import-labels" class="settings-select" placeholder="如: City, Landmark, MapType">
+            </div>
+            <div id="kg-import-result" class="kg-import-result hidden"></div>
+        </div>
+        <div class="modal-footer">
+            <button id="kg-import-cancel" class="btn btn-secondary">取消</button>
+            <button id="kg-import-submit" class="btn btn-primary">
+                <i class="fa-solid fa-upload"></i> 导入
+            </button>
+        </div>
+    </div>
+
+    <!-- ==================== JS脚本引入（按顺序） ==================== -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="vendor/leaflet-editable.js"></script>
+    <script src="https://unpkg.com/proj4@2.9.0/dist/proj4.js"></script>
+    <script src="https://unpkg.com/proj4leaflet@1.0.2/src/proj4leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+
+    <script src="../config.js"></script>
+    <script src="js/utils.js"></script>
+    <script src="js/api.js"></script>
+    <script src="js/chat.js"></script>
+    <script src="js/map.js"></script>
+    <script src="js/map-lod.js"></script>
+    <script src="js/map-edit.js"></script>
+    <script src="js/graph.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

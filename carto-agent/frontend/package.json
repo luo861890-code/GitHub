@@ -1,0 +1,13 @@
+{
+  "name": "carto-agent-frontend",
+  "version": "1.0.0",
+  "description": "在线地图制图智能体 - 前端界面",
+  "private": true,
+  "scripts": {
+    "dev": "npx http-server src -p 3000 --cors",
+    "build": "echo 'Static project, no build step needed'"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  }
+}
