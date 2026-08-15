@@ -25,6 +25,8 @@ class MapPanel {
         this.currentMapData = null;         // 当前地图数据
         this.currentMapId = null;           // 当前地图ID
         this.layerGroups = {};              // 图层组 {layer_id: {layer: LeafletLayer, data: layerData, visible: bool}}
+        this._layerOrder = [];              // 图层面板显示顺序（用户可调整）
+        this._lockedGroups = {};            // 锁定分组的排序（防止误拖乱高等级道路层级）
         this.layerControl = null;           // Leaflet图层控制器
         this.routeLayer = null;             // 路径规划线图层
         this.routeMarkers = [];             // 路径规划标记（起点、终点）
@@ -111,6 +113,10 @@ class MapPanel {
         this.initToolbar();
         // 初始化图层管理面板
         this.initLayerPanel();
+        // 初始化编制说明弹窗（独立按钮）
+        this.initMetadataModal();
+        // 初始化任务参数侧边栏
+        this.initParamsPanel();
         // 初始化图例按钮与面板
         this.initLegendPanel();
         // 初始化自然语言修改输入框
@@ -282,11 +288,66 @@ class MapPanel {
     }
 
     /**
+     * 行政区划图图幅自动取景：适配"武汉全域+周边相邻地市"（规范九-5）
+     * 独立成方法，便于 Vue 集成在容器尺寸就绪后再次强制取景，
+     * 规避流式渲染过程中容器 0 尺寸导致 fitBounds 失效的问题。
+     */
+    _fitAdministrativeBounds(mapData) {
+        if (!mapData || mapData.map_type !== "administrative" || !this.map) return;
+        const bounds = L.latLngBounds([]);
+        // 递归收集任意嵌套深度的 [lat, lng] 坐标点，统一扩展进 bounds
+        const collect = (c) => {
+            if (!Array.isArray(c)) return;
+            if (c.length >= 2 && typeof c[0] === "number" && !isNaN(c[0]) && !isNaN(c[1])) {
+                bounds.extend([c[0], c[1]]);
+            } else {
+                c.forEach(collect);
+            }
+        };
+        // 汇总面/线/点/注记图层的坐标（含 features 形式的面状区县数据）
+        (mapData.layers || []).forEach(ld => {
+            const t = ld.type || "";
+            if (t === "polygon" || t === "polyline" || t === "circleMarker" || t === "textLabel" || t === "line") {
+                if (ld.coordinates) collect(ld.coordinates);
+                if (ld.features && Array.isArray(ld.features)) {
+                    ld.features.forEach(f => { if (f.coordinates) collect(f.coordinates); });
+                }
+            }
+        });
+        if (bounds.isValid()) {
+            // maxZoom 限制：避免过度放大导致周边地市丢失；padding 保证图廓内完整
+            this.map.fitBounds(bounds, { padding: [12, 12], maxZoom: 10.5 });
+        }
+    }
+
+    /**
      * 渲染后端返回的地图数据
      * @param {object} mapData - 地图数据 {map_id, name, center, zoom, theme, layers}
      */
     renderMap(mapData) {
         if (!mapData || !this.map) return;
+        // 会话快照自愈：若图层数据是旧版（英文道路名/缺分类），自动拉取后端最新数据
+        // （会话消息里持久化的 map_data 不会随后端迁移自动更新）
+        if (mapData.map_id && !this._refreshingMap) {
+            const stale = (mapData.layers || []).some((l) =>
+                /^道路-[a-z_]+$/.test(l.name || "") || !l.group);
+            if (stale) {
+                this._refreshingMap = mapData.map_id;
+                API.getMap(mapData.map_id).then((resp) => {
+                    this._refreshingMap = null;
+                    if (resp && resp.success && resp.data && resp.data.layers
+                        && resp.data.map_id === mapData.map_id) {
+                        this.renderMap(resp.data);
+                    } else {
+                        // 快照对应的地图已被删除：自动加载第一张有效地图
+                        this._loadFirstAvailableMap();
+                    }
+                }).catch(() => {
+                    this._refreshingMap = null;
+                    this._loadFirstAvailableMap();
+                });
+            }
+        }
         // 切换/刷新地图时退出编辑模式
         if (this.editMode) this.exitEditMode();
         this.currentMapData = mapData;
@@ -339,6 +400,16 @@ class MapPanel {
                     // GIS叠加顺序：底图(瓦片) → 水系 → 路网 → 行政边界 → 铁路
                     if (/水系|河流|溪流|运河|湖泊|水库/.test(n)) return 330;   // 水系（底图之上）
                     if (/等高线/.test(n)) return 310;   // 等高线（底图之上、水系/道路之下）
+                    // 道路按等级分层：高等级干线渲染在上层（制图规范）
+                    const _cls = (ld.properties && ld.properties[0] && ld.properties[0].subtype) || "";
+                    const _roadZ = {
+                        "motorway": 455, "motorway_link": 452, "trunk": 450, "trunk_link": 447,
+                        "primary": 444, "primary_link": 441, "secondary": 436,
+                        "secondary_link": 433, "tertiary": 428, "tertiary_link": 425,
+                        "residential": 418, "living_street": 415, "service": 410,
+                        "unclassified": 405, "other": 400,
+                    };
+                    if (_roadZ[_cls]) return _roadZ[_cls];
                     const rankKey = Object.keys(roadRank).find(k => n.indexOf(k) >= 0);
                     if (rankKey || n.indexOf("道路-") === 0) return 400;   // 路网（水系之上，含本地道路数据）
                     if (/边界|市域|省界|县界/.test(n)) return 460;            // 行政边界
@@ -349,6 +420,7 @@ class MapPanel {
                 return 600;
             };
             mapData.layers.sort((a, b) => layerZ(a) - layerZ(b));
+            this._layerOrder = mapData.layers.map(l => l.id);
             mapData.layers.forEach(layerData => {
                 this.renderLayer(layerData);
             });
@@ -359,32 +431,13 @@ class MapPanel {
         }
         // 行政区划图：图幅自动适应"武汉全域+周边相邻地市"（规范九-5），
         // 避免窄屏时周边地市显示不全
-        if (mapData.map_type === "administrative") {
-            const bounds = L.latLngBounds([]);
-            const collect = (c) => {
-                if (!Array.isArray(c)) return;
-                if (c.length >= 2 && typeof c[0] === "number" && !isNaN(c[0]) && !isNaN(c[1])) {
-                    bounds.extend([c[0], c[1]]);
-                } else {
-                    c.forEach(collect);
-                }
-            };
-            (mapData.layers || []).forEach(ld => {
-                const t = ld.type || "";
-                if (t === "polygon" || t === "polyline" || t === "circleMarker" || t === "textLabel" || t === "line") {
-                    if (ld.coordinates) collect(ld.coordinates);
-                    if (ld.features && Array.isArray(ld.features)) {
-                        ld.features.forEach(f => { if (f.coordinates) collect(f.coordinates); });
-                    }
-                }
-            });
-            if (bounds.isValid()) {
-                // maxZoom 限制：避免过度放大导致周边地市丢失；padding 保证图廓内完整
-                this.map.fitBounds(bounds, { padding: [12, 12], maxZoom: 10.5 });
-            }
-        }
+        this._fitAdministrativeBounds(mapData);
+        // 无 UI 模式（Vue 集成）：只保留核心做图渲染，跳过经典 JS 的 UI 面板更新
+        if (this._headless) return;
         // 更新图层管理面板
         this.updateLayerPanel();
+        // 更新任务参数侧边栏
+        this.updateParamsPanel();
         // 编制说明（坐标系/投影/数据来源，规范3.7）
         this.renderMetadata(mapData.metadata);
         // 数据质量检测（拓扑/属性/统计/专题/标注）
@@ -1091,7 +1144,8 @@ class MapPanel {
             layer.bindTooltip(layerData.name, { sticky: true });
         }
         // 图层 LOD（层级细节控制）：路网/水系/注记/POI 按缩放分级
-        const _lodShown = layerData._lodVisible;
+        // 持久化可见性（QGIS式隐藏图层）+ LOD 缩放显隐
+        const _lodShown = layerData._lodVisible && layerData.visible !== false;
         // 添加到地图
         if (_lodShown) layer.addTo(this.map);
         // 存储图层引用
@@ -1124,9 +1178,24 @@ class MapPanel {
         if (miniLegendEl) miniLegendEl.classList.add("hidden");
         const attributionEl = document.getElementById("map-attribution");
         if (attributionEl) attributionEl.classList.add("hidden");
+        // 清除编制说明弹窗
+        const metaBody = document.getElementById("map-metadata-body");
+        if (metaBody) metaBody.innerHTML = "";
+        const metaModal = document.getElementById("map-metadata-modal");
+        if (metaModal) metaModal.classList.add("hidden");
+        const metaBtn = document.getElementById("toolbar-metadata");
+        if (metaBtn) metaBtn.classList.remove("active");
         // 清除质量检测面板
         const qualityPanel = document.getElementById("map-quality-panel");
         if (qualityPanel) qualityPanel.classList.add("hidden");
+        const qualityBanner = document.getElementById("map-quality-banner");
+        if (qualityBanner) qualityBanner.classList.add("hidden");
+        const qualityChip = document.getElementById("map-status-quality");
+        if (qualityChip) {
+            qualityChip.textContent = "质检中…";
+            qualityChip.className = "status-quality";
+            qualityChip.onclick = null;
+        }
         if (this._qualityMarker) { this.map.removeLayer(this._qualityMarker); this._qualityMarker = null; }
         // 清除图例
         this.legendData = null;
@@ -1493,9 +1562,13 @@ class MapPanel {
      * 编制说明（坐标系/投影/数据来源，规范3.7）
      */
     renderMetadata(meta) {
-        const el = document.getElementById("map-metadata");
+        // 编制说明移入独立弹窗（工具栏"编制说明"按钮打开），不再占用图层管理面板
+        const el = document.getElementById("map-metadata-body");
         if (!el) return;
-        if (!meta) { el.innerHTML = ""; return; }
+        if (!meta) {
+            el.innerHTML = '<div class="map-metadata-title">编制说明</div><div class="map-metadata-line">暂无编制信息</div>';
+            return;
+        }
         // 投影标注动态化：显示当前实际使用的投影（切换投影后自动更新）
         const meta2 = Object.assign({}, meta);
         if (meta2["投影"]) meta2["投影"] = this._crsName();
@@ -1538,7 +1611,32 @@ class MapPanel {
         const summary = report.summary || {};
         const items = report.items || [];
         const fail = summary.failed || 0;
-        let html = '<div class="quality-header">' +
+        // 主界面状态栏质检指示（异常清晰可见，点击打开图层面板并定位质检区）
+        const chip = document.getElementById("map-status-quality");
+        if (chip) {
+            chip.textContent = summary.passed_all ? "质检 ✓ 全部通过" : `质检 ⚠ ${fail} 项异常`;
+            chip.className = "status-quality " + (summary.passed_all ? "ok" : "warn");
+            chip.style.cursor = "pointer";
+            chip.onclick = () => {
+                this.toggleLayerPanel(true);
+                container.scrollIntoView({ behavior: "smooth", block: "nearest" });
+            };
+        }
+        // 图层管理面板顶部红色横幅（有异常时醒目提示）
+        const banner = document.getElementById("map-quality-banner");
+        if (banner) {
+            if (fail > 0) {
+                banner.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i>
+                    数据质量检测发现 <b>${fail}</b> 项异常
+                    <span class="quality-banner-count">${summary.total_checks || 0} 项检查</span>`;
+                banner.classList.remove("hidden");
+                banner.onclick = () => container.scrollIntoView({ behavior: "smooth", block: "nearest" });
+            } else {
+                banner.classList.add("hidden");
+                banner.onclick = null;
+            }
+        }
+        let html = '<div class="quality-header' + (fail > 0 ? " has-errors" : "") + '">' +
             '<i class="fa-solid fa-shield-halved"></i> 数据质量检测' +
             (summary.passed_all
                 ? ' <span class="quality-badge ok">全部通过</span>'
@@ -1657,10 +1755,84 @@ class MapPanel {
     initLayerPanel() {
         const panel = document.getElementById("map-layer-panel");
         if (!panel) return;
+        this._layerPanelPinned = localStorage.getItem("carto.layerPanel.pinned") === "1";
+        this._layerPanelPos = null;
+        this._collapsedGroups = {};
+        try {
+            this._collapsedGroups = JSON.parse(localStorage.getItem("carto.layerPanel.collapsed") || "{}");
+        } catch (e) { this._collapsedGroups = {}; }
+        this._layerSearch = "";
         // 关闭按钮
         const closeBtn = panel.querySelector(".layer-panel-close");
         if (closeBtn) {
             closeBtn.addEventListener("click", () => this.toggleLayerPanel(false));
+        }
+        // 固定/取消固定（固定到左侧智能体区域上半部分）
+        const pinBtn = document.getElementById("layer-panel-pin");
+        if (pinBtn) {
+            pinBtn.addEventListener("click", () => {
+                this._layerPanelPinned = !this._layerPanelPinned;
+                localStorage.setItem("carto.layerPanel.pinned", this._layerPanelPinned ? "1" : "0");
+                panel.classList.toggle("pinned", this._layerPanelPinned);
+                if (!this._layerPanelPinned && this._layerPanelPos) {
+                    panel.style.left = this._layerPanelPos.left + "px";
+                    panel.style.top = this._layerPanelPos.top + "px";
+                    panel.style.right = "auto";
+                }
+                pinBtn.classList.toggle("active", this._layerPanelPinned);
+            });
+        }
+        // 拖拽移动（固定状态下不可拖）
+        const header = panel.querySelector(".layer-panel-header");
+        if (header) {
+            header.addEventListener("mousedown", (e) => {
+                if (this._layerPanelPinned) return;
+                if (e.target.closest("button")) return;
+                e.preventDefault();
+                const rect = panel.getBoundingClientRect();
+                const offX = e.clientX - rect.left;
+                const offY = e.clientY - rect.top;
+                panel.classList.add("dragging");
+                const move = (ev) => {
+                    panel.style.left = Math.max(4, ev.clientX - offX) + "px";
+                    panel.style.top = Math.max(4, ev.clientY - offY) + "px";
+                    panel.style.right = "auto";
+                    panel.style.bottom = "auto";
+                };
+                const up = () => {
+                    document.removeEventListener("mousemove", move);
+                    document.removeEventListener("mouseup", up);
+                    panel.classList.remove("dragging");
+                    this._layerPanelPos = { left: parseInt(panel.style.left) || 0, top: parseInt(panel.style.top) || 0 };
+                    try {
+                        localStorage.setItem("carto.layerPanel.pos", JSON.stringify(this._layerPanelPos));
+                    } catch (err) { /* ignore */ }
+                };
+                document.addEventListener("mousemove", move);
+                document.addEventListener("mouseup", up);
+            });
+        }
+        // 搜索过滤
+        const searchInput = document.getElementById("layer-search-input");
+        if (searchInput) {
+            searchInput.addEventListener("input", () => {
+                this._layerSearch = (searchInput.value || "").trim().toLowerCase();
+                this.updateLayerPanel();
+            });
+        }
+        // 恢复位置/固定状态
+        panel.classList.toggle("pinned", this._layerPanelPinned);
+        if (pinBtn) pinBtn.classList.toggle("active", this._layerPanelPinned);
+        if (!this._layerPanelPinned) {
+            try {
+                const pos = JSON.parse(localStorage.getItem("carto.layerPanel.pos") || "null");
+                if (pos && typeof pos.left === "number") {
+                    this._layerPanelPos = pos;
+                    panel.style.left = pos.left + "px";
+                    panel.style.top = pos.top + "px";
+                    panel.style.right = "auto";
+                }
+            } catch (e) { /* ignore */ }
         }
     }
 
@@ -1678,9 +1850,198 @@ class MapPanel {
         }
     }
 
+    /** 加载地图列表中的第一张有效地图（会话快照过期/删除时兜底） */
+    async _loadFirstAvailableMap() {
+        if (this._loadingFirstMap) return;
+        this._loadingFirstMap = true;
+        try {
+            const resp = await API.listMaps();
+            const maps = (resp && resp.data) || [];
+            for (const m of maps) {
+                const r = await API.getMap(m.map_id);
+                if (r && r.success && r.data && r.data.layers) {
+                    this._loadingFirstMap = false;
+                    this.renderMap(r.data);
+                    Utils.showToast("已加载地图: " + (r.data.name || ""), "info", 2000);
+                    return;
+                }
+            }
+        } catch (e) {
+            console.warn("[MapPanel] 自动加载第一张地图失败:", e);
+        }
+        this._loadingFirstMap = false;
+    }
+
+    /**
+     * 初始化编制说明弹窗（独立工具栏按钮，不占用图层管理面板）
+     */
+    initMetadataModal() {
+        const btn = document.getElementById("toolbar-metadata");
+        const modal = document.getElementById("map-metadata-modal");
+        const closeBtn = document.getElementById("map-metadata-close");
+        if (!btn || !modal) return;
+        const open = () => {
+            // 内容兜底：若尚未渲染（如直接打开），从当前地图数据生成
+            const body = document.getElementById("map-metadata-body");
+            if (body && !body.textContent.trim() && this.currentMapData) {
+                this.renderMetadata(this.currentMapData.metadata);
+            }
+            modal.classList.remove("hidden");
+            btn.classList.add("active");
+        };
+        const close = () => {
+            modal.classList.add("hidden");
+            btn.classList.remove("active");
+        };
+        btn.addEventListener("click", () => {
+            if (modal.classList.contains("hidden")) open(); else close();
+        });
+        if (closeBtn) closeBtn.addEventListener("click", close);
+        modal.addEventListener("click", (e) => {
+            if (e.target === modal) close();
+        });
+    }
+
+    /**
+     * 任务参数侧边栏：展示/微调智能体规划出的制图参数（申请书2.4参数侧边栏）
+     *  - 展示：地图名称/类型/区域/缩放/主题/中心/图层数
+     *  - 微调：缩放、主题、中心坐标；"应用"即时生效，"重新生成"按参数重建
+     */
+    initParamsPanel() {
+        const panel = document.getElementById("map-params-panel");
+        const btn = document.getElementById("toolbar-params");
+        if (!panel) return;
+        const closeBtn = panel.querySelector(".params-panel-close");
+        if (closeBtn) closeBtn.addEventListener("click", () => {
+            panel.classList.add("hidden");
+            if (btn) btn.classList.remove("active");
+        });
+        if (btn) btn.addEventListener("click", () => {
+            panel.classList.toggle("hidden");
+            btn.classList.toggle("active");
+            this.updateParamsPanel();
+        });
+        const applyBtn = document.getElementById("params-apply");
+        if (applyBtn) applyBtn.addEventListener("click", () => this._applyParams());
+        const regenBtn = document.getElementById("params-regenerate");
+        if (regenBtn) regenBtn.addEventListener("click", () => this._regenerateByParams());
+    }
+
+    updateParamsPanel() {
+        const md = this.currentMapData;
+        if (!md) return;
+        const set = (id, v) => {
+            const el = document.getElementById(id);
+            if (el) el.value = v;
+        };
+        const setText = (id, v) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = v;
+        };
+        setText("params-map-name", md.name || "-");
+        setText("params-map-type", md.map_type || "-");
+        setText("params-region", md.region || "武汉市");
+        setText("params-layer-count", (md.layers || []).length + " 层");
+        set("params-zoom", md.zoom || 12);
+        set("params-theme", md.theme || "plain");
+        if (md.center && Array.isArray(md.center) && md.center.length === 2) {
+            set("params-center-lat", md.center[0]);
+            set("params-center-lng", md.center[1]);
+        }
+    }
+
+    /** 应用参数侧边栏中的视图参数（缩放/主题/中心） */
+    async _applyParams() {
+        if (!this.currentMapId) { Utils.showToast("请先生成地图", "warning"); return; }
+        const zoom = parseInt(document.getElementById("params-zoom").value) || 12;
+        const theme = document.getElementById("params-theme").value;
+        const lat = parseFloat(document.getElementById("params-center-lat").value);
+        const lng = parseFloat(document.getElementById("params-center-lng").value);
+        try {
+            await API.updateTheme(this.currentMapId, theme);
+            await API.updateView(this.currentMapId, { center: [lat, lng], zoom });
+            const resp = await API.getMap(this.currentMapId);
+            if (resp.success && resp.data) {
+                this.renderMap(resp.data);
+                Utils.showToast("视图参数已应用", "success", 1500);
+            }
+        } catch (e) {
+            Utils.showToast("应用参数失败: " + e.message, "error");
+        }
+    }
+
+    /** 按参数侧边栏当前参数重新生成地图 */
+    async _regenerateByParams() {
+        if (!this.currentMapData) { Utils.showToast("请先生成地图", "warning"); return; }
+        const zoom = parseInt(document.getElementById("params-zoom").value) || 12;
+        const mapType = this.currentMapData.map_type || "basic";
+        const region = this.currentMapData.region || "武汉市";
+        Utils.showToast("正在按参数重新生成...", "info", 2000);
+        try {
+            const resp = await API.generateMap({ map_type: mapType, region, zoom });
+            if (resp.success && resp.data) {
+                this.renderMap(resp.data);
+                Utils.showToast("地图已按参数重新生成", "success", 1800);
+            } else {
+                Utils.showToast(resp.message || "重新生成失败", "error");
+            }
+        } catch (e) {
+            Utils.showToast("重新生成失败: " + e.message, "error");
+        }
+    }
+
     /**
      * 更新图层管理面板内容
      */
+    /** 通用类型图标（无样式信息时的兜底） */
+    _typeIcon(t) {
+        if (t === "polyline" || t === "line") return '<i class="fa-solid fa-minus layer-type-icon"></i>';
+        if (t === "polygon" || t === "area") return '<i class="fa-solid fa-square layer-type-icon"></i>';
+        if (t === "circleMarker" || t === "marker" || t === "point") return '<i class="fa-solid fa-location-dot layer-type-icon"></i>';
+        if (t === "textLabel" || t === "label") return '<i class="fa-solid fa-font layer-type-icon"></i>';
+        return '<i class="fa-solid fa-layer-group layer-type-icon"></i>';
+    }
+
+    /**
+     * 图层符号图标：按图层实际样式生成小图例（与地图上渲染一致）
+     *   - 线要素（道路/市界/河流）：按颜色/线宽/虚线画一条线
+     *   - 面要素（湖泊/居民地/底图）：按填充色+边框画方块
+     *   - 点要素（POI/行政中心）：按颜色画实心圆
+     *   - 注记：按颜色显示"文"字
+     */
+    _symbologyIcon(layerData) {
+        const st = (layerData && layerData.style) || {};
+        const t = (layerData && layerData.type) || "";
+        const color = st.color || "#3388ff";
+        const fill = st.fillColor || color;
+        const w = Math.min(parseFloat(st.weight) || 2, 6);
+        const op = st.opacity !== undefined ? st.opacity : 1;
+        const fillOp = st.fillOpacity !== undefined ? st.fillOpacity : 0.6;
+        const dash = st.dashArray || "";
+        if (t === "polyline" || t === "line") {
+            return `<svg class="layer-symbol" width="24" height="16" viewBox="0 0 24 16">
+                <line x1="1" y1="8" x2="23" y2="8" stroke="${color}" stroke-width="${w}"
+                      stroke-opacity="${op}" stroke-dasharray="${dash}" stroke-linecap="round"/></svg>`;
+        }
+        if (t === "polygon" || t === "area") {
+            return `<svg class="layer-symbol" width="24" height="16" viewBox="0 0 24 16">
+                <rect x="3" y="2" width="18" height="12" rx="2" fill="${fill}" fill-opacity="${fillOp}"
+                      stroke="${color}" stroke-width="${Math.min(w, 3)}" stroke-opacity="${op}"/></svg>`;
+        }
+        if (t === "circleMarker" || t === "marker" || t === "point") {
+            const radius = Math.min(parseFloat((st.radius) || 6), 8);
+            return `<svg class="layer-symbol" width="24" height="16" viewBox="0 0 24 16">
+                <circle cx="12" cy="8" r="${Math.max(4, radius * 0.8)}" fill="${fill}" fill-opacity="${fillOp}"
+                        stroke="${color}" stroke-width="1.5" stroke-opacity="${op}"/></svg>`;
+        }
+        if (t === "textLabel" || t === "label") {
+            return `<svg class="layer-symbol" width="24" height="16" viewBox="0 0 24 16">
+                <text x="12" y="12.5" font-size="12" text-anchor="middle" fill="${color}"
+                      font-family="sans-serif" font-weight="700">文</text></svg>`;
+        }
+        return this._typeIcon(t);
+    }
+
     updateLayerPanel() {
         const container = document.getElementById("map-layer-list");
         if (!container) return;
@@ -1690,35 +2051,418 @@ class MapPanel {
             container.innerHTML = '<div class="empty-hint">暂无图层</div>';
             return;
         }
-        layerEntries.forEach(([layerId, item]) => {
-            const div = document.createElement("div");
-            div.className = "layer-item";
-            const style = item.data.style || {};
-            const color = style.color || "#3388ff";
-            div.innerHTML = `
-                <div class="layer-item-header">
-                    <label class="layer-toggle">
-                        <input type="checkbox" ${item.visible ? "checked" : ""} data-layer-id="${layerId}">
-                        <span class="layer-color-dot" style="background:${color}"></span>
-                        <span class="layer-name">${Utils.escapeHtml(item.data.name || "未命名图层")}</span>
-                    </label>
-                    <button class="layer-edit-btn" data-layer-id="${layerId}" title="编辑样式">
-                        <i class="fa-solid fa-sliders"></i>
-                    </button>
-                </div>
-                <div class="layer-item-type">${Utils.escapeHtml(item.data.type || "")}</div>
-            `;
-            // 切换可见性
-            const checkbox = div.querySelector("input[type=checkbox]");
-            checkbox.addEventListener("change", (e) => {
-                this.toggleLayer(layerId, e.target.checked);
-            });
-            // 编辑样式
-            div.querySelector(".layer-edit-btn").addEventListener("click", () => {
-                this.showLayerStyleEditor(layerId);
-            });
-            container.appendChild(div);
+        const countBadge = document.getElementById("layer-panel-count");
+        if (countBadge) countBadge.textContent = layerEntries.length + " 层";
+        // 图层分类（按制图叠置顺序：底图→行政区→水系→湖泊→居民地→等高线→道路→交通→POI→注记→其他）
+        const CATS = [
+            { key: "base", name: "底图", test: (n) => /陆地底图|省域|周边地市|市域底图|湖北省/.test(n) },
+            { key: "admin", name: "行政区划", test: (n) => /政区|区县|边界|界$|行政中心|区划/.test(n) },
+            { key: "water", name: "水系", test: (n) => /河流|水系|河道|中心线|大江|水面/.test(n) },
+            { key: "lake", name: "湖泊", test: (n) => /湖泊/.test(n) },
+            { key: "builtup", name: "居民地", test: (n) => /居民地/.test(n) },
+            { key: "contour", name: "等高线", test: (n) => /等高线/.test(n) },
+            { key: "road", name: "道路", test: (n) => n.indexOf("道路-") === 0 || /高速|国道|省道|主干道|次干道|支路|街巷/.test(n) },
+            { key: "rail", name: "轨道/铁路", test: (n) => /轨道|铁路|地铁|轻轨/.test(n) },
+            { key: "poi", name: "POI/符号", test: (n, t) => t === "circleMarker" || t === "marker" || t === "point" || t === "circle" },
+            { key: "label", name: "注记/标注", test: (n, t) => t === "textLabel" || t === "label" || /注记|标注|地标名称/.test(n) },
+            { key: "other", name: "其他", test: () => true },
+        ];
+
+        // 按用户调整顺序排序（默认沿用制图叠置顺序）
+        const orderMap = new Map((this._layerOrder || []).map((id, i) => [id, i]));
+        const ordered = layerEntries.slice().sort((a, b) => {
+            const ia = orderMap.has(a[0]) ? orderMap.get(a[0]) : 1e9;
+            const ib = orderMap.has(b[0]) ? orderMap.get(b[0]) : 1e9;
+            return ia - ib;
         });
+
+        const groups = CATS.map((c) => ({ ...c, items: [] }));
+        const GROUP_MAP = {
+            "底图": "base", "行政区划": "admin", "水系": "water", "湖泊": "lake",
+            "居民地": "builtup", "等高线": "contour", "道路": "road",
+            "轨道/铁路": "rail", "POI/符号": "poi", "注记/标注": "label", "其他": "other",
+        };
+        ordered.forEach(([layerId, item]) => {
+            const n = item.data.name || "";
+            const t = item.data.type || "";
+            // 搜索过滤
+            if (this._layerSearch && n.toLowerCase().indexOf(this._layerSearch) < 0) {
+                return;
+            }
+            // 优先使用后端持久化的 group 分类（QGIS式图层分组）
+            const gKey = GROUP_MAP[item.data.group];
+            const g = (gKey && groups.find((grp) => grp.key === gKey))
+                || groups.find((grp) => grp.test(n, t))
+                || groups[groups.length - 1];
+            g.items.push([layerId, item]);
+        });
+
+        // 道路子分组与等级排序（高速路网 → 城市主干道 → 城区道路 → 其他道路，高等级在上）
+        const ROAD_SUBGROUP_ORDER = ["高速路网", "城市主干道", "城区道路", "其他道路"];
+        const ROAD_CLASS_RANK = {
+            motorway: 0, motorway_link: 1, trunk: 2, trunk_link: 3, primary: 4,
+            primary_link: 5, secondary: 6, secondary_link: 7, tertiary: 8,
+            tertiary_link: 9, residential: 10, living_street: 11, service: 12,
+            unclassified: 13, other: 14,
+        };
+        const roadGroup = groups.find((x) => x.key === "road");
+        if (roadGroup) {
+            roadGroup.items.sort((a, b) => {
+                const sa = ROAD_SUBGROUP_ORDER.indexOf(a[1].data.subgroup);
+                const sb = ROAD_SUBGROUP_ORDER.indexOf(b[1].data.subgroup);
+                if (sa !== sb) return (sa < 0 ? 99 : sa) - (sb < 0 ? 99 : sb);
+                const ca = ROAD_CLASS_RANK[a[1].data.metadata && a[1].data.metadata.raw_class
+                    || (a[1].data.properties && a[1].data.properties[0] && a[1].data.properties[0].subtype)] ?? 99;
+                const cb = ROAD_CLASS_RANK[b[1].data.metadata && b[1].data.metadata.raw_class
+                    || (b[1].data.properties && b[1].data.properties[0] && b[1].data.properties[0].subtype)] ?? 99;
+                return ca - cb;
+            });
+        }
+
+        groups.forEach((g) => {
+            if (!g.items.length) return;
+            const groupEl = document.createElement("div");
+            groupEl.className = "layer-group";
+            const locked = !!this._lockedGroups[g.key];
+            const visibleCount = g.items.filter(([, it]) => it.visible).length;
+            const collapsed = !!this._collapsedGroups[g.key];
+            groupEl.innerHTML = `
+                <div class="layer-group-header">
+                    <button class="layer-group-collapse" title="${collapsed ? "展开" : "折叠"}">
+                        <i class="fa-solid ${collapsed ? "fa-chevron-right" : "fa-chevron-down"}"></i>
+                    </button>
+                    <span class="layer-group-name">${Utils.escapeHtml(g.name)}
+                        <span class="layer-group-count">${g.items.length}</span>
+                    </span>
+                    <span class="layer-group-actions">
+                        <button class="layer-group-lock" title="${locked ? "解锁排序" : "锁定排序（防止误调整层级）"}">
+                            <i class="fa-solid ${locked ? "fa-lock" : "fa-lock-open"}"></i>
+                        </button>
+                        <button class="layer-group-toggle" title="显示/隐藏本组">${visibleCount === g.items.length ? "全隐" : "全显"}</button>
+                    </span>
+                </div>
+                <div class="layer-group-body"></div>
+            `;
+            const body = groupEl.querySelector(".layer-group-body");
+            if (collapsed) body.style.display = "none";
+            // 折叠/展开分组
+            groupEl.querySelector(".layer-group-collapse").addEventListener("click", () => {
+                this._collapsedGroups[g.key] = !this._collapsedGroups[g.key];
+                try {
+                    localStorage.setItem("carto.layerPanel.collapsed", JSON.stringify(this._collapsedGroups));
+                } catch (e) { /* ignore */ }
+                this.updateLayerPanel();
+            });
+            let lastSubgroup = null;
+            g.items.forEach(([layerId, item]) => {
+                // 子分组标题（道路等按 subgroup 细分）
+                const sg = item.data.subgroup;
+                if (sg && sg !== lastSubgroup) {
+                    const sgEl = document.createElement("div");
+                    sgEl.className = "layer-subgroup-header";
+                    sgEl.textContent = sg;
+                    body.appendChild(sgEl);
+                    lastSubgroup = sg;
+                }
+                const div = document.createElement("div");
+                div.className = "layer-item" + (item.visible ? "" : " off");
+                const style = item.data.style || {};
+                const color = style.fillColor || style.color || "#3388ff";
+                const weight = style.weight ? `线宽 ${style.weight}` : "";
+                const op = style.opacity !== undefined ? `不透明度 ${Math.round(style.opacity * 100)}%` : "";
+                const cnt = (item.data.coordinates ? item.data.coordinates.length
+                    : (item.data.features ? item.data.features.length : 0));
+                const desc = item.data.metadata && item.data.metadata.description
+                    ? item.data.metadata.description : "";
+                div.innerHTML = `
+                    <div class="layer-item-header">
+                        <label class="layer-toggle" title="${Utils.escapeHtml((item.data.name || "") + (desc ? "（" + desc + "）" : ""))}">
+                            <input type="checkbox" ${item.visible ? "checked" : ""} data-layer-id="${layerId}">
+                            ${this._symbologyIcon(item.data)}
+                            <span class="layer-color-dot" style="background:${color}"></span>
+                            <span class="layer-name">${Utils.escapeHtml(item.data.name || "未命名图层")}</span>
+                        </label>
+                        <div class="layer-item-actions">
+                            <button class="layer-act-btn" data-act="up" title="上移" ${locked ? "disabled" : ""}><i class="fa-solid fa-arrow-up"></i></button>
+                            <button class="layer-act-btn" data-act="down" title="下移" ${locked ? "disabled" : ""}><i class="fa-solid fa-arrow-down"></i></button>
+                            <button class="layer-act-btn" data-act="table" title="数据表格"><i class="fa-solid fa-table"></i></button>
+                            <button class="layer-act-btn" data-act="export" title="导出GeoJSON"><i class="fa-solid fa-download"></i></button>
+                            <button class="layer-act-btn" data-act="style" title="编辑样式"><i class="fa-solid fa-sliders"></i></button>
+                        </div>
+                    </div>
+                    <div class="layer-item-type">
+                        ${this._symbologyIcon(item.data)}${Utils.escapeHtml(item.data.type || "")}${cnt ? ` · ${cnt} 要素` : ""}
+                        ${weight ? ` · ${weight}` : ""}${op ? ` · ${op}` : ""}
+                    </div>
+                `;
+                div.querySelector("input[type=checkbox]").addEventListener("change", (e) => {
+                    this.toggleLayer(layerId, e.target.checked);
+                    this.updateLayerPanel();
+                });
+                div.querySelectorAll(".layer-act-btn").forEach((btn) => {
+                    btn.addEventListener("click", () => {
+                        const act = btn.dataset.act;
+                        if (act === "up") this.reorderLayer(layerId, -1);
+                        else if (act === "down") this.reorderLayer(layerId, 1);
+                        else if (act === "table") this.showLayerData(layerId);
+                        else if (act === "export") this.exportLayer(layerId);
+                        else if (act === "style") this.showLayerStyleEditor(layerId);
+                    });
+                });
+                body.appendChild(div);
+            });
+            // 组内全显/全隐
+            groupEl.querySelector(".layer-group-toggle").addEventListener("click", () => {
+                const allVisible = g.items.every(([, it]) => it.visible);
+                g.items.forEach(([id]) => {
+                    if (this.layerGroups[id] && this.layerGroups[id].visible === allVisible) {
+                        this.toggleLayer(id, !allVisible);
+                    }
+                });
+                this.updateLayerPanel();
+            });
+            // 锁定/解锁分组排序
+            groupEl.querySelector(".layer-group-lock").addEventListener("click", () => {
+                this._lockedGroups[g.key] = !this._lockedGroups[g.key];
+                this.updateLayerPanel();
+            });
+            container.appendChild(groupEl);
+        });
+    }
+
+    /**
+     * 调整图层顺序（上移/下移），并重新按序叠加
+     * @param {string} layerId - 图层ID
+     * @param {number} dir - -1上移 / 1下移
+     */
+    reorderLayer(layerId, dir) {
+        if (!this._layerOrder || !this.layerGroups[layerId]) return;
+        // 分组锁定：防止误调整高等级道路等关键层级
+        const _GM = {
+            "底图": "base", "行政区划": "admin", "水系": "water", "湖泊": "lake",
+            "居民地": "builtup", "等高线": "contour", "道路": "road",
+            "轨道/铁路": "rail", "POI/符号": "poi", "注记/标注": "label", "其他": "other",
+        };
+        const _gk = _GM[this.layerGroups[layerId].data.group];
+        if (this._lockedGroups[_gk]) {
+            Utils.showToast("该分组已锁定排序，先解锁再调整", "warning", 2200);
+            return;
+        }
+        const i = this._layerOrder.indexOf(layerId);
+        const j = i + dir;
+        if (i < 0 || j < 0 || j >= this._layerOrder.length) {
+            Utils.showToast("已到边界", "info", 1200);
+            return;
+        }
+        const tmp = this._layerOrder[i];
+        this._layerOrder[i] = this._layerOrder[j];
+        this._layerOrder[j] = tmp;
+        // 按新顺序重新叠加（同 pane 内后添加者在上）
+        this._layerOrder.forEach((id) => {
+            const item = this.layerGroups[id];
+            if (item && item.layer && item.visible) this.map.removeLayer(item.layer);
+        });
+        this._layerOrder.forEach((id) => {
+            const item = this.layerGroups[id];
+            if (item && item.layer && item.visible) item.layer.addTo(this.map);
+        });
+        this.updateLayerPanel();
+    }
+
+    /**
+     * 查看图层数据表格（属性表）
+     * @param {string} layerId - 图层ID
+     */
+    showLayerData(layerId) {
+        const item = this.layerGroups[layerId];
+        if (!item) return;
+        const layer = item.data;
+        const modal = document.getElementById("layer-data-modal");
+        const title = document.getElementById("layer-data-title");
+        const meta = document.getElementById("layer-data-meta");
+        const thead = modal.querySelector("thead");
+        const tbody = modal.querySelector("tbody");
+        if (!modal) return;
+
+        title.textContent = (layer.name || "图层") + " · 数据表格";
+        const coords = layer.coordinates || [];
+        const props = layer.properties || [];
+        const feats = layer.features || [];
+        const n = Math.max(coords.length, feats.length);
+
+        // 动态列：通用属性 + 图层自带属性键
+        const propKeys = new Set(["name", "subtype", "ele", "area_km2", "index", "category", "waterway", "level", "value"]);
+        const allProps = (props && props.length) ? props : feats.map(f => f.properties || {});
+        allProps.forEach(p => {
+            Object.keys(p || {}).forEach(k => propKeys.add(k));
+        });
+        const columns = ["#", ...Array.from(propKeys), "要素点数", "操作"];
+        thead.innerHTML = `<tr>${columns.map(c => `<th>${Utils.escapeHtml(c)}</th>`).join("")}</tr>`;
+        const isPoint = layer.type === "circleMarker" || layer.type === "marker" || layer.type === "point";
+
+        const rows = [];
+        for (let i = 0; i < n; i++) {
+            const p = (props && props[i]) || (feats[i] && feats[i].properties) || {};
+            const count = coords[i] ? (Array.isArray(coords[i][0]) ? coords[i].length : 1) : 0;
+            const cells = columns.map((c) => {
+                if (c === "#") return `<td>${i + 1}</td>`;
+                if (c === "要素点数") return `<td>${count}</td>`;
+                if (c === "操作") return `<td><button class="table-del-row" data-row="${i}" title="删除该要素">🗑</button></td>`;
+                const v = p[c];
+                const val = v === undefined || v === null ? "" : String(v);
+                return `<td class="cell-editable" contenteditable="true" data-row="${i}" data-col="${Utils.escapeHtml(c)}"
+                            title="双击编辑属性">${Utils.escapeHtml(val)}</td>`;
+            });
+            rows.push(`<tr>${cells.join("")}</tr>`);
+        }
+        const addBtn = isPoint
+            ? `<button id="table-add-point" class="table-add-point">＋ 添加点要素</button>` : "";
+        meta.innerHTML = `共 ${n} 条记录 · 类型 ${Utils.escapeHtml(layer.type || "-")} ·
+            <span class="table-edit-hint">（双击单元格编辑，自动保存）</span> ${addBtn}`;
+        tbody.innerHTML = rows.join("") || '<tr><td colspan="99" class="empty-hint">暂无数据</td></tr>';
+
+        tbody.querySelectorAll(".cell-editable").forEach((cell) => {
+            cell.addEventListener("blur", () => this._saveTableEdit(layerId, cell));
+            cell.addEventListener("keydown", (e) => {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    cell.blur();
+                }
+            });
+        });
+        tbody.querySelectorAll(".table-del-row").forEach((btn) => {
+            btn.addEventListener("click", () => this._deleteTableRow(layerId, Number(btn.dataset.row)));
+        });
+        const addBtnEl = document.getElementById("table-add-point");
+        if (addBtnEl) addBtnEl.addEventListener("click", () => this._addTablePoint(layerId));
+        modal.classList.remove("hidden");
+        const closeBtn = document.getElementById("layer-data-close");
+        closeBtn.onclick = () => modal.classList.add("hidden");
+        modal.addEventListener("click", (e) => {
+            if (e.target === modal) modal.classList.add("hidden");
+        });
+    }
+
+    /** 属性表单元格编辑保存（QGIS/ArcGIS 属性表） */
+    _saveTableEdit(layerId, cell) {
+        const item = this.layerGroups[layerId];
+        if (!item || !this.currentMapId) return;
+        const row = Number(cell.dataset.row);
+        const col = cell.dataset.col;
+        let raw = (cell.textContent || "").trim();
+        if (raw !== "" && !isNaN(Number(raw))) raw = Number(raw);
+        const props = (item.data.properties || []).slice().map(p => ({ ...p }));
+        if (!props[row]) props[row] = {};
+        props[row][col] = raw;
+        item.data.properties = props;
+        API.updateLayerGeometry(this.currentMapId, layerId, { properties: props })
+            .then(() => Utils.showToast(`属性已保存: ${col} = ${String(raw).slice(0, 30)}`, "success", 1500))
+            .catch((e) => Utils.showToast("属性保存失败: " + e.message, "error"));
+    }
+
+    /** 属性表删除一行（QGIS/ArcGIS 属性表） */
+    _deleteTableRow(layerId, row) {
+        const item = this.layerGroups[layerId];
+        if (!item || !this.currentMapId) return;
+        if (!window.confirm("确定删除该要素？")) return;
+        const coords = (item.data.coordinates || []).slice();
+        const props = (item.data.properties || []).slice();
+        const feats = (item.data.features || []).slice();
+        if (row < coords.length) coords.splice(row, 1);
+        if (row < props.length) props.splice(row, 1);
+        if (row < feats.length) feats.splice(row, 1);
+        const payload = {};
+        if (item.data.coordinates) payload.coordinates = coords;
+        if (item.data.properties) payload.properties = props;
+        if (item.data.features) payload.features = feats;
+        API.updateLayerGeometry(this.currentMapId, layerId, payload).then(() => {
+            item.data.coordinates = coords;
+            item.data.properties = props;
+            item.data.features = feats;
+            this.map.removeLayer(item.layer);
+            this.renderLayer(Object.assign({}, item.data, { _lodVisible: true }));
+            this.showLayerData(layerId);
+            Utils.showToast("要素已删除", "success", 1500);
+        }).catch((e) => Utils.showToast("删除失败: " + e.message, "error"));
+    }
+
+    /** 属性表添加点要素（QGIS/ArcGIS 属性表） */
+    _addTablePoint(layerId) {
+        const item = this.layerGroups[layerId];
+        if (!item || !this.currentMapId) return;
+        const lat = prompt("纬度 (lat):", "30.5928");
+        if (lat === null) return;
+        const lng = prompt("经度 (lng):", "114.3055");
+        if (lng === null) return;
+        const name = prompt("名称:", "新标注") || "新标注";
+        const coords = (item.data.coordinates || []).slice();
+        const props = (item.data.properties || []).slice();
+        coords.push([parseFloat(lat), parseFloat(lng)]);
+        props.push({ name });
+        const payload = {};
+        if (item.data.coordinates) payload.coordinates = coords;
+        if (item.data.properties) payload.properties = props;
+        API.updateLayerGeometry(this.currentMapId, layerId, payload).then(() => {
+            item.data.coordinates = coords;
+            item.data.properties = props;
+            this.map.removeLayer(item.layer);
+            this.renderLayer(Object.assign({}, item.data, { _lodVisible: true }));
+            this.showLayerData(layerId);
+            Utils.showToast("已添加点要素", "success", 1500);
+        }).catch((e) => Utils.showToast("添加失败: " + e.message, "error"));
+    }
+
+    /**
+     * 导出单个图层为 GeoJSON 文件
+     * @param {string} layerId - 图层ID
+     */
+    exportLayer(layerId) {
+        const item = this.layerGroups[layerId];
+        if (!item) return;
+        const layer = item.data;
+        const features = [];
+        const coords = layer.coordinates || [];
+        const props = layer.properties || [];
+        const feats = layer.features || [];
+        const toLngLat = (p) => [Number(p[1]), Number(p[0])];
+
+        if (coords.length) {
+            coords.forEach((c, i) => {
+                const prop = (props && props[i]) || {};
+                let geometry = null;
+                if (layer.type === "polygon" || layer.type === "area") {
+                    const rings = Array.isArray(c) && Array.isArray(c[0]) && Array.isArray(c[0][0])
+                        ? c.map(r => r.map(toLngLat)) : [c.map(toLngLat)];
+                    geometry = { type: "Polygon", coordinates: rings };
+                } else if (layer.type === "polyline" || layer.type === "line") {
+                    geometry = { type: "LineString", coordinates: c.map(toLngLat) };
+                } else {
+                    geometry = { type: "Point", coordinates: toLngLat(c) };
+                }
+                features.push({ type: "Feature", properties: prop, geometry });
+            });
+        } else if (feats.length) {
+            feats.forEach(f => {
+                if (f.geometry) features.push({ type: "Feature", properties: f.properties || {}, geometry: f.geometry });
+            });
+        }
+        const fc = {
+            type: "FeatureCollection",
+            name: layer.name || "图层",
+            features,
+            properties: { layer_id: layerId, source: "carto-agent" },
+        };
+        const blob = new Blob([JSON.stringify(fc)], { type: "application/geo+json;charset=utf-8" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `图层_${(layer.name || "layer").replace(/[\\/:*?"<>|]/g, "_")}.geojson`;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+            URL.revokeObjectURL(a.href);
+            a.remove();
+        }, 200);
+        Utils.showToast(`已导出图层: ${layer.name || ""}（${features.length} 要素）`, "success", 2500);
     }
 
     /**
@@ -1735,6 +2479,13 @@ class MapPanel {
             this.map.removeLayer(item.layer);
         }
         item.visible = visible;
+        // 持久化可见性（QGIS式隐藏状态写入地图数据）
+        if (this.currentMapId) {
+            API.setLayerVisible(this.currentMapId, layerId, visible).catch(() => {
+                // 网络失败仅提示，不影响当前会话
+                Utils.showToast("可见性保存失败（离线状态仅本次生效）", "warning", 2000);
+            });
+        }
     }
 
     /**
@@ -1745,73 +2496,155 @@ class MapPanel {
         const item = this.layerGroups[layerId];
         if (!item) return;
         const style = item.data.style || {};
+        const isPoly = item.data.type === "polygon" || item.data.type === "area";
         const editor = document.getElementById("map-style-editor");
         if (!editor) return;
+        // 样式模板（QGIS 式一键套用）
+        const TEMPLATES = {
+            "": { name: "自定义" },
+            "highway": { name: "高速公路", color: "#F97316", weight: 4, opacity: 1, dash: "" },
+            "arterial": { name: "城市主干道", color: "#EA580C", weight: 3, opacity: 1, dash: "" },
+            "street": { name: "街区道路", color: "#B9C4D0", weight: 1.2, opacity: 0.85, dash: "" },
+            "water": { name: "水系", color: "#2f7fd0", weight: 2, opacity: 0.9, dash: "6,4" },
+            "lake": { name: "湖泊", color: "#1d5fa8", fillColor: "#4a90d9", fillOpacity: 0.55, weight: 1.2, opacity: 0.9, dash: "" },
+        };
         editor.innerHTML = `
             <div class="style-editor-header">
-                <span>编辑图层样式: ${Utils.escapeHtml(item.data.name || "")}</span>
+                <span><i class="fa-solid fa-sliders"></i> 图层样式: ${Utils.escapeHtml(item.data.name || "")}</span>
                 <button class="style-editor-close"><i class="fa-solid fa-xmark"></i></button>
             </div>
             <div class="style-editor-body">
-                <div class="style-field">
-                    <label>颜色</label>
-                    <input type="color" id="style-color" value="${style.color || "#3388ff"}">
-                </div>
-                <div class="style-field">
-                    <label>线宽: <span id="weight-value">${style.weight || 3}</span></label>
-                    <input type="range" id="style-weight" min="1" max="10" value="${style.weight || 3}">
-                </div>
-                <div class="style-field">
-                    <label>透明度: <span id="opacity-value">${(style.opacity !== undefined ? style.opacity : 1).toFixed(2)}</span></label>
-                    <input type="range" id="style-opacity" min="0" max="1" step="0.1" value="${style.opacity !== undefined ? style.opacity : 1}">
-                </div>
-                <div class="style-field">
-                    <label>填充透明度: <span id="fill-value">${(style.fillOpacity !== undefined ? style.fillOpacity : 0.2).toFixed(2)}</span></label>
-                    <input type="range" id="style-fillOpacity" min="0" max="1" step="0.1" value="${style.fillOpacity !== undefined ? style.fillOpacity : 0.2}">
-                </div>
-                <div class="style-field">
-                    <label>虚线样式</label>
-                    <select id="style-dashArray">
-                        <option value="" ${!style.dashArray ? "selected" : ""}>实线</option>
-                        <option value="5,5" ${style.dashArray === "5,5" ? "selected" : ""}>短虚线</option>
-                        <option value="10,5" ${style.dashArray === "10,5" ? "selected" : ""}>长虚线</option>
-                        <option value="5,10" ${style.dashArray === "5,10" ? "selected" : ""}>点线</option>
+                <div class="style-field style-field-template">
+                    <label>样式模板（一键套用）</label>
+                    <select id="style-template">
+                        ${Object.entries(TEMPLATES).map(([k, v]) =>
+                            `<option value="${k}">${Utils.escapeHtml(v.name)}</option>`).join("")}
                     </select>
                 </div>
-                <button class="style-apply-btn" id="style-apply-btn">应用样式</button>
+                <div class="style-preview" id="style-preview" title="样式预览"></div>
+                <div class="style-section">
+                    <div class="style-section-title">色彩</div>
+                    <div class="style-field">
+                        <label>线条颜色</label>
+                        <input type="color" id="style-color" value="${style.color || "#3388ff"}">
+                    </div>
+                    ${isPoly ? `
+                    <div class="style-field">
+                        <label>填充颜色</label>
+                        <input type="color" id="style-fillColor" value="${style.fillColor || "#4a90d9"}">
+                    </div>` : ""}
+                </div>
+                <div class="style-section">
+                    <div class="style-section-title">线宽与虚实</div>
+                    <div class="style-field">
+                        <label>线宽: <span id="weight-value">${style.weight || 3}</span> px</label>
+                        <input type="range" id="style-weight" min="1" max="12" value="${style.weight || 3}">
+                    </div>
+                    <div class="style-field">
+                        <label>线型</label>
+                        <select id="style-dashArray">
+                            <option value="" ${!style.dashArray ? "selected" : ""}>实线</option>
+                            <option value="5,5" ${style.dashArray === "5,5" ? "selected" : ""}>短虚线</option>
+                            <option value="10,5" ${style.dashArray === "10,5" ? "selected" : ""}>长虚线</option>
+                            <option value="5,10" ${style.dashArray === "5,10" ? "selected" : ""}>点线</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="style-section">
+                    <div class="style-section-title">不透明度（值越大越清晰）</div>
+                    <div class="style-field">
+                        <label>线条不透明度: <span id="opacity-value">${(style.opacity !== undefined ? style.opacity : 1).toFixed(2)}</span></label>
+                        <input type="range" id="style-opacity" min="0" max="1" step="0.05" value="${style.opacity !== undefined ? style.opacity : 1}">
+                    </div>
+                    ${isPoly ? `
+                    <div class="style-field">
+                        <label>填充不透明度: <span id="fill-value">${(style.fillOpacity !== undefined ? style.fillOpacity : 0.55).toFixed(2)}</span></label>
+                        <input type="range" id="style-fillOpacity" min="0" max="1" step="0.05" value="${style.fillOpacity !== undefined ? style.fillOpacity : 0.55}">
+                    </div>` : ""}
+                </div>
+                <div class="style-field style-field-group-apply">
+                    <label class="style-group-apply-label">
+                        <input type="checkbox" id="style-group-apply"> 同时应用到同组图层（如全部道路）
+                    </label>
+                </div>
+                <button class="style-apply-btn" id="style-apply-btn"><i class="fa-solid fa-check"></i> 应用样式</button>
             </div>
         `;
         editor.classList.remove("hidden");
+
+        const $ = (id) => document.getElementById(id);
+        const previewEl = $("style-preview");
+        const refreshPreview = () => {
+            const color = $("style-color").value;
+            const weight = parseInt($("style-weight").value) || 1;
+            const op = parseFloat($("style-opacity").value) || 1;
+            const dash = $("style-dashArray").value || "none";
+            const fill = isPoly ? ($("style-fillColor") ? $("style-fillColor").value : "#4a90d9") : "none";
+            const fillOp = isPoly ? (parseFloat($("style-fillOpacity").value) || 0) : 0;
+            previewEl.innerHTML = `<svg width="100%" height="54" viewBox="0 0 260 54" preserveAspectRatio="xMidYMid meet">
+                ${isPoly
+                    ? `<rect x="24" y="7" width="212" height="40" rx="5" fill="${fill}" fill-opacity="${fillOp}"
+                         stroke="${color}" stroke-width="${weight}" stroke-opacity="${op}" stroke-dasharray="${dash}"/>`
+                    : `<line x1="12" y1="27" x2="248" y2="27" stroke="${color}" stroke-width="${weight}"
+                         stroke-opacity="${op}" stroke-dasharray="${dash}" stroke-linecap="round"/>`}
+            </svg>`;
+        };
         // 实时显示数值
-        const weightInput = document.getElementById("style-weight");
-        const weightValue = document.getElementById("weight-value");
+        const weightInput = $("style-weight");
+        const weightValue = $("weight-value");
         weightInput.addEventListener("input", (e) => {
             weightValue.textContent = e.target.value;
+            refreshPreview();
         });
-        const opacityInput = document.getElementById("style-opacity");
-        const opacityValue = document.getElementById("opacity-value");
+        const opacityInput = $("style-opacity");
+        const opacityValue = $("opacity-value");
         opacityInput.addEventListener("input", (e) => {
             opacityValue.textContent = parseFloat(e.target.value).toFixed(2);
+            refreshPreview();
         });
-        const fillInput = document.getElementById("style-fillOpacity");
-        const fillValue = document.getElementById("fill-value");
-        fillInput.addEventListener("input", (e) => {
-            fillValue.textContent = parseFloat(e.target.value).toFixed(2);
+        if (isPoly) {
+            const fillInput = $("style-fillOpacity");
+            const fillValue = $("fill-value");
+            fillInput.addEventListener("input", (e) => {
+                fillValue.textContent = parseFloat(e.target.value).toFixed(2);
+                refreshPreview();
+            });
+            $("style-fillColor").addEventListener("input", refreshPreview);
+        }
+        $("style-color").addEventListener("input", refreshPreview);
+        $("style-dashArray").addEventListener("change", refreshPreview);
+        // 模板套用
+        $("style-template").addEventListener("change", (e) => {
+            const t = TEMPLATES[e.target.value];
+            if (!t || !t.color) return;
+            $("style-color").value = t.color;
+            if (isPoly && t.fillColor) $("style-fillColor").value = t.fillColor;
+            $("style-weight").value = t.weight;
+            $("style-opacity").value = t.opacity;
+            weightValue.textContent = t.weight;
+            opacityValue.textContent = t.opacity.toFixed(2);
+            $("style-dashArray").value = t.dash || "";
+            if (isPoly && t.fillOpacity !== undefined) {
+                $("style-fillOpacity").value = t.fillOpacity;
+                $("fill-value").textContent = t.fillOpacity.toFixed(2);
+            }
+            refreshPreview();
         });
+        refreshPreview();
         // 关闭按钮
         editor.querySelector(".style-editor-close").addEventListener("click", () => {
             editor.classList.add("hidden");
         });
-        // ===== 实时预览：输入变化时即时预览样式效果 =====
+        // ===== 实时预览地图图层 =====
         const previewStyle = () => {
             const item = this.layerGroups[layerId];
             if (!item || !item.layer) return;
             const previewStyleData = {
-                color: document.getElementById("style-color").value,
-                weight: parseInt(document.getElementById("style-weight").value) || 1,
-                opacity: parseFloat(document.getElementById("style-opacity").value) || 1,
-                fillOpacity: parseFloat(document.getElementById("style-fillOpacity").value) || 0.2,
-                dashArray: document.getElementById("style-dashArray").value || null
+                color: $("style-color").value,
+                weight: parseInt($("style-weight").value) || 1,
+                opacity: parseFloat($("style-opacity").value) || 1,
+                fillOpacity: isPoly ? (parseFloat($("style-fillOpacity").value) || 0) : undefined,
+                dashArray: $("style-dashArray").value || null
             };
             try {
                 if (item.layer.setStyle) {
@@ -1822,23 +2655,56 @@ class MapPanel {
             } catch (e) { /* 预览失败忽略 */ }
         };
         // 绑定实时预览事件
-        ["style-color", "style-weight", "style-opacity", "style-fillOpacity", "style-dashArray"].forEach(id => {
-            const el = document.getElementById(id);
+        ["style-color", "style-weight", "style-opacity", "style-dashArray"].forEach(id => {
+            const el = $(id);
             if (el) {
                 el.addEventListener("input", previewStyle);
             }
         });
         // 应用样式按钮
-        document.getElementById("style-apply-btn").addEventListener("click", () => {
+        $("style-apply-btn").addEventListener("click", () => {
             const newStyle = {
-                color: document.getElementById("style-color").value,
-                weight: parseInt(document.getElementById("style-weight").value),
-                opacity: parseFloat(document.getElementById("style-opacity").value),
-                fillOpacity: parseFloat(document.getElementById("style-fillOpacity").value),
-                dashArray: document.getElementById("style-dashArray").value || null
+                color: $("style-color").value,
+                weight: parseInt($("style-weight").value),
+                opacity: parseFloat($("style-opacity").value),
+                dashArray: $("style-dashArray").value || null
             };
-            this.updateLayerStyle(layerId, newStyle);
+            if (isPoly) {
+                newStyle.fillColor = $("style-fillColor").value;
+                newStyle.fillOpacity = parseFloat($("style-fillOpacity").value);
+            }
+            const applyGroup = $("style-group-apply") && $("style-group-apply").checked;
+            if (applyGroup) {
+                const sameGroup = Object.entries(this.layerGroups)
+                    .filter(([, it]) => it.data.group === item.data.group)
+                    .map(([id]) => id);
+                this.updateLayersStyle(sameGroup, newStyle);
+            } else {
+                this.updateLayerStyle(layerId, newStyle);
+            }
+            editor.classList.add("hidden");
         });
+    }
+
+    /**
+     * 批量更新图层样式（同组图层统一样式）
+     */
+    async updateLayersStyle(layerIds, style) {
+        if (!this.currentMapId || !layerIds || !layerIds.length) return;
+        try {
+            let last = null;
+            for (const id of layerIds) {
+                last = await API.updateLayerStyle(this.currentMapId, id, style);
+            }
+            if (last && last.success && last.data) {
+                Utils.showToast(`已更新 ${layerIds.length} 个图层样式`, "success", 1800);
+                this.renderMap(last.data);
+            } else {
+                Utils.showToast((last && last.message) || "样式更新失败", "error");
+            }
+        } catch (e) {
+            Utils.showToast("样式更新失败: " + e.message, "error");
+        }
     }
 
     /**
@@ -1866,14 +2732,19 @@ class MapPanel {
             btn.innerHTML = '<div class="btn-spinner"></div>';
             try {
                 const result = await API.modifyMap(this.currentMapId, instruction);
-                // 如果返回了新的地图数据，重新渲染
-                if (result.map_data) {
-                    this.renderMap(result.map_data);
-                } else if (result.data && result.data.map_data) {
-                    this.renderMap(result.data.map_data);
+                // 解包 ApiResponse -> 修改结果
+                const inner = (result && result.data && typeof result.data === "object")
+                    ? result.data : result;
+                if (inner && inner.success === false) {
+                    Utils.showToast(inner.response || "无法理解修改指令", "error");
+                    return;
                 }
-                Utils.showToast("修改指令已执行", "success");
-                input.value = "";
+                const md = (inner && inner.map_data) || (result && result.map_data);
+                if (md) {
+                    this.renderMap(md);
+                }
+                Utils.showToast((inner && inner.response) || "修改指令已执行", "success");
+                if (md) input.value = "";
             } catch (error) {
                 Utils.showToast("修改失败: " + error.message, "error");
             } finally {
@@ -2292,6 +3163,11 @@ class MapPanel {
         } catch (e) {
             container.innerHTML = '<div class="quality-empty">质量检测服务不可用</div>';
             container.classList.remove("hidden");
+            const chip = document.getElementById("map-status-quality");
+            if (chip) {
+                chip.textContent = "质检不可用";
+                chip.className = "status-quality warn";
+            }
         }
     }
 

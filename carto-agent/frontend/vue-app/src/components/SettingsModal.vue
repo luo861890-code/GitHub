@@ -46,11 +46,14 @@
                 :ref="(el: any) => { apiKeyInputs[keyProvider] = el }"
                 type="password"
                 class="api-key-input"
-                :placeholder="`输入 ${providerNames[keyProvider]} API Key...`"
+                :placeholder="apiKeyStatus[keyProvider] ? '已配置（输入新 Key 可替换）' : `输入 ${providerNames[keyProvider]} API Key...`"
               />
               <button class="api-key-save-btn" @click="saveApiKey(keyProvider)">
                 <i class="fa-solid fa-floppy-disk"></i> 保存
               </button>
+            </div>
+            <div v-if="maskedKeys[keyProvider]" class="field-hint">
+              当前已配置：{{ maskedKeys[keyProvider] }}
             </div>
           </div>
         </div>
@@ -63,7 +66,7 @@
               v-for="(theme, key) in CONFIG.mapThemes"
               :key="key"
               class="theme-option-btn"
-              :class="{ active: key === appStore.currentTheme || key === mapStore.currentTheme }"
+              :class="{ active: key === mapStore.currentTheme }"
               @click="handleThemeChange(key as string)"
             >{{ theme.name }}</button>
           </div>
@@ -83,26 +86,59 @@
 import { ref, computed, onMounted } from 'vue'
 import { useAppStore } from '@/stores/appStore'
 import { useMapStore } from '@/stores/mapStore'
-import { api } from '@/services/api'
+import api from '@/services/api'
 import { CONFIG } from '@/config'
 import type { LLMProvider } from '@/types'
 
 const appStore = useAppStore()
 const mapStore = useMapStore()
 
-const selectedProvider = ref('')
-const selectedModel = ref('')
-const providersList = ref<LLMProvider[]>([])
-const apiKeyStatus = ref<Record<string, boolean>>({})
-const apiKeyInputs = ref<Record<string, HTMLInputElement | null>>({})
-
-const keyProviders = ['deepseek', 'qwen', 'openai', 'zhipu']
+const keyProviders = ['deepseek', 'qwen', 'openai', 'zhipu', 'ollama', 'moonshot', 'baidu']
 const providerNames: Record<string, string> = {
   deepseek: 'DeepSeek',
   qwen: '通义千问',
   openai: 'OpenAI',
   zhipu: '智谱GLM',
+  ollama: 'Ollama（本地）',
+  moonshot: '月之暗面 Kimi',
+  baidu: '百度文心一言',
 }
+
+// 预设的常用模型列表
+const defaultProviderModels: Record<string, string[]> = {
+  deepseek: ['deepseek-chat', 'deepseek-reasoner'],
+  qwen: ['qwen-max', 'qwen-plus', 'qwen-turbo', 'qwen-long'],
+  openai: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1'],
+  zhipu: ['glm-4-plus', 'glm-4', 'glm-4-flash', 'glm-4-air'],
+  ollama: ['qwen3:8b', 'qwen2.5:7b', 'llama3:8b', 'mistral:7b'],
+  moonshot: ['kimi-latest', 'moonshot-v1-8k', 'moonshot-v1-32k'],
+  baidu: ['ernie-4.0', 'ernie-4.0-turbo', 'ernie-3.5'],
+}
+
+const selectedProvider = ref('deepseek')
+const selectedModel = ref('deepseek-chat')
+// 初始化为默认的常用选项列表，确保即使API调用失败也能正常显示
+const providersList = ref<LLMProvider[]>(
+  Object.keys(defaultProviderModels).map((id) => ({
+    id,
+    name: providerNames[id] || id,
+    models: defaultProviderModels[id] || [],
+    configured: false,
+    active: false,
+  })) as LLMProvider[]
+)
+// 初始化API Key状态，默认都是未配置
+const apiKeyStatus = ref<Record<string, boolean>>({
+  deepseek: false,
+  qwen: false,
+  openai: false,
+  zhipu: false,
+  ollama: false,
+  moonshot: false,
+  baidu: false,
+})
+const apiKeyInputs = ref<Record<string, HTMLInputElement | null>>({})
+const maskedKeys = ref<Record<string, string>>({})
 
 const currentModels = computed(() => {
   const provider = providersList.value.find((p) => p.id === selectedProvider.value)
@@ -112,21 +148,63 @@ const currentModels = computed(() => {
 async function loadSettingsData() {
   try {
     const data = await api.getProviders()
-    const providers = data.data || data
-    const list = (providers.providers || providers.available || [
-      { id: 'ollama', name: 'Ollama（本地）', models: ['qwen3:8b'] },
-      { id: 'qwen', name: '通义千问', models: ['qwen-plus', 'qwen-turbo'] },
-      { id: 'openai', name: 'OpenAI', models: ['gpt-4o-mini', 'gpt-4o'] },
-      { id: 'deepseek', name: 'DeepSeek', models: ['deepseek-chat'] },
-      { id: 'zhipu', name: '智谱GLM', models: ['glm-4'] },
-    ]) as LLMProvider[]
+    const result = data.data || data
+    const apiProviders = result.providers || result.available || []
+    
+    // 转换API返回格式：model（单数）→ models（复数数组）
+    let list = apiProviders.map((p: any) => ({
+      id: p.id,
+      name: p.name,
+      configured: p.configured || false,
+      active: p.active || false,
+      models: p.models?.length
+        ? p.models
+        : defaultProviderModels[p.id] || (p.model ? [p.model] : []),
+    })) as LLMProvider[]
+    
+    // 如果API返回为空，使用默认的常用选项列表
+    if (list.length === 0) {
+      list = Object.keys(defaultProviderModels).map((id) => ({
+        id,
+        name: providerNames[id] || id,
+        models: defaultProviderModels[id] || [],
+        configured: false,
+        active: false,
+      })) as LLMProvider[]
+    }
+    
+    // 确保所有常用选项都在列表中（即使API没有返回）
+    const existingIds = new Set(list.map((p: any) => p.id))
+    Object.keys(defaultProviderModels).forEach((id) => {
+      if (!existingIds.has(id)) {
+        list.push({
+          id,
+          name: providerNames[id] || id,
+          models: defaultProviderModels[id] || [],
+          configured: false,
+          active: false,
+        } as LLMProvider)
+      }
+    })
+    
     providersList.value = list
-    if (!selectedProvider.value && list.length > 0) {
+    
+    // 设置当前选中的提供者
+    if (result.current) {
+      selectedProvider.value = result.current
+    } else if (!selectedProvider.value && list.length > 0) {
       selectedProvider.value = list[0].id
     }
+    
+    // 设置当前选中的模型
+    if (result.current_model) {
+      selectedModel.value = result.current_model
+    }
+    
     // 更新API Key状态
     list.forEach((p) => {
       apiKeyStatus.value[p.id] = p.configured || false
+      maskedKeys.value[p.id] = p.masked_key || ''
     })
   } catch (e) {
     console.error('加载设置失败:', e)
@@ -326,6 +404,12 @@ onMounted(() => {
 }
 .api-key-save-btn:hover {
   background: var(--color-primary-dark);
+}
+
+.field-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--color-success);
 }
 
 .settings-themes {

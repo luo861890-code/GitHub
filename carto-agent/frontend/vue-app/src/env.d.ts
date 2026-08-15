@@ -5,8 +5,3 @@ declare module '*.vue' {
   const component: DefineComponent<{}, {}, any>
   export default component
 }
-
-declare module 'maplibre-gl' {
-  const maplibregl: any
-  export default maplibregl
-}

@@ -8,18 +8,24 @@ export interface Session {
 
 // ========== 消息类型 ==========
 export interface Message {
+  id?: string
+  session_id?: string
   role: 'user' | 'assistant'
   content: string
   thinking?: string
   steps?: Step[]
+  map_id?: string
+  map_summary?: MapSummary | null
   map_data?: MapData | null
   geotoken_info?: GeoTokenInfo | null
   rag_sources?: RagSource[]
   graphrag_entities?: string[]
   knowledge_sources?: KnowledgeSources
-  timestamp: number
+  quality?: QualityReport | null
+  timestamp?: number
   provider?: string
   model?: string
+  created_at?: string
 }
 
 export interface Step {
@@ -43,10 +49,20 @@ export interface MapData {
   metadata?: Record<string, string>
 }
 
+export interface MapSummary {
+  name?: string
+  map_type?: string
+  region?: string
+  center?: [number, number]
+  zoom?: number
+  theme?: string
+}
+
 export interface MapLayer {
   id: string
   type: LayerType
   name: string
+  group?: string
   coordinates?: any
   data?: any
   features?: MapFeature[]
@@ -54,6 +70,8 @@ export interface MapLayer {
   style?: LayerStyle
   popup?: string
   radius?: number
+  visible?: boolean
+  metadata?: Record<string, any>
   _lodVisible?: boolean
 }
 
@@ -61,6 +79,8 @@ export interface MapFeature {
   type: string
   coordinates: any
   style?: LayerStyle
+  properties?: Record<string, any>
+  geometry?: any
 }
 
 export type LayerType =
@@ -74,6 +94,7 @@ export type LayerType =
 
 export interface LayerStyle {
   color?: string
+  borderColor?: string
   fillColor?: string
   weight?: number
   opacity?: number
@@ -91,6 +112,11 @@ export interface LayerStyle {
   maxZoom?: number
   minOpacity?: number
   color_scheme?: string[]
+  featureColors?: string[]
+  labelsEnabled?: boolean
+  labelFontSize?: number
+  labelColor?: string
+  labelPosition?: string
 }
 
 // ========== 知识图谱类型 ==========
@@ -205,6 +231,7 @@ export interface LLMProvider {
   name: string
   models: string[]
   configured?: boolean
+  masked_key?: string
 }
 
 export interface LLMProvidersData {

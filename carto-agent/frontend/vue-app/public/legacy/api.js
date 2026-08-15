@@ -304,6 +304,16 @@ const API = {
     },
 
     /**
+     * 设置图层可见性（持久化隐藏/显示）
+     * @param {string} mapId - 地图ID
+     * @param {string} layerId - 图层ID
+     * @param {boolean} visible - 是否可见
+     */
+    async setLayerVisible(mapId, layerId, visible) {
+        return await this.request("PUT", `/api/maps/${mapId}/layers/${layerId}/visible`, { visible });
+    },
+
+    /**
      * 编辑模式：整层替换几何/属性（QGIS/ArcGIS 式编辑保存）
      */
     async updateLayerGeometry(mapId, layerId, payload) {

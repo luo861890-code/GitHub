@@ -167,15 +167,21 @@ async def list_providers(
                 name = item.get("name", "")
                 configured = item.get("available", False)
                 model = item.get("model")
+                models = item.get("models") or ([model] if model else [])
+                masked_key = item.get("api_key_masked", "")
             else:
                 name = str(item)
                 configured = False
                 model = None
+                models = []
+                masked_key = ""
             providers.append({
                 "id": name,
                 "name": PROVIDER_NAMES.get(name, name),
                 "configured": configured,
                 "model": model,
+                "models": models,
+                "masked_key": masked_key,
                 "active": name == current,
             })
 

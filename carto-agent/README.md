@@ -4,6 +4,8 @@
 > 系统自动完成从需求理解、地理数据获取到地图输出的完整流程，并支持类 ArcGIS/QGIS 的
 > 矢量编辑（绘制、节点编辑、撤销重做、属性编辑、保存回写）。
 
+> 📖 **结构与模块详解见 [docs/项目结构说明.md](docs/项目结构说明.md)**
+
 ## 目录结构（整理后）
 
 ```
@@ -94,3 +96,19 @@ NEO4J_URI=bolt://localhost:7687
 OVERPASS_SERVERS=https://overpass-api.de/api/interpreter,...
 PORT=8080
 ```
+
+## 数据与存储说明
+
+| 路径 | 说明 |
+|------|------|
+| `data/maps.json` | 已生成地图主文件，超过 10 张自动归档到 `data/archive/maps/` |
+| `data/sessions.json` | 会话历史（消息仅存 `map_id` 引用，不内嵌完整地图） |
+| `data/archive/` | 历史地图归档 + 迁移前数据备份（zip） |
+| `backend/data/geo/` | 本地精确地理数据（区县 / 水系 / 路网 / 旅游等） |
+| `backend/data/dem/` | SRTM DEM（等高线生成） |
+
+## 前端说明
+
+- **经典 JS 前端**：`frontend/src/`，后端直接托管，访问 `/app`
+- **Vue 3 新版前端**：`frontend/vue-app/`，独立 Vite 构建（开发端口 5173），
+  地图渲染与 carto-agent-1 保持一致（features 图层 / LOD 分级 / 制图底图 / 图廓框线）

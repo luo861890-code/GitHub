@@ -264,6 +264,17 @@ class LLMService:
     # 支持的提供者名称列表
     SUPPORTED_PROVIDERS = ["ollama", "qwen", "openai", "deepseek", "zhipu"]
 
+    # 各 Provider 的常用模型目录（设置面板下拉展示）
+    PROVIDER_MODEL_CATALOG = {
+        "ollama": ["qwen3:8b", "qwen2.5:7b", "llama3:8b", "mistral:7b", "deepseek-r1:8b"],
+        "qwen": ["qwen-max", "qwen-plus", "qwen-turbo", "qwen-long", "qwen2.5-72b-instruct"],
+        "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1", "o3-mini"],
+        "deepseek": ["deepseek-chat", "deepseek-reasoner"],
+        "zhipu": ["glm-4-plus", "glm-4", "glm-4-flash", "glm-4-air"],
+        "moonshot": ["kimi-latest", "moonshot-v1-8k", "moonshot-v1-32k"],
+        "baidu": ["ernie-4.0", "ernie-4.0-turbo", "ernie-3.5"],
+    }
+
     def __init__(self):
         """初始化所有provider并设置默认provider"""
         self.providers: Dict[str, LLMProvider] = {
@@ -388,9 +399,15 @@ class LLMService:
         """
         result = []
         for name, provider in self.providers.items():
+            api_key = getattr(provider, "api_key", "") or ""
+            masked_key = ""
+            if api_key:
+                masked_key = api_key[:5] + "****" + api_key[-4:]
             result.append({
                 "name": name,
                 "model": provider.model,
+                "models": self.PROVIDER_MODEL_CATALOG.get(name, [provider.model] if provider.model else []),
+                "api_key_masked": masked_key,
                 "available": provider.is_available(),
                 "current": name == self._current_provider,
             })

@@ -44,6 +44,10 @@ class SessionMessage(BaseModel):
     role: str  # user / assistant
     content: str
     timestamp: float = Field(default_factory=time.time)
+    # 地图引用（轻量化存储）：不内嵌完整地图数据，避免 sessions.json 无限膨胀
+    map_id: Optional[str] = None
+    map_summary: Optional[Dict[str, Any]] = None
+    # 兼容旧数据：早期版本直接内嵌完整地图数据，迁移后置为 None
     map_data: Optional[Any] = None
     steps: Optional[List[AgentStep]] = None
     thinking: Optional[str] = None

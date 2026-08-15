@@ -139,11 +139,26 @@ class SessionService:
         if session is None:
             raise SessionError(f"会话不存在: {session_id}")
 
+        # 轻量化地图引用：只保存 map_id 与少量摘要，完整地图数据由 MapService 按需提供
+        map_id = None
+        map_summary = None
+        if isinstance(map_data, dict):
+            map_id = map_data.get("map_id") or map_data.get("id")
+            if map_id:
+                map_summary = {
+                    key: map_data.get(key)
+                    for key in ("name", "map_type", "region", "center", "zoom", "theme")
+                    if map_data.get(key) is not None
+                }
+            map_data = None
+
         message = SessionMessage(
             role=role,
             content=content,
             timestamp=get_timestamp(),
-            map_data=map_data,
+            map_id=map_id,
+            map_summary=map_summary,
+            map_data=None,
             steps=steps,
             thinking=thinking,
         )
@@ -223,6 +238,8 @@ class SessionService:
                             role=msg_data.get("role", "user"),
                             content=msg_data.get("content", ""),
                             timestamp=msg_data.get("timestamp", get_timestamp()),
+                            map_id=msg_data.get("map_id"),
+                            map_summary=msg_data.get("map_summary"),
                             map_data=msg_data.get("map_data"),
                             steps=steps,
                             thinking=msg_data.get("thinking"),

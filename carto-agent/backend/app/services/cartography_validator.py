@@ -337,17 +337,21 @@ class CartographyValidator:
         if not layers:
             return (100, issues)
 
-        # 收集所有图层颜色
+        # 收集所有图层颜色及其语义分组（group），用于跨分组同色检测
         all_colors: List[str] = []
+        color_groups: Dict[str, set] = {}
         for layer in layers:
             style = layer.get("style", {})
+            group = layer.get("group") or layer.get("name") or "?"
             if isinstance(style, dict):
                 color = style.get("color", "")
                 if color and isinstance(color, str) and color.startswith("#"):
                     all_colors.append(color.lower())
+                    color_groups.setdefault(color.lower(), set()).add(group)
                 fill_color = style.get("fillColor", style.get("fill_color", ""))
                 if fill_color and isinstance(fill_color, str) and fill_color.startswith("#"):
                     all_colors.append(fill_color.lower())
+                    color_groups.setdefault(fill_color.lower(), set()).add(group)
 
         # 收集全局配置颜色
         for config_key in ("background", "primary_color", "accent_color"):
@@ -357,57 +361,57 @@ class CartographyValidator:
 
         unique_colors = list(set(all_colors))
 
-        # 检查1：颜色数量
-        if len(unique_colors) > 8:
+        # 检查1：颜色数量（专题图允许较多配色，阈值放宽到24）
+        if len(unique_colors) > 24:
             issues.append(
-                f"使用了{len(unique_colors)}种不同颜色，建议不超过8种以保持视觉层次清晰"
+                f"使用了{len(unique_colors)}种不同颜色，"
+                f"超过24种时建议归类合并以保持视觉层次清晰"
             )
         if len(unique_colors) <= 1 and len(layers) > 1:
             issues.append("仅使用1种颜色，建议为不同图层使用区分色以增强可读性")
 
-        # 检查2：颜色相近度（色相距离）
+        # 检查2：跨语义分组共用完全相同颜色（真正的可读性问题）
+        cross_group_dups = [
+            c for c, groups in color_groups.items() if len(groups) > 1
+        ]
+        if cross_group_dups:
+            issues.append(
+                f"{len(cross_group_dups)}种颜色被不同语义分组共用"
+                f"（{', '.join(cross_group_dups[:6])}），建议区分"
+            )
+
+        # 检查3：相近色/低对比度（信息性提示；单色渐变等制图手法属正常设计，不参与扣分）
         too_similar_pairs = 0
+        low_contrast_pairs = 0
         for i in range(len(unique_colors)):
             for j in range(i + 1, len(unique_colors)):
                 h1, s1, l1 = self._hex_to_hsl(unique_colors[i])
                 h2, s2, l2 = self._hex_to_hsl(unique_colors[j])
                 hue_diff = min(abs(h1 - h2), 360 - abs(h1 - h2))
-                if hue_diff < 30 and s1 > 0.1 and s2 > 0.1:
+                if hue_diff < 12 and abs(l1 - l2) < 0.06:
                     too_similar_pairs += 1
+                if abs(l1 - l2) < 0.05:
+                    low_contrast_pairs += 1
 
         if too_similar_pairs > 0:
             issues.append(
-                f"存在{too_similar_pairs}对色相过于相近的颜色（色相距离<30度），"
-                f"可能导致图层区分度不足"
+                f"存在{too_similar_pairs}对色相、明度都接近的颜色（色相差<12°且明度差<6%），"
+                f"若为同一要素的渐变设色可忽略，否则建议拉开区分度"
+            )
+        if low_contrast_pairs > 0:
+            issues.append(
+                f"存在{low_contrast_pairs}对明度过近的颜色（明度差<5%），"
+                f"建议检查图例可读性"
             )
 
-        # 检查3：低对比度检查（对于有多图层的图）
-        if len(layers) > 1 and len(unique_colors) >= 2:
-            low_contrast_pairs = 0
-            for i in range(len(unique_colors)):
-                for j in range(i + 1, len(unique_colors)):
-                    _, _, l1 = self._hex_to_hsl(unique_colors[i])
-                    _, _, l2 = self._hex_to_hsl(unique_colors[j])
-                    if abs(l1 - l2) < 0.15:
-                        low_contrast_pairs += 1
-
-            if low_contrast_pairs > 0:
-                issues.append(
-                    f"存在{low_contrast_pairs}对明度过于相近的颜色（明度差<15%），"
-                    f"可能影响可读性"
-                )
-
-        # 评分逻辑
+        # 评分逻辑：颜色过多与跨分组同色为硬性扣分项
         if not unique_colors or len(unique_colors) <= 1:
             return (70, issues)
 
         penalty = 0
-        if len(unique_colors) > 8:
-            penalty += min(30, (len(unique_colors) - 8) * 10)
-        if too_similar_pairs > 0:
-            penalty += too_similar_pairs * 10
-        if low_contrast_pairs > 0:
-            penalty += low_contrast_pairs * 8
+        if len(unique_colors) > 24:
+            penalty += min(10, (len(unique_colors) - 24) * 2)
+        penalty += min(15, len(cross_group_dups) * 3)
 
         score = max(0, 100 - penalty)
         return (score, issues)

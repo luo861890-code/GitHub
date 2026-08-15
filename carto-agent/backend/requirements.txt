@@ -28,6 +28,8 @@ shapely==2.0.6
 # 工具
 python-dotenv==1.0.1
 numpy==1.26.4
+# requests 2.32.0 兼容性检查要求 chardet < 6.0.0（7.x 会产生 RequestsDependencyWarning）
+chardet==5.2.0
 
 # 导出
 reportlab==4.2.0

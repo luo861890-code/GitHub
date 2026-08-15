@@ -94,6 +94,10 @@ class ApiService {
     return this.request('GET', `/api/chat/sessions/${sessionId}`)
   }
 
+  async getMessages(sessionId: string) {
+    return this.request('GET', `/api/chat/sessions/${sessionId}/messages`)
+  }
+
   async deleteSession(sessionId: string) {
     return this.request('DELETE', `/api/chat/sessions/${sessionId}`)
   }
@@ -209,6 +213,14 @@ class ApiService {
     return this.request('PUT', `/api/maps/${mapId}/layers/${layerId}`, style)
   }
 
+  async setLayerVisible(mapId: string, layerId: string, visible: boolean) {
+    return this.request('PUT', `/api/maps/${mapId}/layers/${layerId}/visible`, { visible })
+  }
+
+  async updateLayerGeometry(mapId: string, layerId: string, payload: Record<string, any>) {
+    return this.request('PUT', `/api/maps/${mapId}/layers/${layerId}/geometry`, payload)
+  }
+
   async patchLayer(mapId: string, layerId: string, patches: Record<string, any>) {
     return this.request('PATCH', `/api/maps/${mapId}/layers/${layerId}`, patches)
   }
@@ -227,6 +239,14 @@ class ApiService {
 
   async exportMap(mapId: string, format: string) {
     return this.request('POST', `/api/maps/${mapId}/export`, { format })
+  }
+
+  async getMapQuality(mapId: string) {
+    return this.request('GET', `/api/maps/${mapId}/quality`)
+  }
+
+  async addMarker(mapId: string, params: Record<string, any>) {
+    return this.request('POST', `/api/maps/${mapId}/marker`, params)
   }
 
   async planRoute(mapId: string, params: Record<string, any>) {
@@ -270,4 +290,6 @@ class ApiService {
   }
 }
 
-export const api = new ApiService()
+const api = new ApiService()
+
+export default api

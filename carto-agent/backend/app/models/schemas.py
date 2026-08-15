@@ -45,6 +45,11 @@ class UpdateLayerStyleRequest(BaseModel):
     dashArray: Optional[str] = None
 
 
+class SetLayerVisibleRequest(BaseModel):
+    """设置图层可见性（QGIS/ArcGIS 图层管理）"""
+    visible: bool = True
+
+
 class UpdateViewRequest(BaseModel):
     center: Optional[List[float]] = None
     zoom: Optional[int] = None

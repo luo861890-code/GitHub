@@ -5,13 +5,13 @@
 
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
-import type { KGGraph, KGNode } from '@/types'
+import type { KGGraphData, KGNode } from '@/types'
 import { CONFIG } from '@/config'
-import * as api from '@/services/api'
+import api from '@/services/api'
 
 export const useKGStore = defineStore('kg', () => {
   /** 知识图谱数据 */
-  const graphData = ref<KGGraph>({ nodes: [], links: [] })
+  const graphData = ref<KGGraphData>({ nodes: [], links: [] })
 
   /** 选中节点 */
   const selectedNode = ref<KGNode | null>(null)

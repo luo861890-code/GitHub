@@ -5,8 +5,8 @@
 
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
-import type { Session, ChatMessage, MapData, AgentStep } from '@/types'
-import * as api from '@/services/api'
+import type { Session, Message, MapData, Step, GeoTokenInfo, RagSource, KnowledgeSources } from '@/types'
+import api from '@/services/api'
 
 export const useChatStore = defineStore('chat', () => {
   /** 会话列表 */
@@ -16,7 +16,7 @@ export const useChatStore = defineStore('chat', () => {
   const currentSessionId = ref<string | null>(null)
 
   /** 当前会话的消息列表 */
-  const messages = ref<ChatMessage[]>([])
+  const messages = ref<Message[]>([])
 
   /** 是否正在发送消息 */
   const isSending = ref(false)
@@ -31,10 +31,18 @@ export const useChatStore = defineStore('chat', () => {
   const streamingMap = ref<MapData | null>(null)
 
   /** 流式返回的执行步骤 */
-  const streamingSteps = ref<AgentStep[]>([])
+  const streamingSteps = ref<Step[]>([])
+
+  const streamingGeotoken = ref<GeoTokenInfo | null>(null)
+
+  const streamingKnowledgeSources = ref<KnowledgeSources | null>(null)
+
+  const streamingRag = ref<RagSource[]>([])
+
+  const streamingGraphrag = ref<{ entities?: string[] } | null>(null)
 
   /** 流式消息的模型/提供者信息 */
-  const streamingInfo = ref<{ provider: string; model: string } | null>(null)
+  const streamingInfo = ref<{ provider?: string; model?: string } | null>(null)
 
   // ========== Getters ==========
 
@@ -48,7 +56,8 @@ export const useChatStore = defineStore('chat', () => {
   /** 加载会话列表 */
   async function loadSessions() {
     try {
-      sessions.value = await api.listSessions()
+      const result = await api.listSessions()
+      sessions.value = result.data || result
     } catch (error) {
       console.error('加载会话列表失败:', error)
     }
@@ -56,7 +65,8 @@ export const useChatStore = defineStore('chat', () => {
 
   /** 创建新会话，返回会话ID */
   async function createSession(title?: string): Promise<string> {
-    const session = await api.createSession(title || '新会话')
+    const result = await api.createSession(title || '新会话')
+    const session = result.data || result
     sessions.value.unshift(session)
     currentSessionId.value = session.session_id
     messages.value = []
@@ -68,15 +78,17 @@ export const useChatStore = defineStore('chat', () => {
     currentSessionId.value = sessionId
     messages.value = []
     try {
-      const msgs = await api.getMessages(sessionId)
-      messages.value = msgs
+      const result = await api.getMessages(sessionId)
+      const list = result.data || result
+      const arr = Array.isArray(list) ? list : (list?.messages || list?.items || [])
+      messages.value = arr
     } catch (error) {
       console.error('加载会话消息失败:', error)
     }
   }
 
   /** 添加消息到当前会话 */
-  function addMessage(msg: ChatMessage) {
+  function addMessage(msg: Message) {
     messages.value.push(msg)
   }
 
@@ -86,6 +98,10 @@ export const useChatStore = defineStore('chat', () => {
     streamingThinking.value = ''
     streamingMap.value = null
     streamingSteps.value = []
+    streamingGeotoken.value = null
+    streamingKnowledgeSources.value = null
+    streamingRag.value = []
+    streamingGraphrag.value = null
     streamingInfo.value = null
   }
 
@@ -100,7 +116,7 @@ export const useChatStore = defineStore('chat', () => {
     clearStreamingState()
 
     // 添加用户消息到列表
-    const userMsg: ChatMessage = {
+    const userMsg: Message = {
       id: `user-${Date.now()}`,
       session_id: sessionId,
       role: 'user',
@@ -120,14 +136,26 @@ export const useChatStore = defineStore('chat', () => {
         onMap: (data: MapData) => {
           streamingMap.value = data
         },
-        onSteps: (steps: AgentStep[]) => {
+        onSteps: (steps: Step[]) => {
           streamingSteps.value = steps
         },
-        onDone: (info: { provider: string; model: string }) => {
+        onRag: (sources: RagSource[]) => {
+          streamingRag.value = sources
+        },
+        onGraphrag: (data: { entities?: string[] }) => {
+          streamingGraphrag.value = data
+        },
+        onGeotoken: (info: GeoTokenInfo) => {
+          streamingGeotoken.value = info
+        },
+        onKnowledgeSources: (sources: KnowledgeSources) => {
+          streamingKnowledgeSources.value = sources
+        },
+        onDone: (info: { provider?: string; model?: string }) => {
           streamingInfo.value = info
           // 流式完成后构造 assistant 消息并加入列表
           if (streamingText.value) {
-            const assistantMsg: ChatMessage = {
+            const assistantMsg: Message = {
               id: `assistant-${Date.now()}`,
               session_id: sessionId,
               role: 'assistant',
@@ -135,6 +163,10 @@ export const useChatStore = defineStore('chat', () => {
               thinking: streamingThinking.value || undefined,
               map_data: streamingMap.value,
               steps: streamingSteps.value,
+              geotoken_info: streamingGeotoken.value,
+              knowledge_sources: streamingKnowledgeSources.value || undefined,
+              rag_sources: streamingRag.value,
+              graphrag_entities: streamingGraphrag.value?.entities,
               provider: info.provider,
               model: info.model,
               created_at: new Date().toISOString(),
@@ -149,7 +181,7 @@ export const useChatStore = defineStore('chat', () => {
     } catch (error) {
       console.error('发送消息失败:', error)
       // 添加错误消息
-      const errorMsg: ChatMessage = {
+      const errorMsg: Message = {
         id: `error-${Date.now()}`,
         session_id: sessionId,
         role: 'assistant',
@@ -189,6 +221,10 @@ export const useChatStore = defineStore('chat', () => {
     streamingThinking,
     streamingMap,
     streamingSteps,
+    streamingGeotoken,
+    streamingKnowledgeSources,
+    streamingRag,
+    streamingGraphrag,
     streamingInfo,
     // Getters
     currentSession,

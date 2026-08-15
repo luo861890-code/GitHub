@@ -129,14 +129,10 @@ export const CONFIG = {
   quickCommands: [
     { label: '武汉交通图', icon: 'fa-route', message: '生成一份武汉市交通图，显示主要道路和轨道交通' },
     { label: '武汉旅游图', icon: 'fa-landmark', message: '生成一份武汉市旅游图，标注主要景点和名胜古迹' },
-    { label: '武汉校园图', icon: 'fa-school', message: '生成一份武汉市校园图，显示主要高校和教学设施' },
-    { label: '知识图谱问答', icon: 'fa-diagram-project', message: '什么是交通图？知识图谱中有哪些地图类型？' },
-    { label: '人口密度图', icon: 'fa-users', message: '生成一份武汉市人口密度图' },
-    { label: '土地利用图', icon: 'fa-layer-group', message: '生成一份武汉市土地利用图' },
-    { label: '医疗资源图', icon: 'fa-hospital', message: '生成一份武汉市医疗资源图' },
-    { label: '商业热力图', icon: 'fa-fire', message: '生成一份武汉市商业分布热力图' },
-    { label: '教育设施图', icon: 'fa-graduation-cap', message: '生成一份武汉市教育设施图' },
-    { label: '绿化覆盖图', icon: 'fa-tree', message: '生成一份武汉市绿化覆盖图' },
+    { label: '医疗资源图', icon: 'fa-hospital', message: '生成一份武汉市医疗资源图，显示医院和诊所分布' },
+    { label: '教育设施图', icon: 'fa-graduation-cap', message: '生成一份武汉市教育设施图，显示学校分布' },
+    { label: '知识图谱问答', icon: 'fa-diagram-project', message: '什么是专题地图？地图制图有哪些基本原则？' },
+    { label: '校园分布图', icon: 'fa-school', message: '生成一份武汉市高校分布图' },
   ],
 
   requestTimeout: 60000,

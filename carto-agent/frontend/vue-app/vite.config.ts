@@ -1,3 +1,8 @@
+/**
+ * Vite 构建配置
+ * - @ 别名指向 src/
+ * - 开发服务器 5173，/api 与 /ws 代理到后端 8080
+ */
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { fileURLToPath, URL } from 'node:url'

@@ -11,6 +11,10 @@ import os
 import shutil
 import subprocess
 import tempfile
+import sys
+
+# Windows下不弹出cmd窗口
+CREATE_NO_WINDOW = 0x08000000 if sys.platform == 'win32' else 0
 
 import re
 
@@ -32,6 +36,12 @@ class OSMService:
     _CACHE_MAX_SIZE: int = 20
     # 缓存TTL（秒）
     _CACHE_TTL: float = 1800.0
+    # 磁盘缓存（跨重启持久，制图提速）
+    _DISK_CACHE_PATH = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "runtime", "osm_cache.json",
+    )
+    _DISK_CACHE_TTL: float = 86400.0   # 24小时
 
     def __init__(self):
         """从配置获取Overpass服务器列表"""
@@ -46,7 +56,60 @@ class OSMService:
         })
         # 绕过本机失效代理（HTTP(S)_PROXY=127.0.0.1:9），requests 兜底时也直连
         self._session.trust_env = False
+        self._probe_cache = {"ts": 0.0, "ok": True}
+        self._disk_cache: Dict[tuple, dict] = {}
+        try:
+            if os.path.exists(self._DISK_CACHE_PATH):
+                with open(self._DISK_CACHE_PATH, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                for k, v in raw.items():
+                    parts = k.split("||")
+                    if len(parts) == 2:
+                        self._disk_cache[(parts[0], tuple(sorted(parts[1].split(","))))] = v
+                print(f"[OSMService] 磁盘缓存加载: {len(self._disk_cache)} 条")
+        except Exception as e:
+            print(f"[OSMService] 磁盘缓存加载失败: {e}")
         print(f"[OSMService] 初始化完成，可用服务器: {len(self.servers)}个")
+
+    def _save_disk_cache(self):
+        """将内存缓存落盘（跨重启复用，避免每次制图重复抓取 OSM）"""
+        try:
+            os.makedirs(os.path.dirname(self._DISK_CACHE_PATH), exist_ok=True)
+            raw = {}
+            for (region, types), data in self._disk_cache.items():
+                raw[region + "||" + ",".join(sorted(types))] = data
+            with open(self._DISK_CACHE_PATH, "w", encoding="utf-8") as f:
+                json.dump(raw, f, ensure_ascii=False)
+        except Exception as e:
+            print(f"[OSMService] 磁盘缓存保存失败: {e}")
+
+    def _probe_ok(self, ttl: float = 60.0) -> bool:
+        """快速探测 Overpass 是否可达（任一服务器返回 HTTP 状态即视为可用）。
+
+        全部镜像不可达（断网/被屏蔽）时直接跳过 OSM 抓取，
+        避免每次制图都在不可达镜像上空等数分钟（本地数据可兜底）。
+        """
+        now = time.time()
+        if now - self._probe_cache["ts"] < ttl:
+            return self._probe_cache["ok"]
+        ok = False
+        for server in self.servers[:4]:
+            try:
+                r = subprocess.run(
+                    ["curl.exe", "-s", "-o", os.devnull, "-w", "%{http_code}",
+                     "--connect-timeout", "4", "--max-time", "6", server],
+                    capture_output=True, text=True, timeout=10,
+                    creationflags=CREATE_NO_WINDOW,
+                )
+                code = (r.stdout or "").strip()
+                if code and code != "000":
+                    ok = True
+                    break
+            except Exception:
+                continue
+        self._probe_cache = {"ts": now, "ok": ok}
+        print(f"[OSMService] 连通性探测: {'可达' if ok else '全部镜像不可达，跳过OSM抓取'}")
+        return ok
 
     def fetch_elements(
         self,
@@ -97,6 +160,8 @@ class OSMService:
             print("[OSMService] 没有有效的查询语句")
             return {}
 
+        # 总抓取时限（秒）：超时后停止等待，用已获取部分 + 本地数据兜底
+        self._fetch_deadline = time.time() + 180
         # 并行请求各类型（并发2-3，避免触发Overpass并发限流）
         results: Dict[str, List[dict]] = {}
         with ThreadPoolExecutor(max_workers=min(2, len(tasks))) as executor:
@@ -214,6 +279,10 @@ class OSMService:
         """获取单个类型的OSM要素，多服务器轮询重试"""
         for attempt in range(max_retries):
             for server in servers:
+                # 总抓取时限：超过后放弃该类型（本地数据兜底，避免长时间空等）
+                if getattr(self, "_fetch_deadline", 0) and time.time() > self._fetch_deadline:
+                    print(f"[OSMService] 类型[{typ}] 超过抓取时限，放弃")
+                    return []
                 try:
                     print(f"[OSMService] 尝试从 {server} 获取[{typ}] (轮次 {attempt + 1}/{max_retries})")
                     data = self._post_overpass(server, query, timeout=240)
@@ -245,8 +314,10 @@ class OSMService:
                     f.write(query)
                 r = subprocess.run(
                     [curl_path, "-s", "--max-time", str(timeout),
+                     "--connect-timeout", "10",
                      "--data-binary", "@" + qpath, "-o", outpath, server],
                     capture_output=True, timeout=timeout + 20,
+                    creationflags=CREATE_NO_WINDOW,
                 )
                 if r.returncode == 0 and os.path.exists(outpath) and os.path.getsize(outpath) > 0:
                     with open(outpath, "r", encoding="utf-8") as f:
@@ -284,6 +355,9 @@ class OSMService:
         Returns:
             按类型分组的元素字典
         """
+        # 快速连通性探测：全部镜像不可达时直接跳过，避免数分钟空等
+        if not self._probe_ok():
+            return {}
         bbox = CITY_BBOX.get(region)
         if not bbox:
             print(
@@ -312,6 +386,12 @@ class OSMService:
             self._cache.move_to_end(cache_key)
             print(f"[OSMService] 命中缓存: {region} {len(cached[1])}类要素")
             return cached[1]
+        # 磁盘缓存（跨重启）：24小时内同区域同类型直接复用
+        disk = self._disk_cache.get(cache_key)
+        if disk and now - disk.get("ts", 0) < self._DISK_CACHE_TTL and disk.get("data"):
+            self._cache[cache_key] = (now, disk["data"])
+            print(f"[OSMService] 命中磁盘缓存: {region} {len(disk['data'])}类要素")
+            return disk["data"]
 
         result = self.fetch_elements(bbox_buffered, element_types, max_retries=2)
 
@@ -327,6 +407,8 @@ class OSMService:
             if not (old and len(result) < len(old[1])):
                 self._cache[cache_key] = (now, result)
                 self._cache.move_to_end(cache_key)
+                self._disk_cache[cache_key] = {"ts": now, "data": result}
+                self._save_disk_cache()
             # LRU 淘汰：超过容量时移除最旧条目（OrderedDict 首项）
             while len(self._cache) > self._CACHE_MAX_SIZE:
                 self._cache.popitem(last=False)

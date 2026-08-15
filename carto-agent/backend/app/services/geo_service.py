@@ -21,6 +21,12 @@ from app.core.constants import (
     WUHAN_MAIN_BOUNDARY,
 )
 from app.utils.helpers import generate_id
+from app.utils.geometry import (
+    _convex_hull,
+    _interior_point,
+    _point_in_ring,
+    _ring_area_km2,
+)
 
 # 本地精确区划数据（backend/data/geo/，prepare_local_data.py 生成）
 GEO_DATA_DIR = os.path.join(
@@ -28,6 +34,7 @@ GEO_DATA_DIR = os.path.join(
     "data", "geo",
 )
 LOCAL_ADCODE_FILES = {
+    "420000": "hubei_province.geojson",        # 湖北省省界（外轮廓，DataV 抓取）
     "420000_full": "hubei_cities.geojson",   # 湖北省市级边界
     "420100_full": "wuhan_districts.geojson",  # 武汉市辖区面
 }
@@ -40,90 +47,9 @@ DISTRICT_NAME_FIX = {
 MIN_RING_AREA_KM2 = 0.1
 
 
-def _point_in_ring(pt: list, ring: list) -> bool:
-    """射线法判断点([lat,lng])是否在环内"""
-    x, y = pt[1], pt[0]
-    inside = False
-    n = len(ring)
-    for i in range(n):
-        xi, yi = ring[i][1], ring[i][0]
-        xj, yj = ring[(i + 1) % n][1], ring[(i + 1) % n][0]
-        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
-            inside = not inside
-    return inside
-
-
-def _interior_point(ring: list) -> list:
-    """多边形内点：质心优先，质心在环外时用扫描线多纬度取内区间中点"""
-    if not ring:
-        return [0.0, 0.0]
-    n = len(ring)
-    ys = [p[0] for p in ring]
-    xs = [p[1] for p in ring]
-    cy = sum(ys) / n
-    cx = sum(xs) / n
-    # 候选纬度：质心纬度 + 南北边界1/4、1/2、3/4处
-    cand_lats = []
-    for frac in (0.5, 0.25, 0.75, 0.35, 0.65):
-        cand_lats.append(min(ys) + (max(ys) - min(ys)) * frac)
-    cand_lats = [cy] + cand_lats
-    for lat in cand_lats:
-        if _point_in_ring([lat, cx], ring):
-            return [lat, cx]
-        crossings = []
-        for i in range(n):
-            p1, p2 = ring[i], ring[(i + 1) % n]
-            if (p1[0] <= lat < p2[0]) or (p2[0] <= lat < p1[0]):
-                x = p1[1] + (lat - p1[0]) * (p2[1] - p1[1]) / (p2[0] - p1[0])
-                crossings.append(x)
-        crossings.sort()
-        if len(crossings) >= 2:
-            return [lat, (crossings[0] + crossings[1]) / 2]
-    return [cy, cx]
-
-
-def _ring_area_km2(ring: list) -> float:
-    """环的球面面积(km²)"""
-    import math
-    R = 6371.0
-    if len(ring) < 3:
-        return 0.0
-    area = 0.0
-    n = len(ring)
-    for i in range(n):
-        j = (i + 1) % n
-        la1 = math.radians(ring[i][0]); lo1 = math.radians(ring[i][1])
-        la2 = math.radians(ring[j][0]); lo2 = math.radians(ring[j][1])
-        area += (lo2 - lo1) * (2 + math.sin(la1) + math.sin(la2))
-    return abs(area * R * R / 2.0)
-
-
 def _significant_rings(rings: list) -> list:
     """按面积过滤碎块，保留全部真实部件（主面/岛屿/飞地）"""
     return [r for r in rings if _ring_area_km2(r) >= MIN_RING_AREA_KM2]
-
-
-def _convex_hull(points: list) -> list:
-    """Andrew单调链凸包：输入[lat,lng]点列表，输出闭合凸包环"""
-    pts = sorted({(p[0], p[1]) for p in points})
-    if len(pts) <= 3:
-        return [list(p) for p in pts] + [list(pts[0])]
-
-    def cross(o, a, b):
-        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-
-    lower = []
-    for p in pts:
-        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
-            lower.pop()
-        lower.append(p)
-    upper = []
-    for p in reversed(pts):
-        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
-            upper.pop()
-        upper.append(p)
-    hull = lower[:-1] + upper[:-1]
-    return [list(p) for p in hull] + [list(hull[0])]
 
 
 class GeoService:
@@ -180,16 +106,21 @@ class GeoService:
             return self._cache[key]
         # 本地精确数据优先（prepare_local_data.py 生成）
         local = self._load_local(key)
+        if not local and not full:
+            # 非 full 调用也复用 full 的本地文件（如 420000 -> 420000_full）
+            local = self._load_local(key + "_full")
         if local:
             self._cache[key] = local
-            print(f"[GeoService] 使用本地区划数据: {LOCAL_ADCODE_FILES[key]}")
+            print(f"[GeoService] 使用本地区划数据: {LOCAL_ADCODE_FILES.get(key) or LOCAL_ADCODE_FILES.get(key + '_full')}")
             return local
         # 在线 DataV GeoAtlas
         url = f"{self.BASE_URL}/{key}.json"
         try:
             import requests
-            resp = requests.get(
-                url, timeout=30,
+            sess = requests.Session()
+            sess.trust_env = False   # 绕过本机失效代理，直连 DataV（避免 30s 挂起）
+            resp = sess.get(
+                url, timeout=8,
                 headers={"User-Agent": "CartoAgent/1.0 (Map Cartography Agent)"},
             )
             resp.raise_for_status()

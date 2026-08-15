@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """本地精确地理数据服务
 
 读取 backend/data/geo/ 下预生成的 GeoJSON（水系/路网），
@@ -23,7 +23,7 @@ from typing import Dict, List
 from shapely.ops import unary_union
 
 from app.utils.helpers import generate_id
-from app.services.quality_service import _ring_area_km2
+from app.utils.geometry import _convex_hull, _ring_area_km2
 
 GEO_DATA_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -678,7 +678,7 @@ class LocalGeoService:
         poly = None
         try:
             from shapely.geometry import Polygon
-            from app.services.geo_service import GeoService, _convex_hull, _ring_area_km2
+            from app.services.geo_service import GeoService
             gs = GeoService()
             prov = gs._fetch_by_adcode("420000", full=True)
             for f in prov:
@@ -709,7 +709,35 @@ class LocalGeoService:
         """读取本地路网 GeoJSON → 道路分级图层
 
         道路严格裁剪到武汉市域边界内：边界外的道路（孝感/黄冈/鄂州等）不显示。
+        制图规范：
+          - 中文命名 + 子分组（高速路网/城市主干道/城区道路），便于图层管理；
+          - 图层按"低等级在前、高等级在后"排列，高等级道路渲染在上层；
+          - 道路统一不透明度 0.9（与 carto-agent-1 行政区划图完全一致）。
         """
+        ROAD_CN = {
+            "motorway": "高速公路主线", "motorway_link": "高速互通匝道",
+            "trunk": "城市干线主干道", "trunk_link": "主干道连接匝道",
+            "primary": "城市主干道", "primary_link": "主干道衔接匝道",
+            "secondary": "城市次干道", "secondary_link": "次干道连接匝道",
+            "tertiary": "三级道路（次要道路）", "tertiary_link": "三级道路连接线",
+            "residential": "居民区街区道路", "living_street": "生活性街道",
+            "service": "服务性道路", "unclassified": "未分级道路", "other": "其他道路",
+        }
+        ROAD_SUBGROUP = {
+            "motorway": "高速路网", "motorway_link": "高速路网",
+            "trunk": "城市主干道", "trunk_link": "城市主干道",
+            "primary": "城市主干道", "primary_link": "城市主干道",
+            "secondary": "城区道路", "secondary_link": "城区道路",
+            "tertiary": "城区道路", "tertiary_link": "城区道路",
+            "residential": "城区道路", "living_street": "城区道路",
+            "service": "其他道路", "unclassified": "其他道路", "other": "其他道路",
+        }
+        # 低等级在前、高等级在后（高等级最后添加 -> 渲染在最上层）
+        ROAD_ORDER = [
+            "other", "unclassified", "service", "living_street", "residential",
+            "tertiary", "tertiary_link", "secondary", "secondary_link",
+            "primary_link", "primary", "trunk_link", "trunk", "motorway_link", "motorway",
+        ]
         data = self._load("wuhan_roads.geojson")
         features = data.get("features", []) if isinstance(data, dict) else []
         if not features:
@@ -761,14 +789,23 @@ class LocalGeoService:
                     by_level.setdefault(hw, []).append({"coords": pts, "name": name})
                     clipped_total += 1
         layers = []
-        for hw, items in by_level.items():
+        for hw in ROAD_ORDER:
+            items = by_level.get(hw)
+            if not items:
+                continue
+            cn = ROAD_CN.get(hw, hw)
             layers.append({
                 "id": generate_id("layer"), "type": "polyline",
-                "name": f"道路-{hw}",
+                "name": f"道路-{cn}",
+                "subgroup": ROAD_SUBGROUP.get(hw, "其他道路"),
                 "coordinates": [it["coords"] for it in items],
                 "properties": [{"name": it["name"], "subtype": hw} for it in items],
                 "style": {"color": ROAD_COLOR.get(hw, "#E0E0E0"),
-                          "weight": ROAD_WEIGHT.get(hw, 0.8), "opacity": 0.9},
+                          "weight": ROAD_WEIGHT.get(hw, 0.8),
+                          "opacity": 0.9},
+                "metadata": {"subtype": "road", "raw_class": hw,
+                             "group": "道路", "subgroup": ROAD_SUBGROUP.get(hw, "其他道路"),
+                             "description": ROAD_CN.get(hw, hw)},
             })
         print(f"[LocalGeo] 使用本地路网数据: {clipped_total}条道路(已裁剪到市域内), {len(layers)}个等级图层")
         return layers

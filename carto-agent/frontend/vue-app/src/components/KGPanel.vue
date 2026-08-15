@@ -36,14 +36,14 @@
       <button
         class="type-filter-btn"
         :class="{ active: kgStore.activeFilters.size === 0 }"
-        @click="kgStore.toggleTypeFilter('all')"
+        @click="kgStore.clearFilters()"
       >全部</button>
       <button
         v-for="(color, label) in CONFIG.kgNodeColors"
         :key="label"
         class="type-filter-btn"
         :class="{ active: kgStore.activeFilters.has(label) }"
-        @click="kgStore.toggleTypeFilter(label)"
+        @click="kgStore.toggleFilter(label)"
       >
         <span class="filter-color-dot" :style="{ background: color }"></span>
         {{ label }}
@@ -90,7 +90,7 @@
 
     <!-- 底栏 -->
     <div class="kg-footer">
-      <span>{{ kgStore.filteredData.nodes.length }} 节点 / {{ kgStore.filteredData.links.length }} 关系</span>
+      <span>{{ kgStore.graphData.nodes.length }} 节点 / {{ kgStore.graphData.links.length }} 关系</span>
       <span class="kg-footer-hint">拖拽节点 | 滚轮缩放</span>
     </div>
   </div>
@@ -131,7 +131,7 @@ onUnmounted(() => {
 })
 
 watch(
-  () => kgStore.filteredData,
+  () => kgStore.graphData,
   () => {
     renderGraph()
   },
@@ -196,7 +196,7 @@ function initD3() {
     )
     .force('charge', d3.forceManyBody().strength(-300))
     .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collision', d3.forceCollide().radius((d: KGNode) => getNodeRadius(d) + 5))
+    .force('collision', d3.forceCollide<KGNode>().radius((d: KGNode) => getNodeRadius(d) + 5))
     .on('tick', tick)
 
   // 窗口大小监听
@@ -205,8 +205,8 @@ function initD3() {
 
 function renderGraph() {
   if (!simulation || !linkGroup || !nodeGroup) return
-  const nodes = kgStore.filteredData.nodes
-  const links = kgStore.filteredData.links
+  const nodes = kgStore.graphData.nodes
+  const links = kgStore.graphData.links
 
   simulation.nodes(nodes)
   simulation.force<d3.ForceLink<KGNode, KGLink>>('link')?.links(links)
@@ -343,7 +343,7 @@ function handleNodeClick(event: MouseEvent, d: KGNode) {
 
 // 搜索
 function handleSearch() {
-  kgStore.setSearchKeyword(searchInput.value.trim().toLowerCase())
+  kgStore.setSearch(searchInput.value.trim().toLowerCase())
   applySearchHighlight()
 }
 

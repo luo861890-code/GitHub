@@ -5,8 +5,14 @@
 拓扑几何 / 属性数据 / 元数据统计 / 逻辑一致性 / 专题图层适配。
 输出结构化报告，支持前端"问题定位跳转"。
 """
-import math
 from typing import Any, Dict, List
+
+from app.utils.geometry import (
+    _haversine,
+    _line_len_km,
+    _point_in_ring,
+    _ring_area_km2,
+)
 
 
 # ============ 几何工具 ============
@@ -34,50 +40,6 @@ def _ring_self_intersect(ring: list) -> bool:
             if _seg_intersect(ring[i], ring[i + 1], ring[j], ring[j + 1]):
                 return True
     return False
-
-
-def _point_in_ring(pt: list, ring: list) -> bool:
-    """射线法：pt=[lat,lng] 是否在环内"""
-    x, y = pt[1], pt[0]
-    inside = False
-    n = len(ring)
-    for i in range(n):
-        xi, yi = ring[i][1], ring[i][0]
-        xj, yj = ring[(i + 1) % n][1], ring[(i + 1) % n][0]
-        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
-            inside = not inside
-    return inside
-
-
-def _haversine(p1: list, p2: list) -> float:
-    """两点球面距离(km)"""
-    R = 6371.0
-    la1, lo1 = math.radians(p1[0]), math.radians(p1[1])
-    la2, lo2 = math.radians(p2[0]), math.radians(p2[1])
-    dla, dlo = la2 - la1, lo2 - lo1
-    a = math.sin(dla / 2) ** 2 + math.cos(la1) * math.cos(la2) * math.sin(dlo / 2) ** 2
-    return 2 * R * math.asin(math.sqrt(a))
-
-
-def _ring_area_km2(ring: list) -> float:
-    """环的球面面积(km²)"""
-    R = 6371.0
-    if len(ring) < 3:
-        return 0.0
-    area = 0.0
-    n = len(ring)
-    for i in range(n):
-        j = (i + 1) % n
-        la1 = math.radians(ring[i][0]); lo1 = math.radians(ring[i][1])
-        la2 = math.radians(ring[j][0]); lo2 = math.radians(ring[j][1])
-        area += (lo2 - lo1) * (2 + math.sin(la1) + math.sin(la2))
-    return abs(area * R * R / 2.0)
-
-
-def _line_len_km(line: list) -> float:
-    if len(line) < 2:
-        return 0.0
-    return sum(_haversine(line[i], line[i + 1]) for i in range(len(line) - 1))
 
 
 def _geom_key(geom: list) -> str:

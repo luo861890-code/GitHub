@@ -157,15 +157,33 @@ MapPanel.prototype._lodVisible = function(layerData, zoom) {
     const t = layerData.type;
     // ---- 道路分级：0高速 1主干 2一级 3二级 4三级 5支路 ----
     if (t === "polyline" && (_nm.indexOf("道路-") === 0 || /高速|国道|主干道|省道|次干道|支路|社区道路|服务道路|其他道路|三级道路/.test(_nm))) {
+        const _order = ["motorway", "trunk", "primary", "secondary", "tertiary",
+                        "residential", "service", "living_street", "unclassified", "other"];
         let level = 5;
-        if (_nm.indexOf("道路-") === 0) {
-            const _l = _nm.replace("道路-", "").split("_")[0];
-            const _order = ["motorway", "trunk", "primary", "secondary", "tertiary",
-                            "residential", "service", "living_street", "unclassified", "other"];
-            level = _order.indexOf(_l);
+        // 优先使用后端标注的道路等级（metadata.raw_class），与 Vue 前端 roadLevel 一致，
+        // 兼容 carto-agent 已迁移为中文名的道路图层（否则中文名会全部 fallback 到 5，破坏分级）
+        const raw = layerData.metadata && layerData.metadata.raw_class;
+        if (raw) {
+            const _base = raw.replace(/_link$/, "");
+            level = _order.indexOf(_base);
             if (level < 0) level = 5;
             // 连接线（匝道）降一级显示，避免小比例尺匝道噪音
-            if (_l.indexOf("_link") > 0) level = Math.min(5, level + 1);
+            if (raw.indexOf("_link") > 0) level = Math.min(5, level + 1);
+        } else if (_nm.indexOf("道路-") === 0) {
+            const _l = _nm.replace("道路-", "").split("_")[0];
+            level = _order.indexOf(_l);
+            if (level < 0) {
+                // 中文道路名映射（无 raw_class 兜底，与 Vue 前端保持一致）
+                if (/高速公路|高速互通/.test(_nm)) level = 0;
+                else if (/城市干线主干道|主干道连接|主干道衔接/.test(_nm)) level = 1;
+                else if (/城市主干道/.test(_nm)) level = 2;
+                else if (/城市次干道|次干道连接/.test(_nm)) level = 3;
+                else if (/三级道路/.test(_nm)) level = 4;
+                else level = 5;
+            } else {
+                // 连接线（匝道）降一级显示，避免小比例尺匝道噪音
+                if (_l.indexOf("_link") > 0) level = Math.min(5, level + 1);
+            }
         } else if (/高速公路/.test(_nm)) level = 0;
         else if (/国道|主干道/.test(_nm)) level = 1;
         else if (/省道|主要道路/.test(_nm)) level = 2;

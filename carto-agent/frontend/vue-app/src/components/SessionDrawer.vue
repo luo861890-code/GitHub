@@ -47,7 +47,7 @@ function handleClose() {
 }
 
 async function handleNewSession() {
-  await chatStore.createNewSession()
+  await chatStore.createSession()
   handleClose()
 }
 
@@ -58,7 +58,7 @@ async function handleSwitch(sessionId: string) {
 
 async function handleDelete(sessionId: string) {
   if (!confirm('确定要删除这个会话吗？')) return
-  await chatStore.deleteSession(sessionId)
+  await chatStore.deleteCurrentSession(sessionId)
 }
 
 function formatTime(timestamp: number): string {

@@ -29,6 +29,7 @@ CITY_BBOX: Dict[str, Dict[str, float]] = {
 MAP_TYPE_MAP: Dict[str, str] = {
     "交通图": "traffic", "交通": "traffic", "道路图": "traffic",
     "旅游图": "tourism", "旅游": "tourism", "景点图": "tourism",
+    "樱花地图": "tourism", "樱花": "tourism", "武大樱花": "tourism", "赏樱": "tourism",
     "校园图": "campus", "校园": "campus", "校园导览": "campus",
     "基础地图": "basic", "基础": "basic", "普通地图": "basic",
     "美食图": "food", "美食": "food", "餐饮图": "food",
@@ -191,6 +192,9 @@ WUHAN_GIS_POI: List[Dict[str, Any]] = [
     {"name": "武汉站", "lat": 30.6070, "lng": 114.4230, "type": "transport"},
     {"name": "汉口站", "lat": 30.6210, "lng": 114.2500, "type": "transport"},
     {"name": "光谷广场", "lat": 30.5083, "lng": 114.3975, "type": "commercial"},
+    {"name": "武汉大学樱花大道", "lat": 30.5408, "lng": 114.3645, "type": "scenic"},
+    {"name": "东湖磨山樱花园", "lat": 30.5520, "lng": 114.4050, "type": "scenic"},
+    {"name": "晴川阁樱花园", "lat": 30.5660, "lng": 114.2860, "type": "scenic"},
 ]
 
 WUHAN_DISTRICT_FALLBACK: List[Dict[str, Any]] = [

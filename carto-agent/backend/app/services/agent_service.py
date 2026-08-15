@@ -12,6 +12,7 @@ AgentService是整个系统的核心，采用ReAct（Reasoning + Acting）模式
 v2.0: 新增 ToolRegistry 标准化工具注册体系和 GraphRAG 深度推理增强，
 实现"知识-数据-工具"三元贯通的关键环节。
 """
+import json
 import re
 from typing import List, Dict, Any, Optional
 
@@ -34,6 +35,7 @@ from app.services.tool_registry import (
     StyleConfigTool,
     MapRenderTool,
     QualityCheckTool,
+    ExportTool,
 )
 
 
@@ -127,6 +129,13 @@ class AgentService:
             QualityCheckTool(CartographyValidator(), kg_service=self.kg_service)
         )
 
+        # 输出层工具：地图导出（GeoJSON/PNG/SVG）
+        try:
+            from app.services.export_service import ExportService
+            self.tool_registry.register(ExportTool(ExportService()))
+        except Exception as e:
+            print(f"[AgentService] 导出工具注册失败: {e}")
+
         print(f"[AgentService] ToolRegistry 初始化完成: "
               f"已注册{self.tool_registry.tool_count}个工具: {self.tool_registry.list_tools()}")
 
@@ -157,6 +166,26 @@ class AgentService:
         # 获取当前LLM信息
         provider = self.llm_service.get_current_provider() if self.llm_service else "none"
         model = self.llm_service.get_current_model() if self.llm_service else "none"
+
+        # ===== 快速路径：明显的地图请求直接跳过RAG/GraphRAG/六维解析 =====
+        is_map = self._is_map_request(message)
+        is_modify = self._is_modify_request(message)
+
+        if is_map and not is_modify:
+            # 明显的地图生成请求，直接进入制图流程，跳过RAG和GraphRAG
+            print(f"[AgentService] 快速路径：识别为地图生成请求，跳过RAG/GraphRAG")
+            return self._handle_map_generation(
+                message, provider, model,
+                rag_results=[],
+                graphrag_context="",
+                graphrag_result={"entities": [], "subgraph_count": 0, "aggregated_knowledge": []},
+                cartography_task=None,
+            )
+
+        if is_modify and not is_map:
+            # 明显的地图修改请求，直接进入修改流程
+            print(f"[AgentService] 快速路径：识别为地图修改请求，跳过RAG/GraphRAG")
+            return self._handle_modify_request(message, provider, model)
 
         # ===== 构建多轮上下文 =====
         context_messages = self._build_context(session_id)
@@ -390,12 +419,60 @@ class AgentService:
         try:
             action = modification.get("action")
             params = modification.get("params", {})
+            reason = modification.get("reason", "")
+            _note = f"（AI推理：{reason}）" if reason else ""
+
+            def _resolve_ids():
+                """执行时兜底解析目标图层ID（LLM/关键词都未定位时）"""
+                ids = params.get("layer_ids") or (
+                    [params["layer_id"]] if params.get("layer_id") else []
+                )
+                if isinstance(ids, str):
+                    ids = [ids]
+                if not ids:
+                    target = str(params.get("target") or "")
+                    hint = target or instruction
+                    ids = [l["id"] for l in self._find_layers_by_keyword(
+                        hint, map_data.get("layers", []))]
+                return ids
 
             if action == "update_style":
-                layer_id = params.get("layer_id")
+                layer_ids = _resolve_ids()
                 style = params.get("style", {})
-                updated = self.map_service.update_layer_style(map_id, layer_id, style)
-                return self._modify_success_response(updated, f"已更新图层样式: {style}")
+                if not layer_ids:
+                    return {"success": False,
+                            "response": f"未找到可修改的目标图层（指令：{instruction}）",
+                            "map_data": map_data, "action": action}
+                updated = map_data
+                for layer_id in layer_ids:
+                    updated = self.map_service.update_layer_style(map_id, layer_id, style)
+                return self._modify_success_response(
+                    updated, f"已更新 {len(layer_ids)} 个图层样式: {style}{_note}"
+                )
+
+            elif action == "set_visible":
+                layer_ids = _resolve_ids()
+                visible = bool(params.get("visible", True))
+                if not layer_ids:
+                    return {"success": False,
+                            "response": f"未找到目标图层（指令：{instruction}）",
+                            "map_data": map_data, "action": action}
+                updated = map_data
+                for layer_id in layer_ids:
+                    updated = self.map_service.set_layer_visible(map_id, layer_id, visible)
+                return self._modify_success_response(
+                    updated, f"已{'显示' if visible else '隐藏'} {len(layer_ids)} 个图层{_note}"
+                )
+
+            elif action == "rename_layer":
+                layer_ids = _resolve_ids()
+                name = str(params.get("name") or "")
+                if not layer_ids or not name:
+                    return {"success": False,
+                            "response": f"重命名缺少图层或新名称（指令：{instruction}）",
+                            "map_data": map_data, "action": action}
+                updated = self.map_service.rename_layer(map_id, layer_ids[0], name)
+                return self._modify_success_response(updated, f"已重命名图层为: {name}{_note}")
 
             elif action == "add_layer":
                 layer_type = params.get("layer_type", "polyline")
@@ -405,9 +482,17 @@ class AgentService:
                 return self._modify_success_response(updated, f"已添加图层: {name}")
 
             elif action == "remove_layer":
-                layer_id = params.get("layer_id")
-                updated = self.map_service.remove_layer(map_id, layer_id)
-                return self._modify_success_response(updated, "已移除图层")
+                layer_ids = _resolve_ids()
+                if not layer_ids:
+                    return {"success": False,
+                            "response": f"未找到要删除的目标图层（指令：{instruction}）",
+                            "map_data": map_data, "action": action}
+                updated = map_data
+                for layer_id in layer_ids:
+                    updated = self.map_service.remove_layer(map_id, layer_id)
+                return self._modify_success_response(
+                    updated, f"已移除 {len(layer_ids)} 个图层{_note}"
+                )
 
             elif action == "update_view":
                 center = params.get("center")
@@ -731,6 +816,13 @@ class AgentService:
                 map_type=map_type,
                 region=city,
             )
+            # ReAct容错：生成失败/空图层时自动重试一次，仍失败降级为基础图
+            if not map_data or not map_data.get("layers"):
+                print(f"[AgentService] 地图生成结果为空，重试一次 ({map_type})")
+                map_data = self.map_service.generate_map(map_type=map_type, region=city)
+            if not map_data or not map_data.get("layers"):
+                print(f"[AgentService] 重试仍失败，降级生成基础地图")
+                map_data = self.map_service.generate_map(map_type="basic", region=city)
             layer_count = len(map_data.get("layers", []))
             step4.thinking = f"地图生成成功，共{layer_count}个图层"
             step4.result = {"map_id": map_data.get("map_id"), "layer_count": layer_count}
@@ -886,6 +978,32 @@ class AgentService:
         steps.append(step1)
         thinking_parts.append("用户的问题不涉及制图，作为知识问答处理。")
 
+        # ===== 闲聊快速回复（零延迟） =====
+        chat_response = self._try_chat_reply(message)
+        if chat_response:
+            step2 = self._create_step("闲聊回复", "识别为日常问候，直接回复")
+            step2.status = "success"
+            step2.started_at = get_timestamp()
+            step2.finished_at = get_timestamp()
+            step2.thinking = "检测到日常问候语，快速回复"
+            steps.append(step2)
+            thinking_parts.append("检测到日常问候，直接友好回复。")
+
+            return {
+                "success": True,
+                "response": chat_response,
+                "map_data": None,
+                "steps": [s.model_dump() for s in steps],
+                "thinking": "\n".join(thinking_parts),
+                "provider": provider,
+                "model": model,
+                "knowledge_sources": {
+                    "rag": [],
+                    "graphrag": {"entities": [], "subgraph_count": 0, "aggregated_knowledge": []},
+                    "kg_answer": "",
+                },
+            }
+
         # 优先使用知识图谱查询
         step2 = self._create_step("知识查询", "从知识图谱检索相关信息")
         step2.status = "running"
@@ -980,6 +1098,85 @@ class AgentService:
             },
         }
 
+    # ==================== 闲聊快速回复 ====================
+
+    def _try_chat_reply(self, message: str) -> Optional[str]:
+        """尝试快速回复闲聊/问候语，无需调用LLM和知识图谱
+
+        Args:
+            message: 用户输入
+
+        Returns:
+            快速回复内容，如果不是闲聊则返回None
+        """
+        msg = message.strip().lower()
+
+        # 问候语
+        greetings = {
+            "你好": "你好！我是地图制图智能体，很高兴为你服务。我可以帮你生成各种类型的地图，回答地图制图相关的问题。有什么我可以帮你的吗？",
+            "您好": "您好！我是地图制图智能体，很高兴为您服务。我可以帮您生成各种类型的地图，回答地图制图相关的问题。有什么我可以帮您的吗？",
+            "hi": "Hi! 我是地图制图智能体，很高兴为你服务。有什么我可以帮你的吗？",
+            "hello": "Hello! 我是地图制图智能体，很高兴为你服务。有什么我可以帮你的吗？",
+            "嗨": "嗨！我是地图制图智能体，很高兴为你服务。有什么我可以帮你的吗？",
+            "哈喽": "哈喽！我是地图制图智能体，很高兴为你服务。有什么我可以帮你的吗？",
+            "在吗": "在的！我是地图制图智能体，随时为你服务。有什么我可以帮你的吗？",
+            "在不在": "在的！我是地图制图智能体，随时为你服务。有什么我可以帮你的吗？",
+            "有人吗": "有的！我是地图制图智能体，很高兴为你服务。有什么我可以帮你的吗？",
+            "你是谁": "我是地图制图智能体（CartoAgent），一个集成了大语言模型与知识图谱的在线地图制图助手。我可以帮你生成各种类型的地图，回答地图制图相关的问题。",
+            "你叫什么名字": "我叫CartoAgent，是一个地图制图智能体。我可以帮你生成各种类型的地图，回答地图制图相关的问题。",
+            "你能做什么": "我可以帮你做以下事情：\n1. 生成各种类型的地图（交通图、旅游图、校园图、医疗资源图等）\n2. 修改地图样式（颜色、线宽、透明度等）\n3. 回答地图制图相关的知识问题\n4. 提供制图规范和样式建议\n\n你可以直接告诉我你想要什么样的地图，我来帮你生成！",
+            "你会什么": "我会生成各种类型的地图，回答地图制图相关的问题。比如你可以说\"生成一份武汉交通图\"，我就会帮你生成武汉市的交通地图。",
+            "谢谢": "不客气！很高兴能帮到你。如果还有其他地图相关的需求，随时告诉我哦！",
+            "感谢": "不用谢！很高兴能帮到你。如果还有其他地图相关的需求，随时告诉我哦！",
+            "好的": "好的！如果还有其他地图相关的需求，随时告诉我哦！",
+            "嗯": "嗯，如果还有其他地图相关的需求，随时告诉我哦！",
+            "再见": "再见！如果以后需要生成地图，随时来找我哦！",
+            "拜拜": "拜拜！如果以后需要生成地图，随时来找我哦！",
+            "早安": "早安！新的一天，让我来帮你生成地图吧！有什么我可以帮你的吗？",
+            "早上好": "早上好！新的一天，让我来帮你生成地图吧！有什么我可以帮你的吗？",
+            "晚安": "晚安！好好休息，明天需要生成地图的话随时来找我哦！",
+            "晚上好": "晚上好！有什么地图相关的需求我可以帮你的吗？",
+            "下午好": "下午好！有什么地图相关的需求我可以帮你的吗？",
+        }
+
+        # 精确匹配
+        if msg in greetings:
+            return greetings[msg]
+
+        # 模糊匹配（包含关键词）
+        for keyword, reply in greetings.items():
+            if keyword in msg and len(msg) <= len(keyword) + 5:
+                return reply
+
+        # 简单的感谢+语气词
+        if any(w in msg for w in ["谢谢", "感谢", "多谢"]) and len(msg) <= 10:
+            return "不客气！很高兴能帮到你。如果还有其他地图相关的需求，随时告诉我哦！"
+
+        # ===== 常见知识问题快速回复 =====
+        knowledge_faq = {
+            "什么是专题地图": "专题地图是突出表示一种或几种自然或社会经济现象的地图，它与普通地图的区别在于内容的专门化。常见的专题地图类型包括：\n1. 自然地图：地形图、气候图、水文图、土壤图、植被图等\n2. 社会经济地图：人口图、经济图、交通图、政区图等\n3. 环境地图：环境污染图、环境质量评价图等\n\n专题地图的特点是主题明确、内容专一、形式多样。",
+            "专题地图": "专题地图是突出表示一种或几种自然或社会经济现象的地图，与普通地图的区别在于内容的专门化。常见类型包括自然地图、社会经济地图、环境地图等。",
+            "地图制图有哪些基本原则": "地图制图的基本原则包括：\n1. **科学性原则**：地图内容必须真实、准确，符合客观实际\n2. **实用性原则**：满足用户的实际需求，用途明确\n3. **艺术性原则**：地图视觉效果美观，色彩协调\n4. **清晰性原则**：图面清晰易读，层次分明\n5. **完整性原则**：地图要素齐全，信息完整\n6. **一致性原则**：同一幅地图内的符号、色彩、注记等保持一致",
+            "制图基本原则": "地图制图的基本原则：科学性、实用性、艺术性、清晰性、完整性、一致性。",
+            "什么是比例尺": "比例尺是地图上某一线段的长度与地面上相应线段水平距离之比。常见的比例尺表示方式有：\n1. **数字比例尺**：如1:10000、1:50000\n2. **文字比例尺**：如\"图上1厘米代表实地500米\"\n3. **图解比例尺**：用线段图形表示\n\n比例尺越大，地图表示的内容越详细；比例尺越小，地图表示的范围越大。",
+            "比例尺": "比例尺是地图上某一线段的长度与地面上相应线段水平距离之比。常见表示方式有数字比例尺、文字比例尺和图解比例尺。",
+            "什么是图例": "图例是地图上表示各种地理事物的符号及其说明的集合。它是地图的重要组成部分，帮助读者理解地图上的符号、颜色、线条等所代表的含义。\n\n图例通常包括：\n1. 符号和对应的说明文字\n2. 颜色和对应的含义\n3. 线型和对应的地理要素",
+            "图例": "图例是地图上表示各种地理事物的符号及其说明的集合，帮助读者理解地图内容。",
+            "什么是等高线": "等高线是地图上高程相等的各相邻点所连成的闭合曲线。它是表示地形起伏的重要方法。\n\n等高线的特点：\n1. 同一条等高线上的各点高程相等\n2. 等高线是闭合曲线\n3. 等高线的疏密反映坡度的陡缓（密陡疏缓）\n4. 等高线一般不相交、不重合（悬崖除外）",
+            "等高线": "等高线是地图上高程相等的各相邻点所连成的闭合曲线，用于表示地形起伏。等高线越密，坡度越陡；等高线越疏，坡度越缓。",
+            "你能生成什么地图": "我可以生成各种类型的地图，包括：\n\n**基础地图类：**\n- 交通图（道路、轨道交通）\n- 旅游图（景点、名胜古迹）\n- 校园分布图\n- 医疗资源图（医院、诊所）\n- 教育设施图（学校分布）\n- 商业热力图\n- 人口密度图\n- 土地利用图\n- 绿化覆盖图\n\n**专题地图类：**\n- 自然地理专题图\n- 社会经济专题图\n- 环境专题图\n\n你可以直接告诉我你想要什么样的地图，比如\"生成一份武汉交通图\"，我就会帮你生成！",
+            "能生成什么地图": "我可以生成交通图、旅游图、校园图、医疗资源图、教育设施图、商业热力图、人口密度图、土地利用图、绿化覆盖图等各种类型的地图。",
+            "怎么生成地图": "生成地图很简单！你只需要用自然语言告诉我你想要什么样的地图，我就会帮你生成。\n\n比如你可以说：\n- \"生成一份武汉市交通图\"\n- \"做一个武汉旅游景点分布图\"\n- \"帮我画一张医疗资源分布图\"\n\n我会自动理解你的需求，规划制图任务，然后生成对应的地图。",
+            "如何使用": "使用方法很简单：直接在对话框中用自然语言描述你想要的地图，我会自动理解你的需求并生成地图。你也可以点击快捷指令快速开始。",
+        }
+
+        # 常见知识问题快速回复
+        for question, answer in knowledge_faq.items():
+            if question in msg and len(msg) <= len(question) + 10:
+                return answer
+
+        return None
+
     # ==================== 内部流程：修改请求处理 ====================
 
     def _handle_modify_request(self, message: str, provider: str, model: str) -> dict:
@@ -1024,6 +1221,10 @@ class AgentService:
     def _parse_modification_with_llm(self, instruction: str, map_data: dict) -> Optional[dict]:
         """使用LLM解析修改意图
 
+        让大模型理解自然语言、推理目标图层并输出结构化修改操作；
+        兼容 action/operation 字段，解析后用关键词补齐图层ID，
+        并把推理过程（reason）带回给前端展示。
+
         Args:
             instruction: 自然语言修改指令
             map_data: 当前地图数据
@@ -1034,49 +1235,118 @@ class AgentService:
         if not self.llm_service:
             return None
 
-        # 构建图层信息摘要
+        # 构建紧凑图层目录（QGIS 式：名称/类型/颜色/线宽/填充/虚线）
         layers_info = []
         for layer in map_data.get("layers", []):
+            st = layer.get("style", {}) or {}
             layers_info.append({
                 "id": layer["id"],
                 "name": layer.get("name", ""),
                 "type": layer.get("type", ""),
-                "style": layer.get("style", {}),
+                "color": st.get("color", ""),
+                "fillColor": st.get("fillColor", ""),
+                "weight": st.get("weight", ""),
+                "opacity": st.get("opacity", ""),
+                "dashArray": st.get("dashArray", ""),
             })
 
         system_prompt = (
-            "你是一个地图修改指令解析器。根据用户的自然语言修改指令，"
+            "你是一个专业的地图制图助手（类似QGIS/ArcGIS的智能图层管理器）。"
+            "根据用户的自然语言修改指令，推理出要修改的图层和具体参数，"
             "输出JSON格式的修改操作。支持的操作类型：\n"
-            "1. update_style: 修改图层样式，params包含layer_id和style(color/weight/opacity等)\n"
-            "2. add_layer: 添加图层，params包含layer_type(polyline/marker/polygon)、name、query(OSM标签)\n"
-            "3. remove_layer: 删除图层，params包含layer_id\n"
-            "4. update_view: 修改视图，params包含center([lat,lng])和zoom\n"
-            "5. update_theme: 修改底图主题，params包含theme(standard/positron/dark/satellite)\n\n"
-            "颜色请使用十六进制格式。只返回JSON，不要包含其他内容。"
+            "1. update_style: 修改图层样式，params包含 target(目标图层类别词，如\"道路\"/\"湖泊\"/\"水系\")、style(color/weight/opacity/fillOpacity/dashArray，颜色用十六进制)\n"
+            "2. set_visible: 显示/隐藏图层，params包含 target 和 visible(true/false)\n"
+            "3. rename_layer: 重命名图层，params包含 target 和 name\n"
+            "4. remove_layer: 删除图层，params包含 target\n"
+            "5. add_layer: 添加图层，params包含layer_type(polyline/marker/polygon)、name、query(OSM标签)\n"
+            "6. update_view: 修改视图，params包含center([lat,lng])和zoom\n"
+            "7. update_theme: 修改底图主题，params包含theme(standard/positron/dark/satellite)\n\n"
+            "规则：\n"
+            "- 只返回JSON，不要包含markdown代码块或任何其他文字。\n"
+            "- 顶层字段：{\"action\": \"...\", \"params\": {...}, \"reason\": \"用中文一句话说明你的修改推理\"}。\n"
+            "- 涉及图层的操作，target 写图层类别词（优先用图层名称中的中文关键词）；"
+            "如果无法确定 target，给出最合理的推测。"
         )
 
         prompt = (
-            f"地图图层信息: {layers_info}\n\n"
+            f"当前地图图层目录（id/名称/类型/颜色/线宽/填充/虚线）:\n"
+            f"{json.dumps(layers_info, ensure_ascii=False)}\n\n"
             f"用户修改指令: {instruction}\n\n"
-            f"请输出修改操作JSON: "
+            f"请推理并输出修改操作JSON: "
         )
 
         result = self.llm_service.generate(prompt, system_prompt)
         if not result:
             return None
 
-        # 解析LLM返回的JSON
-        result = result.strip()
-        if result.startswith("```"):
-            result = result.split("\n", 1)[1] if "\n" in result else result[3:]
-        if result.endswith("```"):
-            result = result[:-3]
-        result = result.strip()
+        modification = self._extract_llm_json(result)
+        if not modification:
+            return None
 
-        modification = safe_json_loads(result, None)
-        if modification and isinstance(modification, dict) and "action" in modification:
-            return modification
+        # 兼容 operation/action 两种字段
+        action = modification.get("action") or modification.get("operation")
+        params = modification.get("params") or {}
+        reason = modification.get("reason", "")
+        if not action or not isinstance(params, dict):
+            return None
+        action = str(action).strip()
 
+        # 需要图层定位的操作：用 target（或指令文本）补齐图层ID
+        if action in ("update_style", "set_visible", "rename_layer", "remove_layer"):
+            layer_ids = params.get("layer_ids") or []
+            if isinstance(layer_ids, str):
+                layer_ids = [layer_ids]
+            if not layer_ids:
+                target = str(params.get("target") or "")
+                hint = target or instruction
+                matched = self._find_layers_by_keyword(hint, map_data.get("layers", []))
+                layer_ids = [l["id"] for l in matched]
+                if not matched and target:
+                    # target 是具体图层名时按名称包含匹配
+                    layer_ids = [l["id"] for l in map_data.get("layers", [])
+                                 if target in l.get("name", "")]
+            params["layer_ids"] = layer_ids
+
+        return {"action": action, "params": params, "reason": reason}
+
+    @staticmethod
+    def _extract_llm_json(text: str) -> Optional[dict]:
+        """从LLM输出中稳健提取JSON对象（兼容代码块/前后缀文字）。"""
+        if not text:
+            return None
+        text = text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        if text.endswith("```"):
+            text = text[: text.rfind("```")]
+        parsed = safe_json_loads(text, None)
+        if isinstance(parsed, dict):
+            return parsed
+        start = text.find("{")
+        if start < 0:
+            return None
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    parsed = safe_json_loads(text[start:i + 1], None)
+                    return parsed if isinstance(parsed, dict) else None
         return None
 
     def _parse_modification_with_keywords(self, instruction: str, map_data: dict) -> Optional[dict]:
@@ -1093,34 +1363,55 @@ class AgentService:
         instruction_lower = instruction.lower()
 
         # ===== 样式修改 =====
-        if any(kw in instruction for kw in ["颜色", "color", "配色", "线宽", "weight", "透明", "opacity", "虚线"]):
+        _style_kws = ["颜色", "color", "配色", "线宽", "weight", "透明", "opacity",
+                      "虚线", "加粗", "变粗", "加宽", "变宽", "变细", "改粗", "改细",
+                      "改成", "改为", "变为", "调成", "换成", "设成"]
+        _has_color_name = any(cn in instruction for cn in self.COLOR_MAP)
+        if any(kw in instruction for kw in _style_kws) or _has_color_name:
             # 匹配目标图层
-            target_layer = self._find_layer_by_keyword(instruction, layers)
-            if not target_layer:
+            target_layers = self._find_layers_by_keyword(instruction, layers)
+            if not target_layers:
                 # 默认修改第一个图层
-                target_layer = layers[0] if layers else None
+                target_layers = layers[:1] if layers else []
 
-            if target_layer:
+            if target_layers:
                 style = {}
                 # 解析颜色
                 color = self._extract_color(instruction)
                 if color:
                     style["color"] = color
+                    if any(l.get("type") == "polygon" for l in target_layers):
+                        style["fillColor"] = color
                 # 解析线宽
                 weight_match = re.search(r"线宽|粗细|weight|宽度", instruction)
-                if weight_match:
+                if weight_match and re.search(r"(\d+)", instruction):
                     num_match = re.search(r"(\d+)", instruction)
-                    if num_match:
-                        style["weight"] = int(num_match.group(1))
+                    style["weight"] = int(num_match.group(1))
+                elif any(kw in instruction for kw in ["加粗", "变粗", "加宽", "变宽", "改粗"]):
+                    # 无数字的"加粗"：在当前线宽基础上 +1（保持渐进调整）
+                    cur = (target_layers[0].get("style") or {}).get("weight") or 3
+                    style["weight"] = int(cur) + 1
+                elif any(kw in instruction for kw in ["变细", "改细", "减细"]):
+                    cur = (target_layers[0].get("style") or {}).get("weight") or 3
+                    style["weight"] = max(1, int(cur) - 1)
                 # 解析透明度
                 if "透明" in instruction or "opacity" in instruction_lower:
                     num_match = re.search(r"(\d+(?:\.\d+)?)", instruction)
                     if num_match:
                         val = float(num_match.group(1))
                         style["opacity"] = val / 100 if val > 1 else val
+                # 虚线
+                if "虚线" in instruction or "dash" in instruction_lower:
+                    style["dashArray"] = "6,4"
 
                 if style:
-                    return {"action": "update_style", "params": {"layer_id": target_layer["id"], "style": style}}
+                    return {
+                        "action": "update_style",
+                        "params": {
+                            "layer_ids": [l["id"] for l in target_layers],
+                            "style": style,
+                        },
+                    }
 
         # ===== 添加图层 =====
         if any(kw in instruction for kw in ["添加", "加", "新增", "add"]) and any(kw in instruction for kw in ["图层", "layer", "道路", "铁路", "水系", "景点"]):
@@ -1335,32 +1626,60 @@ class AgentService:
         Returns:
             匹配到的图层，无匹配返回None
         """
-        # 图层名称关键词映射
+        matched = self._find_layers_by_keyword(text, layers)
+        return matched[0] if matched else None
+
+    def _find_layers_by_keyword(self, text: str, layers: list) -> list:
+        """根据关键词匹配全部目标图层（如"道路"匹配所有 道路-* 图层）。"""
         name_keywords = {
             "道路": ["道路", "road", "highway"],
             "铁路": ["铁路", "railway", "rail"],
-            "水系": ["水系", "水", "water", "river", "河流"],
+            "水系": ["水系", "水", "water", "river", "河流", "河道", "江"],
+            "湖泊": ["湖泊", "湖", "lake"],
             "景点": ["景点", "旅游", "tourism", "attraction"],
             "建筑": ["建筑", "building"],
             "设施": ["设施", "amenity", "生活"],
             "绿地": ["绿地", "休闲", "leisure", "park"],
+            "居民地": ["居民地", "街区", "住宅"],
+            "等高线": ["等高线", "contour", "地形"],
+            "边界": ["边界", "界", "boundary"],
+            "注记": ["注记", "标注", "label"],
         }
-
+        # 1) 优先按完整目标/指令中的具体图层名做名称包含匹配（如"主要河流"）
+        exact_hits = []
+        for layer in layers:
+            n = layer.get("name", "") or ""
+            if text and len(text) >= 2 and text in n:
+                exact_hits.append(layer)
+        if exact_hits:
+            return exact_hits
+        # 2) 按类别关键词匹配：用"指令中出现的具体关键词"匹配图层名
+        matched = []
         for layer_name, keywords in name_keywords.items():
-            if any(kw in text for kw in keywords):
-                # 先按名称匹配
-                for layer in layers:
-                    if layer_name in layer.get("name", ""):
-                        return layer
-                # 再按类型匹配
-                for layer in layers:
-                    layer_type = layer.get("type", "")
-                    if layer_name == "道路" and layer_type == "polyline":
-                        return layer
-                    if layer_name in ["景点", "建筑"] and layer_type == "marker":
-                        return layer
-
-        return None
+            kws_in_text = [kw for kw in keywords if kw in text]
+            if not kws_in_text:
+                continue
+            for layer in layers:
+                n = layer.get("name", "") or ""
+                if layer_name in n or any(kw in n for kw in kws_in_text):
+                    if layer not in matched:
+                        matched.append(layer)
+            if matched:
+                break
+        # 3) 兜底：仅类别名在名称中（如"水系"）
+        if not matched:
+            for layer_name, keywords in name_keywords.items():
+                if any(kw in text for kw in keywords):
+                    for layer in layers:
+                        if layer_name in layer.get("name", ""):
+                            if layer not in matched:
+                                matched.append(layer)
+                    if matched:
+                        break
+        # 4) 类型兜底：道路类 polyline
+        if not matched and any(kw in text for kw in ("道路", "road", "highway")):
+            matched = [l for l in layers if l.get("type") == "polyline" and "河流" not in l.get("name", "")]
+        return matched
 
     def _extract_color(self, text: str) -> Optional[str]:
         """从文本中提取颜色
@@ -1401,17 +1720,16 @@ class AgentService:
         # ===== KG反馈记录 =====
         if self.kg_service:
             try:
-                # 记录修改操作到知识图谱（内存模式自动忽略，Neo4j模式可记录）
+                # 记录修改操作到知识图谱（内存模式与Neo4j模式均记录，
+                # 形成"用户反馈沉淀为知识"的闭环）
                 feedback_entity = {
                     "action": "map_modification",
                     "map_type": map_data.get("map_type", "unknown"),
                     "timestamp": get_timestamp(),
                     "description": message,
                 }
-                # 仅在Neo4j模式下创建反馈节点
-                if self.kg_service.driver is not None:
-                    self.kg_service.create_entity("ModificationFeedback", feedback_entity)
-                    print(f"[AgentService] KG反馈已记录: {message[:50]}")
+                self.kg_service.create_entity("ModificationFeedback", feedback_entity)
+                print(f"[AgentService] KG反馈已记录: {message[:50]}")
             except Exception as e:
                 print(f"[AgentService] KG反馈记录失败: {e}")
 

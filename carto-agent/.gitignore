@@ -18,11 +18,16 @@ data/maps.json
 data/maps.json.bak
 data/maps_test_backup.json
 data/sessions.json
+data/archive/
+data/*.json.new
 backend/data/geo/*.geojson
 backend/data/dem/
 
 # 调试/导出产物
 output/
+.trae-html-share-packages/
+screenshot*.png
+user_screenshot.png
 
 # IDE
 .idea/

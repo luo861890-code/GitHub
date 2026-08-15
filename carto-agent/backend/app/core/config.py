@@ -1,7 +1,14 @@
 """Pydantic Settings配置 - 从.env读取多LLM和环境配置"""
+import os
 from typing import List, Optional
 from pydantic_settings import BaseSettings
 from pydantic import Field
+from dotenv import load_dotenv
+
+
+# 将 backend/.env 注入进程环境变量（供 os.getenv 读取，如 AMAP_KEY / TIANDITU_KEY）
+_ENV_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env")
+load_dotenv(_ENV_FILE)
 
 
 class Settings(BaseSettings):
@@ -24,8 +31,8 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     openai_base_url: str = "https://api.openai.com/v1"
 
-    # DeepSeek（已内置默认Key，无需额外配置；.env中的DEEPSEEK_API_KEY优先级更高）
-    deepseek_api_key: str = "sk-3e5bec1588c546179a139ae610de5604"
+    # DeepSeek：必须通过 backend/.env 的 DEEPSEEK_API_KEY 配置，禁止硬编码密钥到源码
+    deepseek_api_key: str = ""
     deepseek_model: str = "deepseek-chat"
     deepseek_base_url: str = "https://api.deepseek.com/v1"
 
@@ -42,10 +49,13 @@ class Settings(BaseSettings):
     # ========== 地图数据 ==========
     overpass_servers: str = "https://maps.mail.ru/osm/tools/overpass/api/interpreter,https://overpass-api.de/api/interpreter,https://z.overpass-api.de/api/interpreter,https://lz4.overpass-api.de/api/interpreter"
     amap_api_key: str = ""
+    # 多源数据融合适配器（兼容旧键名 AMAP_API_KEY）
+    amap_key: str = ""
+    tianditu_key: str = ""
 
     # ========== 服务 ==========
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 8080
     debug: bool = True
     data_dir: str = "../data"
 

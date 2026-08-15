@@ -16,6 +16,7 @@ from app.models.schemas import (
     GenerateMapRequest,
     AddLayerRequest,
     UpdateLayerStyleRequest,
+    SetLayerVisibleRequest,
     UpdateViewRequest,
     UpdateThemeRequest,
     AddFeatureRequest,
@@ -99,6 +100,22 @@ async def update_layer_geometry(
         return ApiResponse(success=False, message=str(e))
     except Exception as e:
         return ApiResponse(success=False, message=f"更新图层几何失败: {e}")
+
+
+@router.put("/{map_id}/layers/{layer_id}/visible", response_model=ApiResponse,
+            summary="设置图层可见性（持久化隐藏/显示）")
+async def set_layer_visible(
+    map_id: str,
+    layer_id: str,
+    request: SetLayerVisibleRequest,
+    map_service: MapService = Depends(get_map_service),
+):
+    """图层管理：隐藏/显示图层并写入地图数据（QGIS/ArcGIS 式）"""
+    try:
+        result = map_service.set_layer_visible(map_id, layer_id, request.visible)
+        return ApiResponse(success=True, message="图层可见性已更新", data=result)
+    except Exception as e:
+        return ApiResponse(success=False, message=f"设置图层可见性失败: {e}")
 
 
 @router.get("/thematic/types", response_model=ApiResponse, summary="获取支持的专题地图类型")

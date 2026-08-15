@@ -563,7 +563,14 @@ MapPanel.prototype.rerenderLayer = function(layerId) {
         delete this.layerGroups[layerId];
         if (!this.currentMapData) return;
         const data = (this.currentMapData.layers || []).find((l) => l.id === layerId);
-        if (data) this.renderLayer(data);
+        if (data) {
+            this.renderLayer(data);
+            // 重渲染后重新挂载编辑元数据（否则新要素无法点击选中/编辑）
+            if (this.editMode) {
+                const item = this.layerGroups[layerId];
+                if (item) this._attachEditMetadata(layerId, item.layer);
+            }
+        }
 };
 
 MapPanel.prototype._rerenderAllLayers = function() {
@@ -579,6 +586,13 @@ MapPanel.prototype._rerenderAllLayers = function() {
             try { this.renderLayer(data); }
             catch (e) { console.warn("[Edit] 图层重渲染失败:", data && data.name, e); }
         });
+        if (this.editMode) {
+            // 全量重渲染后统一挂载编辑元数据
+            Object.keys(this.layerGroups).forEach((layerId) => {
+                const item = this.layerGroups[layerId];
+                if (item) this._attachEditMetadata(layerId, item.layer);
+            });
+        }
 };
 
 MapPanel.prototype._leafletChildren = function(layer) {

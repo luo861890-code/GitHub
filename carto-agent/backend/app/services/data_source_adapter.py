@@ -473,7 +473,7 @@ class AmapPOIAdapter(DataSourceAdapter):
         Args:
             api_key: 高德 API Key，为 None 时从环境变量 AMAP_KEY 读取
         """
-        self.api_key = api_key or os.getenv("AMAP_KEY", "")
+        self.api_key = api_key or os.getenv("AMAP_KEY") or os.getenv("AMAP_API_KEY") or ""
         self._session = requests.Session()
         self._session.headers.update({
             "User-Agent": "CartoAgent/1.0 (Map Cartography Agent)",

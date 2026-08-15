@@ -9,6 +9,7 @@ MapService负责地图的完整生命周期管理：
 """
 import json
 import os
+import re
 import time
 import threading
 import shutil
@@ -42,6 +43,7 @@ from app.core.constants import (
 )
 from app.core.exceptions import MapGenerationError
 from app.utils.helpers import generate_id, get_timestamp, ensure_dir
+from app.utils.geometry import _point_in_ring
 
 # 多源数据融合适配器
 from app.services.data_source_adapter import (
@@ -63,6 +65,8 @@ class MapService:
 
     # 防抖写入参数：修改后延迟 2 秒写入，期间的新修改会重置计时器
     _SAVE_DEBOUNCE_SECONDS: float = 2.0
+    # 主文件保留地图数量上限，超出部分自动归档到 data/archive/maps/
+    MAPS_MAIN_LIMIT: int = 10
 
     def __init__(self, osm_service=None, persist_path: Optional[str] = None):
         """初始化地图服务
@@ -76,6 +80,8 @@ class MapService:
         self.maps: Dict[str, dict] = {}
         # 持久化：重启后自动恢复已生成的地图
         self.persist_path = persist_path or os.path.join(settings.data_dir, "maps.json")
+        # 历史地图归档目录（迁移后的旧地图按 map_id 独立存放，按需加载）
+        self.archive_dir = os.path.join(os.path.dirname(self.persist_path), "archive", "maps")
         # 防抖写入相关
         self._save_timer: Optional[threading.Timer] = None
         self._save_lock = threading.Lock()
@@ -87,7 +93,7 @@ class MapService:
         # 注册 OSM 适配器（核心数据源，始终可用）
         self.data_registry.register(OSMSourceAdapter(self.osm_service))
         # 高德 POI 适配器（仅在有 API Key 时注册）
-        if os.getenv("AMAP_KEY"):
+        if os.getenv("AMAP_KEY") or os.getenv("AMAP_API_KEY"):
             self.data_registry.register(AmapPOIAdapter())
         else:
             print("[MapService] 未配置 AMAP_KEY，高德 POI 适配器未注册"
@@ -162,6 +168,8 @@ class MapService:
         任何一步失败都不会丢失已有数据（原始主文件或备份文件仍存在）。
         """
         import shutil, time as _time
+        # 先归档超限的最旧地图，避免主文件再次膨胀
+        self._archive_old_maps()
         tmp_path = self.persist_path + ".tmp"
         backup_path = self.persist_path + ".bak"
         try:
@@ -186,6 +194,53 @@ class MapService:
                     os.remove(tmp_path)
                 except OSError:
                     pass
+
+    def _archive_old_maps(self):
+        """主文件超过 MAPS_MAIN_LIMIT 时，将最旧的地图移入归档目录"""
+        if len(self.maps) <= self.MAPS_MAIN_LIMIT:
+            return
+        items = sorted(
+            self.maps.items(),
+            key=lambda kv: kv[1].get("created_at", 0) if isinstance(kv[1], dict) else 0,
+        )
+        overflow = items[: len(self.maps) - self.MAPS_MAIN_LIMIT]
+        for map_id, map_data in overflow:
+            if self._write_archived_map(map_id, map_data):
+                del self.maps[map_id]
+                print(f"[MapService] 旧地图已归档: {map_id}")
+
+    def _write_archived_map(self, map_id: str, map_data: dict) -> bool:
+        """将单张地图写入归档目录，并更新归档清单"""
+        try:
+            ensure_dir(self.archive_dir)
+            archive_path = os.path.join(self.archive_dir, f"{map_id}.json")
+            with open(archive_path, "w", encoding="utf-8") as f:
+                json.dump(map_data, f, ensure_ascii=False)
+            manifest_path = os.path.join(self.archive_dir, "_manifest.json")
+            manifest = []
+            if os.path.exists(manifest_path):
+                try:
+                    with open(manifest_path, "r", encoding="utf-8") as f:
+                        manifest = json.load(f)
+                    if not isinstance(manifest, list):
+                        manifest = []
+                except (json.JSONDecodeError, OSError):
+                    manifest = []
+            entry = {
+                "map_id": map_id,
+                "name": map_data.get("name", ""),
+                "map_type": map_data.get("map_type", ""),
+                "region": map_data.get("region", ""),
+                "created_at": map_data.get("created_at"),
+                "file": f"{map_id}.json",
+            }
+            manifest = [m for m in manifest if m.get("map_id") != map_id] + [entry]
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(manifest, f, ensure_ascii=False, indent=1)
+            return True
+        except OSError as e:
+            print(f"[MapService] 地图归档失败 {map_id}: {e}")
+            return False
 
     # ==================== 地图基础操作 ====================
 
@@ -391,6 +446,10 @@ class MapService:
                         map_layers += self._fallback_water_layers(region, surrounding_only=has_water)
                     # 重点POI标注（机场/景区/交通枢纽等，GIS叠加风格绿点）
                     gis_pois = WUHAN_GIS_POI if region == "武汉市" else []
+                    # 完美复刻 carto-agent-1 行政区划图：行政图不叠加新增的樱花主题地标
+                    if map_type == "administrative":
+                        _CHERRY_POIS = {"武汉大学樱花大道", "东湖磨山樱花园", "晴川阁樱花园"}
+                        gis_pois = [p for p in gis_pois if p.get("name") not in _CHERRY_POIS]
                     if gis_pois:
                         map_layers.append({
                             "id": generate_id("layer"),
@@ -542,7 +601,142 @@ class MapService:
         Returns:
             地图数据字典，不存在时返回None
         """
-        return self.maps.get(map_id)
+        map_data = self.maps.get(map_id)
+        if map_data is not None:
+            self._classify_layers(map_data)
+            return map_data
+        # 主存储未命中时，尝试从归档目录按需加载（不写回主文件，避免再次膨胀）
+        return self._load_archived_map(map_id)
+
+    def _load_archived_map(self, map_id: str) -> Optional[dict]:
+        """从归档目录加载历史地图（data/archive/maps/{map_id}.json）"""
+        if not map_id:
+            return None
+        archive_path = os.path.join(self.archive_dir, f"{map_id}.json")
+        if not os.path.exists(archive_path):
+            return None
+        try:
+            with open(archive_path, "r", encoding="utf-8") as f:
+                map_data = json.load(f)
+            if isinstance(map_data, dict) and map_data.get("map_id"):
+                self._classify_layers(map_data)
+                return map_data
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"[MapService] 归档地图加载失败 {map_id}: {e}")
+        return None
+
+    def _classify_layers(self, map_data: dict) -> None:
+        """图层分类综合（QGIS/ArcGIS 图层管理）：
+
+        给每个图层补齐持久化的分类元数据：
+          - group   按制图要素类别分组的名称（底图/行政区划/水系/湖泊/…）
+          - format  颜色/线宽/填充/虚线等视觉格式摘要
+          - visible 图层可见性（默认True，可隐藏并持久化）
+
+        分类依据"颜色与格式 + 名称语义"，与前端图层面板联动。
+        """
+        if not map_data or "layers" not in map_data:
+            return
+        changed = False
+        # 老图迁移：道路图层英文名 -> 中文名 + 子分组
+        ROAD_CN = {
+            "motorway": "高速公路主线", "motorway_link": "高速互通匝道",
+            "trunk": "城市干线主干道", "trunk_link": "主干道连接匝道",
+            "primary": "城市主干道", "primary_link": "主干道衔接匝道",
+            "secondary": "城市次干道", "secondary_link": "次干道连接匝道",
+            "tertiary": "三级道路（次要道路）", "tertiary_link": "三级道路连接线",
+            "residential": "居民区街区道路", "living_street": "生活性街道",
+            "service": "服务性道路", "unclassified": "未分级道路", "other": "其他道路",
+        }
+        ROAD_SUB = {
+            "motorway": "高速路网", "motorway_link": "高速路网",
+            "trunk": "城市主干道", "trunk_link": "城市主干道",
+            "primary": "城市主干道", "primary_link": "城市主干道",
+            "secondary": "城区道路", "secondary_link": "城区道路",
+            "tertiary": "城区道路", "tertiary_link": "城区道路",
+            "residential": "城区道路", "living_street": "城区道路",
+            "service": "其他道路", "unclassified": "其他道路", "other": "其他道路",
+        }
+        ROAD_OPACITY = {
+            # 与 carto-agent-1 行政区划图完全一致：道路统一不透明度 0.9
+            "motorway": 0.9, "motorway_link": 0.9, "trunk": 0.9, "trunk_link": 0.9,
+            "primary": 0.9, "primary_link": 0.9, "secondary": 0.9,
+            "secondary_link": 0.9, "tertiary": 0.9, "tertiary_link": 0.9,
+            "residential": 0.9, "living_street": 0.9, "service": 0.9,
+            "unclassified": 0.9, "other": 0.9,
+        }
+
+        def _cat(layer: dict) -> str:
+            n = layer.get("name", "") or ""
+            t = layer.get("type", "") or ""
+            if re.search(r"陆地底图|省域|周边地市|市域底图|湖北省", n):
+                return "底图"
+            if re.search(r"政区|区县|边界|行政中心|区划", n):
+                return "行政区划"
+            if re.search(r"河流|水系|河道|中心线|大江|水面", n):
+                return "水系"
+            if "湖泊" in n:
+                return "湖泊"
+            if "居民地" in n:
+                return "居民地"
+            if "等高线" in n:
+                return "等高线"
+            if n.startswith("道路-") or re.search(r"高速|国道|省道|主干道|次干道|支路|街巷", n):
+                return "道路"
+            if re.search(r"轨道|铁路|地铁|轻轨", n):
+                return "轨道/铁路"
+            if t in ("circleMarker", "marker", "point", "circle"):
+                return "POI/符号"
+            if t in ("textLabel", "label") or "注记" in n or "标注" in n:
+                return "注记/标注"
+            return "其他"
+
+        for layer in map_data["layers"]:
+            # 老图道路图层命名迁移
+            _m = re.match(r"^道路-([a-z_]+)$", layer.get("name", "") or "")
+            if _m and _m.group(1) in ROAD_CN:
+                hw = _m.group(1)
+                new_name = f"道路-{ROAD_CN[hw]}"
+                if layer.get("name") != new_name:
+                    layer["name"] = new_name
+                    changed = True
+                if layer.get("subgroup") != ROAD_SUB[hw]:
+                    layer["subgroup"] = ROAD_SUB[hw]
+                    changed = True
+                _st = layer.setdefault("style", {})
+                if _st.get("opacity", 1.0) != ROAD_OPACITY.get(hw):
+                    _st["opacity"] = ROAD_OPACITY.get(hw, 0.9)
+                    changed = True
+                layer.setdefault("metadata", {})["raw_class"] = hw
+                layer.setdefault("metadata", {})["description"] = ROAD_CN[hw]
+            # 道路样式迁移（按 raw_class / properties.subtype 设置分级不透明度）
+            _rc = (layer.get("metadata") or {}).get("raw_class")
+            if not _rc and layer.get("properties") and isinstance(layer.get("properties"), list):
+                _p0 = layer["properties"][0] if layer["properties"] else None
+                _rc = _p0.get("subtype") if isinstance(_p0, dict) else None
+            if _rc in ROAD_OPACITY:
+                _st = layer.setdefault("style", {})
+                if _st.get("opacity", 1.0) != ROAD_OPACITY[_rc]:
+                    _st["opacity"] = ROAD_OPACITY[_rc]
+                    changed = True
+            if "group" not in layer:
+                layer["group"] = _cat(layer)
+                changed = True
+            if "format" not in layer:
+                st = layer.get("style") or {}
+                layer["format"] = {
+                    "color": st.get("color", ""),
+                    "fillColor": st.get("fillColor", ""),
+                    "weight": st.get("weight"),
+                    "dashArray": st.get("dashArray", ""),
+                    "opacity": st.get("opacity"),
+                }
+                changed = True
+            if "visible" not in layer:
+                layer["visible"] = True
+                changed = True
+        if changed:
+            self._schedule_save()
 
     def list_maps(self) -> List[dict]:
         """列出所有地图
@@ -579,6 +773,16 @@ class MapService:
             self._schedule_save()
             print(f"[MapService] 地图已删除: {map_id}")
             return True
+        # 归档地图也可删除（同步清理归档文件）
+        archive_path = os.path.join(self.archive_dir, f"{map_id}.json")
+        if os.path.exists(archive_path):
+            try:
+                os.remove(archive_path)
+                print(f"[MapService] 归档地图已删除: {map_id}")
+                return True
+            except OSError as e:
+                print(f"[MapService] 归档地图删除失败 {map_id}: {e}")
+                return False
         print(f"[MapService] 地图不存在: {map_id}")
         return False
 
@@ -777,6 +981,32 @@ class MapService:
                 print(f"[MapService] 图层样式已更新: {layer_id}，新样式: {layer['style']}")
                 return map_data
 
+        raise MapGenerationError(f"图层不存在: {layer_id}")
+
+    def set_layer_visible(self, map_id: str, layer_id: str, visible: bool) -> dict:
+        """设置图层可见性（QGIS/ArcGIS 图层管理：隐藏/显示并持久化）"""
+        map_data = self.maps.get(map_id)
+        if not map_data:
+            raise MapGenerationError(f"地图不存在: {map_id}")
+        for layer in map_data["layers"]:
+            if layer["id"] == layer_id:
+                layer["visible"] = bool(visible)
+                self._schedule_save()
+                print(f"[MapService] 图层可见性已更新: {layer_id} -> {visible}")
+                return map_data
+        raise MapGenerationError(f"图层不存在: {layer_id}")
+
+    def rename_layer(self, map_id: str, layer_id: str, name: str) -> dict:
+        """重命名图层（QGIS/ArcGIS 图层管理）"""
+        map_data = self.maps.get(map_id)
+        if not map_data:
+            raise MapGenerationError(f"地图不存在: {map_id}")
+        for layer in map_data["layers"]:
+            if layer["id"] == layer_id:
+                layer["name"] = name
+                self._schedule_save()
+                print(f"[MapService] 图层已重命名: {layer_id} -> {name}")
+                return map_data
         raise MapGenerationError(f"图层不存在: {layer_id}")
 
     def update_layer_geometry(
@@ -2179,7 +2409,7 @@ class MapService:
                 matched = False
                 for wtype in ("lake", "reservoir"):
                     for item in areas.get(wtype, []):
-                        if self._point_in_ring(ep, item["coords"]):
+                        if _point_in_ring(ep, item["coords"]):
                             results.append({
                                 "coords": ep,
                                 "name": name or "河流入湖",
@@ -2205,20 +2435,6 @@ class MapService:
         t = max(0.0, min(1.0, t))
         cx, cy = ax + t * dx, ay + t * dy
         return math.hypot(px - cx, py - cy)
-
-    def _point_in_ring(self, p: list, ring: list) -> bool:
-        """射线法判断点是否在多边形内（经纬度平面近似）"""
-        x, y = p[1], p[0]
-        inside = False
-        n = len(ring)
-        j = n - 1
-        for i in range(n):
-            xi, yi = ring[i][1], ring[i][0]
-            xj, yj = ring[j][1], ring[j][0]
-            if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-12) + xi):
-                inside = not inside
-            j = i
-        return inside
 
     def _max_curvature_vertex(self, coords: list, near: list, window: int = 6) -> list:
         """在汇入点附近寻找河道曲率最大处的顶点
@@ -2291,8 +2507,8 @@ class MapService:
         # 省级：黑色细点线(周边外省界线)；地级市界：紫色#7040A0粗实线；县级：黑色点划线；乡级：黑色细点线
         boundary_styles = {
             "4": {"name": "省界(周边外省)", "color": "#000000", "weight": 1.2, "opacity": 0.9, "dashArray": "1,4"},
-            "6": {"name": "地级市界", "color": "#7040A0", "weight": 3.2, "opacity": 1.0},
-            "8": {"name": "区县界", "color": "#000000", "weight": 1.5, "opacity": 0.95, "dashArray": "7,3,1,3"},
+            "6": {"name": "地级市界", "color": "#7040A0", "weight": 3.2, "opacity": 0.9},
+            "8": {"name": "区县界", "color": "#000000", "weight": 1.5, "opacity": 0.9, "dashArray": "7,3,1,3"},
             "9": {"name": "乡镇界", "color": "#000000", "weight": 0.8, "opacity": 0.6, "dashArray": "2,3"},
         }
         by_level = {}
