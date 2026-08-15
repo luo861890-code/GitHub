@@ -16,23 +16,33 @@ carto-agent/
 │   │   ├── core/            # 配置、常量、异常、KG 本体
 │   │   ├── models/          # Pydantic 数据模型 / Schema
 │   │   ├── services/        # 业务服务（agent / llm / map / geo / kg / osm ...）
-│   │   └── utils/           # 通用工具
-│   ├── data/geo/            # 本地地理数据（GeoJSON，数据流水线生成）
+│   │   └── utils/           # 通用工具（geometry 几何函数等）
+│   ├── data/
+│   │   ├── geo/             # 本地地理数据（GeoJSON，数据流水线生成）
+│   │   ├── kg/              # 本体导出文件（carto_ontology.ttl）
+│   │   └── dem/             # SRTM DEM（等高线生成，体积大不入库）
 │   ├── scripts/             # 数据流水线脚本（prepare / optimize / clean）
 │   ├── runtime/             # 运行时产物（server.pid、服务日志）
 │   ├── .env / .env.example  # 环境配置（LLM / Neo4j / 服务）
 │   └── requirements.txt
-├── frontend/                # 前端（原生 JS 版，后端直接托管）
-│   ├── src/
-│   │   ├── index.html
-│   │   ├── css/style.css
-│   │   ├── js/              # 模块化脚本（加载顺序见下）
-│   │   │   ├── map.js       # 地图核心（渲染/图层/图例/比例尺/路线/导出）
-│   │   │   ├── map-lod.js   # 载负量 LOD 分级（比例尺显隐/抽稀）
-│   │   │   ├── map-edit.js  # 编辑模式（绘制/节点/撤销/属性/保存）
-│   │   │   ├── chat.js / graph.js / api.js / utils.js / app.js
-│   │   └── vendor/          # 本地化第三方库（leaflet-editable.js）
-│   └── vue-app/             # Vue 3 备选前端（npm 独立构建）
+├── frontend/                # 前端（Vue 3 + Vite）
+│   └── vue-app/
+│       ├── index.html       # 入口，加载 Leaflet 与经典 JS 做图模块
+│       ├── public/legacy/   # 经典 JS 做图模块（MapPanel，供 Vue 复用）
+│       │   ├── config.js    #   全局配置（默认中心 / 主题 / 瓦片）
+│       │   ├── utils.js / api.js
+│       │   ├── map.js       #   MapPanel 核心（做图渲染）
+│       │   ├── map-lod.js   #   载负量 LOD 分级
+│       │   ├── map-edit.js  #   矢量编辑
+│       │   └── leaflet-editable.js
+│       ├── src/             # Vue 3 源码
+│       │   ├── components/  #   面板 / 编辑器组件（LegacyMapPanel 等）
+│       │   ├── stores/      #   Pinia 状态（app / chat / map / kg / edit）
+│       │   ├── services/    #   API 封装
+│       │   ├── types/       #   TypeScript 类型
+│       │   └── config/      #   前端配置
+│       ├── package.json / vite.config.ts
+│       └── tsconfig*.json
 ├── data/                    # 运行数据（maps.json / sessions.json / kg/）
 │   └── *.bak / *backup*     # 数据恢复备份（maps.json.bak 等）
 ├── docs/                    # 文档与长期规划
@@ -46,13 +56,13 @@ carto-agent/
 └── output/                  # 导出/调试产物（debug/）
 ```
 
-前端脚本加载顺序：`map.js → map-lod.js → map-edit.js → graph.js → app.js`
+前端做图模块加载顺序：`config.js → utils.js → api.js → map.js → map-lod.js → map-edit.js`
 （lod / edit 通过 `MapPanel.prototype` 扩展核心类）。
 
 ## 快速启动
 
 ```bash
-# 1. 安装依赖（Python 3.10+）
+# 1. 安装后端依赖（Python 3.10+）
 cd backend
 pip install -r requirements.txt
 
@@ -61,8 +71,13 @@ pip install -r requirements.txt
 # 3. 启动后端（默认 8080 端口，清代理保证 OSM 抓取可用）
 python ../tools/start_server_noproxy.py
 
-# 4. 访问
-#    前端页面  http://localhost:8080/app
+# 4. 启动前端（Vue 3 + Vite，默认 5173，/api 与 /ws 代理到 8080）
+cd ../frontend/vue-app
+npm install
+npm run dev
+
+# 5. 访问
+#    前端页面  http://localhost:5173
 #    API 文档  http://localhost:8080/docs
 #    健康检查  http://localhost:8080/health
 ```
@@ -105,10 +120,16 @@ PORT=8080
 | `data/sessions.json` | 会话历史（消息仅存 `map_id` 引用，不内嵌完整地图） |
 | `data/archive/` | 历史地图归档 + 迁移前数据备份（zip） |
 | `backend/data/geo/` | 本地精确地理数据（区县 / 水系 / 路网 / 旅游等） |
-| `backend/data/dem/` | SRTM DEM（等高线生成） |
+| `backend/data/dem/` | SRTM DEM（等高线生成，体积大、不入库，需 `tools/download_srtm_wuhan.ps1` 下载） |
 
 ## 前端说明
 
-- **经典 JS 前端**：`frontend/src/`，后端直接托管，访问 `/app`
-- **Vue 3 新版前端**：`frontend/vue-app/`，独立 Vite 构建（开发端口 5173），
-  地图渲染与 carto-agent-1 保持一致（features 图层 / LOD 分级 / 制图底图 / 图廓框线）
+前端为 Vue 3（Vite）应用，位于 `frontend/vue-app/`：
+
+- **开发模式**：`npm run dev`（默认 5173），`vite.config.ts` 将 `/api`、`/ws`
+  代理到后端 8080。
+- **做图渲染**：`LegacyMapPanel.vue` 复用 `public/legacy/` 下的经典 JS 做图模块
+  （`MapPanel` + LOD + 编辑），这些模块在 `index.html` 中以全局脚本加载并暴露到
+  `window.MapPanel / Utils / API / CONFIG`。
+- **生产构建**：`npm run build` 生成 `frontend/vue-app/dist/`；后端若检测到该目录，
+  会通过 `/app` 静态托管构建产物。

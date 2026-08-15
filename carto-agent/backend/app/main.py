@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse
 
 from app.core.config import settings
 from app.api.chat import router as chat_router
@@ -26,9 +26,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("carto-agent")
 
-# 前端静态文件根目录（frontend/，包含config.js和src/）
-FRONTEND_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "frontend")
-FRONTEND_SRC = os.path.join(FRONTEND_ROOT, "src")
+# 前端构建产物目录（frontend/vue-app/dist/，由 `npm run build` 生成）
+FRONTEND_DIST = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    "frontend", "vue-app", "dist",
+)
 
 
 @asynccontextmanager
@@ -111,19 +113,23 @@ async def health_check():
 
 
 # ========== 前端静态文件服务 ==========
+# 前端为 Vue 3（frontend/vue-app/）。开发时由 Vite 独立启动（默认 5173，
+# 经 vite.config.ts 将 /api、/ws 代理到本后端）；生产部署先执行
+# `cd frontend/vue-app && npm run build`，产物落在 dist/ 后由下方托管。
 
-if os.path.exists(FRONTEND_ROOT):
+if os.path.exists(os.path.join(FRONTEND_DIST, "index.html")):
     # /app 路由必须在 mount("/") 之前定义，否则会被静态文件拦截
     @app.get("/app", summary="前端页面入口")
     async def serve_frontend():
-        """提供前端主页面 - 重定向到/src/index.html确保相对路径正确解析"""
-        return RedirectResponse(url="/src/index.html")
+        """提供前端主页面（Vue 构建产物）"""
+        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
 
-    # 挂载frontend目录到根路径（API路由和/app已注册，会优先匹配）
-    # 这样 /config.js、/src/js/*.js 等相对路径资源都能正确访问
-    app.mount("/", StaticFiles(directory=FRONTEND_ROOT, html=True), name="frontend")
+    # 挂载 dist 目录到根路径（API 路由和 /app 已注册，会优先匹配）
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
 
     logger.info("  前端页面: http://%s:%s/app", settings.host, settings.port)
-    logger.info("  前端页面: http://%s:%s/src/index.html", settings.host, settings.port)
 else:
-    logger.warning("前端目录不存在: %s，跳过静态文件服务", FRONTEND_ROOT)
+    logger.info(
+        "前端为 Vue/Vite：开发时请 `cd frontend/vue-app && npm run dev`（默认 5173）；"
+        "生产部署先 `npm run build` 生成 dist/ 后再启动后端。"
+    )
