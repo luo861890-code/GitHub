@@ -19,7 +19,12 @@
           class="session-item"
           :class="{ active: session.session_id === chatStore.currentSessionId }"
         >
-          <div class="session-item-content" @click="handleSwitch(session.session_id)">
+          <div
+            class="session-item-content"
+            @click="handleSwitch(session.session_id)"
+            @dblclick.stop="handleRename(session)"
+            title="双击重命名"
+          >
             <i class="fa-solid fa-comments session-icon"></i>
             <div class="session-info">
               <span class="session-title">{{ session.title }}</span>
@@ -38,6 +43,7 @@
 <script setup lang="ts">
 import { useAppStore } from '@/stores/appStore'
 import { useChatStore } from '@/stores/chatStore'
+import { showInputDialog } from '@/utils/dialog'
 
 const appStore = useAppStore()
 const chatStore = useChatStore()
@@ -59,6 +65,16 @@ async function handleSwitch(sessionId: string) {
 async function handleDelete(sessionId: string) {
   if (!confirm('确定要删除这个会话吗？')) return
   await chatStore.deleteCurrentSession(sessionId)
+}
+
+async function handleRename(session: any) {
+  const title = await showInputDialog({
+    title: '重命名会话',
+    defaultValue: session.title || '',
+  })
+  if (title && title.trim()) {
+    await chatStore.renameSession(session.session_id, title.trim())
+  }
 }
 
 function formatTime(timestamp: number): string {

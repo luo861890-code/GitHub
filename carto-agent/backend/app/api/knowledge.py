@@ -18,6 +18,7 @@ from app.models.schemas import (
 from app.services.kg_service import KGService
 from app.services.graphrag_service import GraphRAGService
 from pydantic import BaseModel
+from typing import Optional
 
 router = APIRouter(prefix="/api/kg", tags=["知识图谱"])
 
@@ -211,6 +212,14 @@ class GraphRAGRequest(BaseModel):
     top_k: int = 3
 
 
+class SymbolRecommendRequest(BaseModel):
+    """符号推荐请求"""
+    map_type: str = "traffic"
+    element_type: Optional[str] = None
+    scale: Optional[int] = None
+    audience: str = "public"
+
+
 @router.post("/graphrag", response_model=ApiResponse, summary="GraphRAG图检索增强查询")
 async def graphrag_search(
     request: GraphRAGRequest,
@@ -233,6 +242,26 @@ async def graphrag_search(
         return ApiResponse(success=True, data=result)
     except Exception as e:
         return ApiResponse(success=False, message=f"GraphRAG查询失败: {e}")
+
+
+@router.post("/symbol-recommend", response_model=ApiResponse, summary="KG驱动符号推荐")
+async def symbol_recommend(
+    request: SymbolRecommendRequest,
+    kg_service: KGService = Depends(get_kg_service),
+):
+    """按地图主题/要素/比例尺/受众推荐标准制图符号（计划 2.3）"""
+    try:
+        from app.services.symbol_recommender import SymbolRecommender
+        result = SymbolRecommender().recommend(
+            map_type=request.map_type,
+            element_type=request.element_type,
+            scale=request.scale,
+            audience=request.audience,
+            kg_service=kg_service,
+        )
+        return ApiResponse(success=True, data=result)
+    except Exception as e:
+        return ApiResponse(success=False, message=f"符号推荐失败: {e}")
 
 
 @router.get("/subgraph/{entity_name}", response_model=ApiResponse, summary="获取实体子图")

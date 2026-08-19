@@ -1,0 +1,2320 @@
+Read "D:\AAA-Study\work\github\carto-agent\frontend\vue-app\src\components\QgisEditor.vue":
+
+     1	<template>
+     2	  <div class="qgis-editor">
+     3	    <!-- 菜单栏 -->
+     4	    <div class="qgis-menu-bar">
+     5	      <div class="menu-item" v-for="menu in menus" :key="menu.id">
+     6	        <span class="menu-label">{{ menu.label }}</span>
+     7	        <div class="menu-dropdown" v-if="menu.items">
+     8	          <template v-for="item in menu.items" :key="item.id">
+     9	            <div v-if="item.type === 'separator'" class="menu-separator"></div>
+    10	            <div v-else class="menu-item-child" @click="handleMenuAction(item)">
+    11	              <i :class="item.icon" v-if="item.icon"></i>
+    12	              <span>{{ item.label }}</span>
+    13	              <span class="shortcut" v-if="item.shortcut">{{ item.shortcut }}</span>
+    14	            </div>
+    15	          </template>
+    16	        </div>
+    17	      </div>
+    18	      <div class="menu-bar-right">
+    19	        <button class="back-btn" @click="goBack">
+    20	          <i class="fa-solid fa-arrow-left"></i>
+    21	          <span>返回主界面</span>
+    22	        </button>
+    23	      </div>
+    24	    </div>
+    25	
+    26	    <!-- 工具栏 - 动态渲染工具组 -->
+    27	    <div class="qgis-toolbar">
+    28	      <div 
+    29	        class="toolbar-group" 
+    30	        v-for="group in activeToolGroups" 
+    31	        :key="group.id"
+    32	      >
+    33	        <span class="toolbar-label">{{ group.label }}</span>
+    34	        <div class="toolbar-separator"></div>
+    35	        <button 
+    36	          class="tool-btn" 
+    37	          v-for="tool in group.tools" 
+    38	          :key="tool.id"
+    39	          :title="tool.title"
+    40	          :class="{ active: activeTool === tool.id }"
+    41	          @click="handleToolClick(tool)"
+    42	        >
+    43	          <i :class="tool.icon"></i>
+    44	        </button>
+    45	      </div>
+    46	      
+    47	      <!-- 工具组自定义按钮 -->
+    48	      <div class="toolbar-group toolbar-customize">
+    49	        <div class="toolbar-separator"></div>
+    50	        <button 
+    51	          class="tool-btn tool-customize-btn" 
+    52	          title="自定义工具栏"
+    53	          @click="showToolGroupSelector = !showToolGroupSelector"
+    54	        >
+    55	          <i class="fa-solid fa-sliders"></i>
+    56	        </button>
+    57	        
+    58	        <!-- 工具组选择器下拉菜单 -->
+    59	        <div class="tool-group-selector" v-if="showToolGroupSelector">
+    60	          <div class="selector-header">
+    61	            <i class="fa-solid fa-toolbox"></i>
+    62	            <span>工具栏工具组</span>
+    63	          </div>
+    64	          <div class="selector-hint">勾选要显示的工具组</div>
+    65	          <div class="selector-list">
+    66	            <div 
+    67	              class="selector-item" 
+    68	              v-for="group in allToolGroups" 
+    69	              :key="group.id"
+    70	              @click="toggleToolGroup(group.id)"
+    71	            >
+    72	              <i 
+    73	                :class="activeToolGroupIds.includes(group.id) ? 'fa-solid fa-square-check' : 'fa-regular fa-square'"
+    74	              ></i>
+    75	              <span>{{ group.label }}</span>
+    76	              <span class="tool-count">{{ group.tools.length }}个工具</span>
+    77	            </div>
+    78	          </div>
+    79	          <div class="selector-footer">
+    80	            <button class="selector-btn" @click="activeToolGroupIds = allToolGroups.map(g => g.id)">全选</button>
+    81	            <button class="selector-btn" @click="activeToolGroupIds = []">清空</button>
+    82	            <button class="selector-btn primary" @click="showToolGroupSelector = false">完成</button>
+    83	          </div>
+    84	        </div>
+    85	      </div>
+    86	    </div>
+    87	
+    88	    <!-- 主体区域 -->
+    89	    <div class="qgis-main">
+    90	      <!-- 左侧面板 -->
+    91	      <div class="qgis-left-panel">
+    92	        <div class="panel-tabs">
+    93	          <button 
+    94	            class="panel-tab" 
+    95	            :class="{ active: leftPanelTab === 'layers' }"
+    96	            @click="leftPanelTab = 'layers'"
+    97	          >
+    98	            <i class="fa-solid fa-layer-group"></i>
+    99	            <span>图层</span>
+   100	          </button>
+   101	          <button 
+   102	            class="panel-tab" 
+   103	            :class="{ active: leftPanelTab === 'style' }"
+   104	            @click="leftPanelTab = 'style'"
+   105	          >
+   106	            <i class="fa-solid fa-palette"></i>
+   107	            <span>样式</span>
+   108	          </button>
+   109	          <button 
+   110	            class="panel-tab" 
+   111	            :class="{ active: leftPanelTab === 'history' }"
+   112	            @click="leftPanelTab = 'history'"
+   113	          >
+   114	            <i class="fa-solid fa-clock-rotate-left"></i>
+   115	            <span>历史</span>
+   116	          </button>
+   117	        </div>
+   118	
+   119	        <div class="panel-content">
+   120	          <!-- 图层面板 -->
+   121	          <div v-show="leftPanelTab === 'layers'" class="layers-panel">
+   122	            <div class="panel-toolbar">
+   123	              <button class="panel-tool-btn" title="添加图层" @click="addLayerByDialog">
+   124	                <i class="fa-solid fa-plus"></i>
+   125	              </button>
+   126	              <button class="panel-tool-btn" title="移除图层" @click="removeSelectedLayer">
+   127	                <i class="fa-solid fa-minus"></i>
+   128	              </button>
+   129	              <button class="panel-tool-btn" title="上移图层" @click="moveLayer(-1)">
+   130	                <i class="fa-solid fa-arrow-up"></i>
+   131	              </button>
+   132	              <button class="panel-tool-btn" title="下移图层" @click="moveLayer(1)">
+   133	                <i class="fa-solid fa-arrow-down"></i>
+   134	              </button>
+   135	              <div class="panel-tool-separator"></div>
+   136	              <button class="panel-tool-btn" title="打开属性表" @click="openAttrTable">
+   137	                <i class="fa-solid fa-table"></i>
+   138	              </button>
+   139	              <button class="panel-tool-btn" title="缩放到图层" @click="zoomToSelectedLayer">
+   140	                <i class="fa-solid fa-magnifying-glass"></i>
+   141	              </button>
+   142	            </div>
+   143	
+   144	            <div class="layer-tree">
+   145	              <div v-if="mapStore.sortedLayers.length === 0" class="layer-empty">暂无图层</div>
+   146	              <template v-for="(group, gi) in groupedLayerTree" :key="gi">
+   147	                <div v-if="group.name" class="layer-group-header">
+   148	                  <i class="fa-solid fa-folder group-icon"></i>
+   149	                  {{ group.name }}
+   150	                  <span class="group-count">{{ group.layers.length }}</span>
+   151	                </div>
+   152	                <div
+   153	                  v-for="layer in group.layers"
+   154	                  :key="layer.id"
+   155	                  class="layer-item"
+   156	                  :class="{ selected: selectedLayer === layer.id }"
+   157	                  @click="selectedLayer = layer.id"
+   158	                >
+   159	                  <input
+   160	                    type="checkbox"
+   161	                    :checked="layer.visible"
+   162	                    @change="mapStore.toggleLayer(layer.id, ($event.target as HTMLInputElement).checked)"
+   163	                    @click.stop
+   164	                  />
+   165	                  <span class="layer-icon" :class="layerIconClass(layer.data.type)"></span>
+   166	                  <span class="layer-name-text">{{ layer.data.name }}</span>
+   167	                </div>
+   168	              </template>
+   169	            </div>
+   170	          </div>
+   171	
+   172	          <!-- 样式面板 -->
+   173	          <div v-show="leftPanelTab === 'style'" class="style-panel">
+   174	            <div class="style-header">
+   175	              <span>图层样式</span>
+   176	              <span class="layer-name">{{ selectedLayerName }}</span>
+   177	            </div>
+   178	            <div class="style-content">
+   179	              <div class="style-section">
+   180	                <label>渲染方式</label>
+   181	                <select class="style-select" v-model="renderMode">
+   182	                  <option>单点渲染</option>
+   183	                </select>
+   184	              </div>
+   185	              <div class="style-section">
+   186	                <label>填充颜色（面）</label>
+   187	                <div class="color-row">
+   188	                  <input type="color" :value="styleFill" @input="updateStyle('fillColor', ($event.target as HTMLInputElement).value)" class="color-input" />
+   189	                  <span class="color-hex">{{ styleFill }}</span>
+   190	                </div>
+   191	              </div>
+   192	              <div class="style-section">
+   193	                <label>颜色（线/边框/点）</label>
+   194	                <div class="color-row">
+   195	                  <input type="color" :value="styleColor" @input="updateStyle('color', ($event.target as HTMLInputElement).value)" class="color-input" />
+   196	                  <span class="color-hex">{{ styleColor }}</span>
+   197	                </div>
+   198	              </div>
+   199	              <div class="style-section">
+   200	                <label>线宽</label>
+   201	                <input type="range" min="0" max="10" :value="styleWeight" @input="updateStyle('weight', parseInt(($event.target as HTMLInputElement).value))" class="style-slider" />
+   202	                <span class="slider-value">{{ styleWeight }}px</span>
+   203	              </div>
+   204	              <div class="style-section">
+   205	                <label>透明度</label>
+   206	                <input type="range" min="0" max="100" :value="styleOpacity * 100" @input="updateStyle('opacity', parseInt(($event.target as HTMLInputElement).value) / 100)" class="style-slider" />
+   207	                <span class="slider-value">{{ Math.round(styleOpacity * 100) }}%</span>
+   208	              </div>
+   209	            </div>
+   210	          </div>
+   211	
+   212	          <!-- 历史面板 -->
+   213	          <div v-show="leftPanelTab === 'history'" class="history-panel">
+   214	            <div class="history-list">
+   215	              <div class="history-item">
+   216	                <i class="fa-solid fa-layer-group history-icon add"></i>
+   217	                <div class="history-info">
+   218	                  <span class="history-action">当前 {{ mapStore.sortedLayers.length }} 个图层</span>
+   219	                  <span class="history-time">图层树为实时数据</span>
+   220	                </div>
+   221	              </div>
+   222	              <div class="history-item">
+   223	                <i class="fa-solid fa-pen-to-square history-icon style"></i>
+   224	                <div class="history-info">
+   225	                  <span class="history-action">
+   226	                    未保存修改 {{ editStore.dirtyIds.length }} 个图层
+   227	                  </span>
+   228	                  <span class="history-time">编辑模式中 Ctrl+Z 撤销 / Ctrl+Y 重做</span>
+   229	                </div>
+   230	              </div>
+   231	              <div class="history-item">
+   232	                <i class="fa-solid fa-rotate-left history-icon zoom"></i>
+   233	                <div class="history-info">
+   234	                  <span class="history-action">
+   235	                    撤销栈 {{ totalUndoCount }} 条记录
+   236	                  </span>
+   237	                  <span class="history-time">在“编辑模式”面板操作</span>
+   238	                </div>
+   239	              </div>
+   240	            </div>
+   241	          </div>
+   242	        </div>
+   243	      </div>
+   244	
+   245	      <!-- 中央地图画布 -->
+   246	      <div class="qgis-map-canvas">
+   247	        <div class="map-container">
+   248	          <LegacyMapPanel :show-chrome="false" />
+   249	        </div>
+   250	        
+   251	        <!-- 地图悬浮工具 -->
+   252	        <div class="map-floating-tools">
+   253	          <button class="float-tool" title="全屏" @click="toggleFullscreen">
+   254	            <i class="fa-solid fa-expand"></i>
+   255	          </button>
+   256	          <button class="float-tool" title="刷新图层" @click="refreshMap">
+   257	            <i class="fa-solid fa-rotate"></i>
+   258	          </button>
+   259	        </div>
+   260	
+   261	        <!-- 空间分析 / 任务参数浮动面板（编辑界面内复用，锚定到地图画布） -->
+   262	        <AnalysisPanel v-if="appStore.showAnalysisPanel" />
+   263	        <ParamsPanel v-if="appStore.showParamsPanel" />
+   264	      </div>
+   265	
+   266	      <!-- 右侧面板 -->
+   267	      <div class="qgis-right-panel">
+   268	        <div class="panel-tabs">
+   269	          <button 
+   270	            class="panel-tab" 
+   271	            :class="{ active: rightPanelTab === 'processing' }"
+   272	            @click="rightPanelTab = 'processing'"
+   273	          >
+   274	            <i class="fa-solid fa-gears"></i>
+   275	            <span>处理工具箱</span>
+   276	          </button>
+   277	          <button 
+   278	            class="panel-tab" 
+   279	            :class="{ active: rightPanelTab === 'attributes' }"
+   280	            @click="rightPanelTab = 'attributes'"
+   281	          >
+   282	            <i class="fa-solid fa-table-list"></i>
+   283	            <span>属性</span>
+   284	          </button>
+   285	        </div>
+   286	
+   287	        <div class="panel-content">
+   288	          <!-- 处理工具箱 -->
+   289	          <div v-show="rightPanelTab === 'processing'" class="processing-toolbox">
+   290	            <div class="toolbox-search">
+   291	              <i class="fa-solid fa-magnifying-glass"></i>
+   292	              <input type="text" placeholder="搜索工具..." v-model="toolboxSearch" />
+   293	            </div>
+   294	
+   295	            <div class="toolbox-groups">
+   296	              <div class="toolbox-group" v-for="group in filteredToolboxGroups" :key="group.id">
+   297	                <div class="toolbox-group-header" @click="toggleToolboxGroup(group.id)">
+   298	                  <i :class="toolboxGroups[group.id] ? 'fa-solid fa-caret-down' : 'fa-solid fa-caret-right'"></i>
+   299	                  <i :class="group.icon + ' group-icon'"></i>
+   300	                  <span>{{ group.label }}</span>
+   301	                </div>
+   302	                <div class="toolbox-items" v-show="toolboxGroups[group.id]">
+   303	                  <div class="toolbox-item" v-for="item in group.items" :key="item.id" @click="runToolboxAction(item.action)">
+   304	                    <i :class="item.icon"></i>
+   305	                    <span>{{ item.label }}</span>
+   306	                  </div>
+   307	                </div>
+   308	              </div>
+   309	              <div v-if="filteredToolboxGroups.length === 0" class="toolbox-empty">
+   310	                未找到匹配的工具
+   311	              </div>
+   312	            </div>
+   313	          </div>
+   314	
+   315	          <!-- 属性面板 -->
+   316	          <div v-show="rightPanelTab === 'attributes'" class="attributes-panel">
+   317	            <div class="attr-header">
+   318	              <span>要素属性</span>
+   319	              <span class="feature-count">{{ editStore.selectedFeatureInfo?.layerName || selectedLayerName }}</span>
+   320	            </div>
+   321	            <div v-if="editStore.selectedFeatureInfo" class="attr-content">
+   322	              <div class="attr-row" v-for="(value, key) in editStore.selectedFeatureInfo.properties" :key="key">
+   323	                <span class="attr-key">{{ key }}</span>
+   324	                <span class="attr-value">{{ formatAttrValue(value) }}</span>
+   325	              </div>
+   326	              <div v-if="Object.keys(editStore.selectedFeatureInfo.properties).length === 0" class="attr-empty">
+   327	                <i class="fa-solid fa-info-circle"></i>
+   328	                <p>该要素无属性</p>
+   329	              </div>
+   330	            </div>
+   331	            <div v-else class="attr-empty">
+   332	              <i class="fa-solid fa-mouse-pointer"></i>
+   333	              <p>点击地图上的要素查看其属性</p>
+   334	            </div>
+   335	          </div>
+   336	        </div>
+   337	      </div>
+   338	    </div>
+   339	
+   340	    <!-- 底部状态栏 -->
+   341	    <div class="qgis-status-bar">
+   342	      <div class="status-left">
+   343	        <span class="status-item">
+   344	          <i class="fa-solid fa-check-circle ok"></i>
+   345	          已就绪
+   346	        </span>
+   347	        <span class="status-item">
+   348	          投影: WGS84 / Web Mercator
+   349	        </span>
+   350	        <span class="status-item">
+   351	          {{ mapStore.sortedLayers.length }} 个图层
+   352	        </span>
+   353	      </div>
+   354	      <div class="status-center">
+   355	        <span class="status-item">
+   356	          比例尺: 1:{{ scale.toLocaleString() }}
+   357	        </span>
+   358	      </div>
+   359	      <div class="status-right">
+   360	        <span class="status-item">
+   361	          <i class="fa-solid fa-mouse-pointer"></i>
+   362	          {{ currentToolLabel }}
+   363	        </span>
+   364	        <span class="status-item">
+   365	          坐标: {{ centerLng }}, {{ centerLat }}
+   366	        </span>
+   367	      </div>
+   368	    </div>
+   369	
+   370	    <!-- Toast 提示 -->
+   371	    <div class="qgis-toast" v-if="toastVisible">
+   372	      <i class="fa-solid fa-info-circle"></i>
+   373	      <span>{{ toastMessage }}</span>
+   374	    </div>
+   375	  </div>
+   376	</template>
+   377	
+   378	<script setup lang="ts">
+   379	import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+   380	import LegacyMapPanel from './LegacyMapPanel.vue'
+   381	import AnalysisPanel from './AnalysisPanel.vue'
+   382	import ParamsPanel from './ParamsPanel.vue'
+   383	import { useAppStore } from '@/stores/appStore'
+   384	import { useMapStore } from '@/stores/mapStore'
+   385	import { useEditStore } from '@/stores/editStore'
+   386	import api from '@/services/api'
+   387	import { lonLatToWebMercator, webMercatorToLonLat, projectCoordsDeep } from '@/utils/analysis'
+   388	import { showInputDialog } from '@/utils/dialog'
+   389	
+   390	const appStore = useAppStore()
+   391	const mapStore = useMapStore()
+   392	const editStore = useEditStore()
+   393	
+   394	// 菜单数据
+   395	const menus = [
+   396	  {
+   397	    id: 'file',
+   398	    label: '文件',
+   399	    items: [
+   400	      { id: 'new', label: '新建工程', icon: 'fa-solid fa-file-circle-plus', shortcut: 'Ctrl+N' },
+   401	      { id: 'open', label: '打开工程', icon: 'fa-solid fa-folder-open', shortcut: 'Ctrl+O' },
+   402	      { id: 'save', label: '保存工程', icon: 'fa-solid fa-floppy-disk', shortcut: 'Ctrl+S' },
+   403	      { id: 'saveas', label: '另存为...', icon: 'fa-solid fa-floppy-disk', shortcut: 'Ctrl+Shift+S' },
+   404	      { id: 'sep1', type: 'separator' },
+   405	      { id: 'import', label: '导入数据', icon: 'fa-solid fa-file-import' },
+   406	      { id: 'export', label: '导出地图', icon: 'fa-solid fa-file-export' },
+   407	      { id: 'sep2', type: 'separator' },
+   408	      { id: 'print', label: '打印', icon: 'fa-solid fa-print', shortcut: 'Ctrl+P' },
+   409	      { id: 'sep3', type: 'separator' },
+   410	      { id: 'exit', label: '退出', icon: 'fa-solid fa-right-from-bracket' },
+   411	    ]
+   412	  },
+   413	  {
+   414	    id: 'edit',
+   415	    label: '编辑',
+   416	    items: [
+   417	      { id: 'undo', label: '撤销', icon: 'fa-solid fa-rotate-left', shortcut: 'Ctrl+Z' },
+   418	      { id: 'redo', label: '重做', icon: 'fa-solid fa-rotate-right', shortcut: 'Ctrl+Y' },
+   419	      { id: 'sep1', type: 'separator' },
+   420	      { id: 'cut', label: '剪切', icon: 'fa-solid fa-scissors', shortcut: 'Ctrl+X' },
+   421	      { id: 'copy', label: '复制', icon: 'fa-regular fa-copy', shortcut: 'Ctrl+C' },
+   422	      { id: 'paste', label: '粘贴', icon: 'fa-solid fa-paste', shortcut: 'Ctrl+V' },
+   423	      { id: 'sep2', type: 'separator' },
+   424	      { id: 'selectAll', label: '全选', icon: 'fa-solid fa-check-double', shortcut: 'Ctrl+A' },
+   425	      { id: 'deselect', label: '取消选择', icon: 'fa-solid fa-eraser' },
+   426	    ]
+   427	  },
+   428	  {
+   429	    id: 'view',
+   430	    label: '视图',
+   431	    items: [
+   432	      { id: 'zoomIn', label: '放大', icon: 'fa-solid fa-magnifying-glass-plus', shortcut: '+' },
+   433	      { id: 'zoomOut', label: '缩小', icon: 'fa-solid fa-magnifying-glass-minus', shortcut: '-' },
+   434	      { id: 'zoomFull', label: '缩放到全图', icon: 'fa-solid fa-globe', shortcut: 'Ctrl+0' },
+   435	      { id: 'zoomLayer', label: '缩放到图层', icon: 'fa-solid fa-layer-group' },
+   436	      { id: 'sep1', type: 'separator' },
+   437	      { id: 'pan', label: '平移', icon: 'fa-solid fa-hand', shortcut: 'P' },
+   438	      { id: 'sep2', type: 'separator' },
+   439	      { id: 'fullscreen', label: '全屏', icon: 'fa-solid fa-expand', shortcut: 'F11' },
+   440	    ]
+   441	  },
+   442	  {
+   443	    id: 'layer',
+   444	    label: '图层',
+   445	    items: [
+   446	      { id: 'addVector', label: '添加矢量图层', icon: 'fa-solid fa-draw-polygon' },
+   447	      { id: 'addRaster', label: '添加栅格图层', icon: 'fa-solid fa-image' },
+   448	      { id: 'addWMS', label: '添加WMS图层', icon: 'fa-solid fa-server' },
+   449	      { id: 'sep1', type: 'separator' },
+   450	      { id: 'newVector', label: '新建矢量图层', icon: 'fa-solid fa-plus' },
+   451	      { id: 'newShapefile', label: '新建Shapefile', icon: 'fa-regular fa-square-plus' },
+   452	      { id: 'sep2', type: 'separator' },
+   453	      { id: 'attrTable', label: '打开属性表', icon: 'fa-solid fa-table', shortcut: 'F6' },
+   454	    ]
+   455	  },
+   456	  {
+   457	    id: 'settings',
+   458	    label: '设置',
+   459	    items: [
+   460	      { id: 'options', label: '选项', icon: 'fa-solid fa-gear' },
+   461	      { id: 'projection', label: '投影设置', icon: 'fa-solid fa-earth-asia' },
+   462	      { id: 'styles', label: '样式管理器', icon: 'fa-solid fa-palette' },
+   463	    ]
+   464	  },
+   465	  {
+   466	    id: 'plugins',
+   467	    label: '插件',
+   468	    items: [
+   469	      { id: 'manage', label: '管理插件', icon: 'fa-solid fa-puzzle-piece' },
+   470	      { id: 'install', label: '安装插件', icon: 'fa-solid fa-download' },
+   471	    ]
+   472	  },
+   473	  {
+   474	    id: 'help',
+   475	    label: '帮助',
+   476	    items: [
+   477	      { id: 'docs', label: '文档', icon: 'fa-solid fa-book' },
+   478	      { id: 'about', label: '关于', icon: 'fa-solid fa-circle-info' },
+   479	    ]
+   480	  },
+   481	]
+   482	
+   483	// 工具组定义
+   484	interface ToolItem {
+   485	  id: string
+   486	  icon: string
+   487	  title: string
+   488	}
+   489	
+   490	interface ToolGroup {
+   491	  id: string
+   492	  label: string
+   493	  tools: ToolItem[]
+   494	}
+   495	
+   496	// 所有可用的工具组
+   497	const allToolGroups: ToolGroup[] = [
+   498	  {
+   499	    id: 'file',
+   500	    label: '文件',
+   501	    tools: [
+   502	      { id: 'new', icon: 'fa-solid fa-file-circle-plus', title: '新建工程' },
+   503	      { id: 'open', icon: 'fa-solid fa-folder-open', title: '打开工程' },
+   504	      { id: 'save', icon: 'fa-solid fa-floppy-disk', title: '保存工程' },
+   505	      { id: 'print', icon: 'fa-solid fa-print', title: '打印' },
+   506	    ]
+   507	  },
+   508	  {
+   509	    id: 'edit',
+   510	    label: '编辑',
+   511	    tools: [
+   512	      { id: 'undo', icon: 'fa-solid fa-rotate-left', title: '撤销' },
+   513	      { id: 'redo', icon: 'fa-solid fa-rotate-right', title: '重做' },
+   514	      { id: 'cut', icon: 'fa-solid fa-scissors', title: '剪切' },
+   515	      { id: 'copy', icon: 'fa-regular fa-copy', title: '复制' },
+   516	      { id: 'paste', icon: 'fa-solid fa-paste', title: '粘贴' },
+   517	    ]
+   518	  },
+   519	  {
+   520	    id: 'navigation',
+   521	    label: '导航',
+   522	    tools: [
+   523	      { id: 'pan', icon: 'fa-solid fa-hand', title: '平移' },
+   524	      { id: 'zoomIn', icon: 'fa-solid fa-magnifying-glass-plus', title: '放大' },
+   525	      { id: 'zoomOut', icon: 'fa-solid fa-magnifying-glass-minus', title: '缩小' },
+   526	      { id: 'zoomFull', icon: 'fa-solid fa-globe', title: '缩放到全图' },
+   527	      { id: 'zoomLayer', icon: 'fa-solid fa-layer-group', title: '缩放到图层' },
+   528	      { id: 'prevView', icon: 'fa-solid fa-arrow-left', title: '上一视图' },
+   529	      { id: 'nextView', icon: 'fa-solid fa-arrow-right', title: '下一视图' },
+   530	    ]
+   531	  },
+   532	  {
+   533	    id: 'layer',
+   534	    label: '图层',
+   535	    tools: [
+   536	      { id: 'addVector', icon: 'fa-solid fa-draw-polygon', title: '添加矢量图层' },
+   537	      { id: 'addRaster', icon: 'fa-solid fa-image', title: '添加栅格图层' },
+   538	      { id: 'addWMS', icon: 'fa-solid fa-server', title: '添加WMS图层' },
+   539	      { id: 'newVector', icon: 'fa-solid fa-plus', title: '新建矢量图层' },
+   540	      { id: 'newShapefile', icon: 'fa-regular fa-square-plus', title: '新建Shapefile' },
+   541	    ]
+   542	  },
+   543	  {
+   544	    id: 'digitizing',
+   545	    label: '数字化',
+   546	    tools: [
+   547	      { id: 'startEdit', icon: 'fa-solid fa-pencil', title: '开始编辑' },
+   548	      { id: 'saveEdit', icon: 'fa-solid fa-check', title: '保存编辑' },
+   549	      { id: 'stopEdit', icon: 'fa-solid fa-xmark', title: '停止编辑' },
+   550	      { id: 'addPoint', icon: 'fa-solid fa-location-dot', title: '添加点要素' },
+   551	      { id: 'addLine', icon: 'fa-solid fa-minus', title: '添加线要素' },
+   552	      { id: 'addPolygon', icon: 'fa-regular fa-square', title: '添加面要素' },
+   553	      { id: 'moveFeature', icon: 'fa-solid fa-arrows-up-down-left-right', title: '移动要素' },
+   554	      { id: 'deleteFeature', icon: 'fa-solid fa-trash', title: '删除要素' },
+   555	    ]
+   556	  },
+   557	  {
+   558	    id: 'vertex',
+   559	    label: '顶点编辑',
+   560	    tools: [
+   561	      { id: 'nodeTool', icon: 'fa-solid fa-vector-square', title: '节点工具' },
+   562	      { id: 'addVertex', icon: 'fa-solid fa-plus', title: '添加节点' },
+   563	      { id: 'deleteVertex', icon: 'fa-solid fa-minus', title: '删除节点' },
+   564	      { id: 'moveVertex', icon: 'fa-solid fa-arrows-up-down-left-right', title: '移动节点' },
+   565	      { id: 'mergeVertex', icon: 'fa-solid fa-object-group', title: '合并节点' },
+   566	      { id: 'splitFeature', icon: 'fa-solid fa-scissors', title: '分割要素' },
+   567	      { id: 'mergeFeatures', icon: 'fa-solid fa-object-ungroup', title: '合并要素' },
+   568	    ]
+   569	  },
+   570	  {
+   571	    id: 'advancedEdit',
+   572	    label: '高级编辑',
+   573	    tools: [
+   574	      { id: 'rotate', icon: 'fa-solid fa-rotate', title: '旋转要素' },
+   575	      { id: 'scale', icon: 'fa-solid fa-expand', title: '缩放要素' },
+   576	      { id: 'mirror', icon: 'fa-solid fa-arrows-left-right', title: '镜像要素' },
+   577	      { id: 'offset', icon: 'fa-solid fa-arrows-turn-right', title: '偏移曲线' },
+   578	      { id: 'simplify', icon: 'fa-solid fa-wave-square', title: '简化要素' },
+   579	      { id: 'smooth', icon: 'fa-solid fa-wand-magic-sparkles', title: '平滑要素' },
+   580	      { id: 'buffer', icon: 'fa-solid fa-circle', title: '缓冲区' },
+   581	    ]
+   582	  },
+   583	  {
+   584	    id: 'selection',
+   585	    label: '选择',
+   586	    tools: [
+   587	      { id: 'selectRect', icon: 'fa-regular fa-square', title: '按矩形选择' },
+   588	      { id: 'selectPolygon', icon: 'fa-solid fa-draw-polygon', title: '按多边形选择' },
+   589	      { id: 'selectFree', icon: 'fa-solid fa-hand-dots', title: '按自由形状选择' },
+   590	      { id: 'selectRadius', icon: 'fa-regular fa-circle', title: '按半径选择' },
+   591	      { id: 'selectAll', icon: 'fa-solid fa-check-double', title: '全选' },
+   592	      { id: 'deselect', icon: 'fa-solid fa-eraser', title: '取消选择' },
+   593	    ]
+   594	  },
+   595	  {
+   596	    id: 'measure',
+   597	    label: '测量',
+   598	    tools: [
+   599	      { id: 'measureDistance', icon: 'fa-solid fa-ruler', title: '测量距离' },
+   600	      { id: 'measureArea', icon: 'fa-solid fa-ruler-combined', title: '测量面积' },
+   601	      { id: 'measureAngle', icon: 'fa-solid fa-angle', title: '测量角度' },
+   602	    ]
+   603	  },
+   604	  {
+   605	    id: 'georeferencing',
+   606	    label: '校准',
+   607	    tools: [
+   608	      { id: 'addControlPoint', icon: 'fa-solid fa-thumbtack', title: '添加控制点' },
+   609	      { id: 'deleteControlPoint', icon: 'fa-solid fa-xmark', title: '删除控制点' },
+   610	      { id: 'georeference', icon: 'fa-solid fa-earth-asia', title: '地理配准' },
+   611	      { id: 'transform', icon: 'fa-solid fa-arrows-rotate', title: '几何变换' },
+   612	      { id: 'warp', icon: 'fa-solid fa-image', title: '影像校正' },
+   613	      { id: 'adjust', icon: 'fa-solid fa-sliders', title: '调整大小' },
+   614	    ]
+   615	  },
+   616	  {
+   617	    id: 'spatialAnalysis',
+   618	    label: '空间分析',
+   619	    tools: [
+   620	      { id: 'bufferAnalysis', icon: 'fa-solid fa-circle', title: '缓冲区分析' },
+   621	      { id: 'overlay', icon: 'fa-solid fa-layer-group', title: '叠加分析' },
+   622	      { id: 'clip', icon: 'fa-solid fa-cut', title: '裁剪' },
+   623	      { id: 'union', icon: 'fa-solid fa-object-group', title: '合并' },
+   624	      { id: 'intersect', icon: 'fa-solid fa-shapes', title: '相交' },
+   625	      { id: 'symDiff', icon: 'fa-solid fa-shuffle', title: '对称差' },
+   626	    ]
+   627	  },
+   628	]
+   629	
+   630	// 当前显示的工具组ID列表
+   631	const activeToolGroupIds = ref<string[]>(['file', 'edit', 'navigation', 'layer', 'digitizing', 'selection', 'measure'])
+   632	
+   633	// 工具组选择器显示状态
+   634	const showToolGroupSelector = ref(false)
+   635	
+   636	// 切换工具组显示状态
+   637	function toggleToolGroup(groupId: string) {
+   638	  const index = activeToolGroupIds.value.indexOf(groupId)
+   639	  if (index > -1) {
+   640	    activeToolGroupIds.value.splice(index, 1)
+   641	  } else {
+   642	    activeToolGroupIds.value.push(groupId)
+   643	  }
+   644	}
+   645	
+   646	// 获取当前显示的工具组
+   647	const activeToolGroups = computed(() => {
+   648	  return allToolGroups.filter(g => activeToolGroupIds.value.includes(g.id))
+   649	})
+   650	
+   651	// 状态
+   652	const leftPanelTab = ref<'layers' | 'style' | 'history'>('layers')
+   653	const rightPanelTab = ref<'processing' | 'attributes'>('processing')
+   654	const selectedLayer = ref<string | null>(null)
+   655	const activeTool = ref('pan')
+   656	const isEditing = ref(false)
+   657	const scale = ref(50000)
+   658	const toastVisible = ref(false)
+   659	const toastMessage = ref('')
+   660	let toastTimer: ReturnType<typeof setTimeout> | null = null
+   661	
+   662	// 样式编辑
+   663	const renderMode = ref('单点渲染')
+   664	const styleFill = ref('#3b82f6')
+   665	const styleColor = ref('#1e40af')
+   666	const styleWeight = ref(1)
+   667	const styleOpacity = ref(1)
+   668	
+   669	const selectedLayerName = computed(() => {
+   670	  if (!selectedLayer.value) return '未选择图层'
+   671	  return mapStore.layerGroups[selectedLayer.value]?.data.name || '未选择图层'
+   672	})
+   673	
+   674	const totalUndoCount = computed(() =>
+   675	  Object.values(editStore.undoStack).reduce((s, arr) => s + (arr?.length || 0), 0)
+   676	)
+   677	
+   678	const centerLat = computed(() =>
+   679	  (mapStore.currentMapData?.center?.[0] ?? 30.5928).toFixed(4)
+   680	)
+   681	
+   682	const centerLng = computed(() =>
+   683	  (mapStore.currentMapData?.center?.[1] ?? 114.3055).toFixed(4)
+   684	)
+   685	
+   686	/** 图层树：按 group 分组，保持图层显示顺序（order 升序） */
+   687	const groupedLayerTree = computed(() => {
+   688	  const groups: { name: string; layers: any[] }[] = []
+   689	  const index: Record<string, { name: string; layers: any[] }> = {}
+   690	  mapStore.sortedLayers.forEach((layer) => {
+   691	    const g = layer.data.group || ''
+   692	    if (!index[g]) {
+   693	      index[g] = { name: g, layers: [] }
+   694	      groups.push(index[g])
+   695	    }
+   696	    index[g].layers.push(layer)
+   697	  })
+   698	  return groups
+   699	})
+   700	
+   701	const toolboxGroups = ref<Record<string, boolean>>({
+   702	  geo: true,
+   703	  analysis: false,
+   704	  conversion: false,
+   705	})
+   706	
+   707	// 处理工具箱数据（支持搜索过滤）
+   708	const toolboxSearch = ref('')
+   709	
+   710	interface ToolboxEntry {
+   711	  id: string
+   712	  group: 'geo' | 'analysis' | 'conversion'
+   713	  icon: string
+   714	  label: string
+   715	  action: string
+   716	}
+   717	
+   718	const toolboxItems: ToolboxEntry[] = [
+   719	  { id: 'buffer', group: 'geo', icon: 'fa-solid fa-circle-dot', label: '缓冲区', action: 'buffer' },
+   720	  { id: 'overlay', group: 'geo', icon: 'fa-solid fa-layer-group', label: '叠加分析', action: 'overlay' },
+   721	  { id: 'clip', group: 'geo', icon: 'fa-solid fa-scissors', label: '裁剪', action: 'clip' },
+   722	  { id: 'intersect', group: 'geo', icon: 'fa-solid fa-object-group', label: '相交', action: 'intersect' },
+   723	  { id: 'union', group: 'geo', icon: 'fa-solid fa-shapes', label: '并集', action: 'union' },
+   724	  { id: 'nearest', group: 'analysis', icon: 'fa-solid fa-ruler', label: '最近邻', action: 'nearest' },
+   725	  { id: 'density', group: 'analysis', icon: 'fa-solid fa-chart-area', label: '密度分析', action: 'density' },
+   726	  { id: 'export', group: 'conversion', icon: 'fa-solid fa-file-export', label: '格式转换（导出）', action: 'export' },
+   727	  { id: 'projection', group: 'conversion', icon: 'fa-solid fa-earth-asia', label: '投影转换', action: 'projection' },
+   728	]
+   729	
+   730	const toolboxGroupMeta: Record<string, { label: string; icon: string }> = {
+   731	  geo: { label: '地理处理', icon: 'fa-solid fa-globe' },
+   732	  analysis: { label: '空间分析', icon: 'fa-solid fa-chart-line' },
+   733	  conversion: { label: '数据转换', icon: 'fa-solid fa-right-left' },
+   734	}
+   735	
+   736	const filteredToolboxGroups = computed(() => {
+   737	  const kw = toolboxSearch.value.trim().toLowerCase()
+   738	  const filtered = kw
+   739	    ? toolboxItems.filter((it) => it.label.toLowerCase().includes(kw))
+   740	    : toolboxItems
+   741	  return (['geo', 'analysis', 'conversion'] as const)
+   742	    .map((gid) => ({
+   743	      id: gid,
+   744	      label: toolboxGroupMeta[gid].label,
+   745	      icon: toolboxGroupMeta[gid].icon,
+   746	      items: filtered.filter((it) => it.group === gid),
+   747	    }))
+   748	    .filter((g) => g.items.length > 0)
+   749	})
+   750	
+   751	function runToolboxAction(action: string) {
+   752	  if (action === 'buffer') { openAnalysis('buffer'); return }
+   753	  if (action === 'overlay') { openAnalysis('overlay'); return }
+   754	  if (action === 'clip') { openAnalysis('clip'); return }
+   755	  if (action === 'intersect') { openAnalysis('intersect'); return }
+   756	  if (action === 'union') { openAnalysis('union'); return }
+   757	  if (action === 'nearest') { openAnalysis('nearest'); return }
+   758	  if (action === 'density') { runDensityAnalysis(); return }
+   759	  if (action === 'export') { openExportMenu(); return }
+   760	  if (action === 'projection') { runProjection(); return }
+   761	  showToast(action)
+   762	}
+   763	
+   764	// 工具中文标签（顶栏与菜单共用的唯一映射，缺省时不再显示“未知工具”）
+   765	const toolLabels: Record<string, string> = {
+   766	  // 文件
+   767	  new: '新建工程',
+   768	  open: '打开工程',
+   769	  save: '保存工程',
+   770	  saveas: '另存为',
+   771	  import: '导入数据',
+   772	  export: '导出地图',
+   773	  print: '打印',
+   774	  exit: '退出',
+   775	  // 编辑
+   776	  undo: '撤销',
+   777	  redo: '重做',
+   778	  cut: '剪切',
+   779	  copy: '复制',
+   780	  paste: '粘贴',
+   781	  selectAll: '全选',
+   782	  deselect: '取消选择',
+   783	  // 视图 / 导航
+   784	  pan: '平移工具',
+   785	  zoomIn: '放大工具',
+   786	  zoomOut: '缩小工具',
+   787	  zoomFull: '全图缩放',
+   788	  zoomLayer: '缩放至图层',
+   789	  prevView: '上一视图',
+   790	  nextView: '下一视图',
+   791	  fullscreen: '全屏',
+   792	  // 图层
+   793	  addVector: '添加矢量图层',
+   794	  addRaster: '添加栅格图层',
+   795	  addWMS: '添加WMS图层',
+   796	  newVector: '新建矢量图层',
+   797	  newShapefile: '新建Shapefile',
+   798	  attrTable: '属性表',
+   799	  // 数字化
+   800	  startEdit: '开始编辑',
+   801	  saveEdit: '保存编辑',
+   802	  stopEdit: '停止编辑',
+   803	  addPoint: '添加点',
+   804	  addLine: '添加线',
+   805	  addPolygon: '添加面',
+   806	  moveFeature: '移动要素',
+   807	  deleteFeature: '删除要素',
+   808	  // 顶点编辑
+   809	  nodeTool: '节点工具',
+   810	  addVertex: '添加节点',
+   811	  deleteVertex: '删除节点',
+   812	  moveVertex: '移动节点',
+   813	  mergeVertex: '合并节点',
+   814	  splitFeature: '分割要素',
+   815	  mergeFeatures: '合并要素',
+   816	  // 高级编辑
+   817	  rotate: '旋转要素',
+   818	  scale: '缩放要素',
+   819	  mirror: '镜像要素',
+   820	  offset: '偏移曲线',
+   821	  simplify: '简化要素',
+   822	  smooth: '平滑要素',
+   823	  buffer: '缓冲区',
+   824	  // 选择
+   825	  selectRect: '矩形选择',
+   826	  selectPolygon: '多边形选择',
+   827	  selectFree: '自由选择',
+   828	  selectRadius: '半径选择',
+   829	  // 测量
+   830	  measureDistance: '测量距离',
+   831	  measureArea: '测量面积',
+   832	  measureAngle: '测量角度',
+   833	  // 校准
+   834	  addControlPoint: '添加控制点',
+   835	  deleteControlPoint: '删除控制点',
+   836	  georeference: '地理配准',
+   837	  transform: '几何变换',
+   838	  warp: '影像校正',
+   839	  adjust: '调整大小',
+   840	  // 空间分析
+   841	  bufferAnalysis: '缓冲区分析',
+   842	  overlay: '叠加分析',
+   843	  clip: '裁剪',
+   844	  intersect: '相交',
+   845	  union: '合并',
+   846	  symDiff: '对称差',
+   847	  // 设置 / 插件 / 帮助
+   848	  options: '选项',
+   849	  projection: '投影设置',
+   850	  styles: '样式管理器',
+   851	  manage: '管理插件',
+   852	  install: '安装插件',
+   853	  docs: '文档',
+   854	  about: '关于',
+   855	}
+   856	
+   857	// 计算属性
+   858	const currentToolLabel = computed(() => toolLabels[activeTool.value] || '未激活工具')
+   859	
+   860	// 方法
+   861	function setActiveTool(tool: string) {
+   862	  activeTool.value = tool
+   863	  showToast(`切换到${currentToolLabel.value}`)
+   864	}
+   865	
+   866	/**
+   867	 * 模式类工具：点击后保持激活态（高亮），直到切换/取消，如平移、绘制、测量、选择、节点编辑。
+   868	 * 未列出的其余工具均为动作类：点击即执行一次，不保持激活（参考 QGIS 工具栏交互）。
+   869	 */
+   870	const TOOL_KINDS: Record<string, 'tool' | 'action'> = {
+   871	  pan: 'tool',
+   872	  selectRect: 'tool',
+   873	  selectPolygon: 'tool',
+   874	  selectFree: 'tool',
+   875	  selectRadius: 'tool',
+   876	  addPoint: 'tool',
+   877	  addLine: 'tool',
+   878	  addPolygon: 'tool',
+   879	  nodeTool: 'tool',
+   880	  moveFeature: 'tool',
+   881	  addVertex: 'tool',
+   882	  deleteVertex: 'tool',
+   883	  moveVertex: 'tool',
+   884	  addControlPoint: 'tool',
+   885	  deleteControlPoint: 'tool',
+   886	  measureDistance: 'tool',
+   887	  measureArea: 'tool',
+   888	  measureAngle: 'tool',
+   889	}
+   890	
+   891	/** 动作类工具执行完成后的反馈文案 */
+   892	const ACTION_TOASTS: Record<string, string> = {
+   893	  save: '地图已保存：PNG 文件已下载到本地',
+   894	  saveEdit: '编辑内容已保存',
+   895	  undo: '已撤销上一步',
+   896	  redo: '已恢复下一步',
+   897	  cut: '已复制选中要素',
+   898	  copy: '已复制选中要素',
+   899	  paste: '已粘贴要素',
+   900	  deleteFeature: '已删除选中要素',
+   901	  simplify: '已简化选中要素',
+   902	  smooth: '已平滑选中要素',
+   903	  selectAll: '已全选要素',
+   904	  deselect: '已清除选择',
+   905	  zoomIn: '已放大',
+   906	  zoomOut: '已缩小',
+   907	  zoomFull: '已缩放到全图',
+   908	  zoomLayer: '已缩放到选中图层',
+   909	  prevView: '已切换到上一视图',
+   910	  nextView: '已切换到下一视图',
+   911	  mergeVertex: '已合并节点',
+   912	  splitFeature: '已分割要素',
+   913	  mergeFeatures: '已合并要素',
+   914	  rotate: '已旋转选中要素',
+   915	  scale: '已缩放选中要素',
+   916	  mirror: '已镜像选中要素',
+   917	  offset: '已偏移选中要素',
+   918	  transform: '已执行几何变换',
+   919	  adjust: '已调整大小',
+   920	  buffer: '已打开缓冲区分析',
+   921	  bufferAnalysis: '已打开缓冲区分析',
+   922	  overlay: '已打开叠加分析',
+   923	  clip: '已打开裁剪分析',
+   924	  union: '已打开合并分析',
+   925	  intersect: '已打开相交分析',
+   926	  symDiff: '已打开对称差分析',
+   927	  print: '已发送打印任务',
+   928	}
+   929	
+   930	/** 动作类工具点击后调用：不切换激活工具，只给出完成反馈 */
+   931	function finishToolClick(toolId: string) {
+   932	  if (TOOL_KINDS[toolId] === 'tool') {
+   933	    setActiveTool(toolId)
+   934	    return
+   935	  }
+   936	  const msg = ACTION_TOASTS[toolId]
+   937	  if (msg) showToast(msg)
+   938	}
+   939	
+   940	/** 保存地图文件：先保存当前编辑，再导出 PNG 下载到本地文件夹 */
+   941	async function saveMapFile() {
+   942	  if (!mapStore.currentMapId) {
+   943	    showToast('请先生成地图')
+   944	    return
+   945	  }
+   946	  try {
+   947	    dispatchMapEvent('map-edit-save')
+   948	    const resp = await api.exportMap(mapStore.currentMapId, 'png')
+   949	    const data = resp.data || resp
+   950	    const filename = `map-${Date.now()}.png`
+   951	    if (typeof data === 'string' && data.startsWith('data:')) {
+   952	      const link = document.createElement('a')
+   953	      link.href = data
+   954	      link.download = filename
+   955	      link.click()
+   956	    } else {
+   957	      const blob = new Blob([String(data)], { type: 'image/png' })
+   958	      const url = URL.createObjectURL(blob)
+   959	      const a = document.createElement('a')
+   960	      a.href = url
+   961	      a.download = filename
+   962	      a.click()
+   963	      URL.revokeObjectURL(url)
+   964	    }
+   965	    showToast('地图已保存：PNG 文件已下载到本地')
+   966	  } catch (e: any) {
+   967	    showToast('保存失败: ' + (e.message || e))
+   968	  }
+   969	}
+   970	
+   971	// 处理工具按钮点击
+   972	async function handleToolClick(tool: ToolItem) {
+   973	  // 编辑会话开关
+   974	  if (tool.id === 'startEdit') { toggleEditing(); return }
+   975	  if (tool.id === 'saveEdit') { appStore.showEditPanel = true; dispatchMapEvent('map-edit-save'); finishToolClick(tool.id); return }
+   976	  if (tool.id === 'stopEdit') { if (appStore.showEditPanel) appStore.toggleEditPanel(); showToast('已停止编辑'); return }
+   977	
+   978	  // 绘制工具 -> 编辑引擎
+   979	  const editToolMap: Record<string, string> = { addPoint: 'point', addLine: 'line', addPolygon: 'polygon' }
+   980	  if (editToolMap[tool.id]) {
+   981	    appStore.showEditPanel = true
+   982	    editStore.setDrawTool(editToolMap[tool.id] as 'point' | 'line' | 'polygon')
+   983	    dispatchMapEvent('map-edit-draw', { tool: editToolMap[tool.id] })
+   984	    setActiveTool(tool.id)
+   985	    return
+   986	  }
+   987	
+   988	  // 删除 / 复制 / 剪切 / 粘贴 / 简化 / 平滑 / 撤销 / 重做
+   989	  if (tool.id === 'deleteFeature') { appStore.showEditPanel = true; dispatchMapEvent('map-edit-delete'); finishToolClick(tool.id); return }
+   990	  if (tool.id === 'copy' || tool.id === 'cut') { appStore.showEditPanel = true; dispatchMapEvent('map-edit-copy'); finishToolClick(tool.id); return }
+   991	  if (tool.id === 'paste') { appStore.showEditPanel = true; dispatchMapEvent('map-edit-paste'); finishToolClick(tool.id); return }
+   992	  if (tool.id === 'simplify') { appStore.showEditPanel = true; dispatchMapEvent('map-edit-simplify'); finishToolClick(tool.id); return }
+   993	  if (tool.id === 'smooth') { appStore.showEditPanel = true; dispatchMapEvent('map-edit-smooth'); finishToolClick(tool.id); return }
+   994	  if (tool.id === 'undo') { appStore.showEditPanel = true; dispatchMapEvent('map-edit-undo'); finishToolClick(tool.id); return }
+   995	  if (tool.id === 'redo') { appStore.showEditPanel = true; dispatchMapEvent('map-edit-redo'); finishToolClick(tool.id); return }
+   996	
+   997	  // 顶点/节点编辑工具 -> 进入编辑模式后点击要素即可拖拽节点（leaflet-editable）
+   998	  if (['nodeTool', 'addVertex', 'deleteVertex', 'moveVertex', 'moveFeature'].includes(tool.id)) {
+   999	    appStore.showEditPanel = true
+  1000	    editStore.setStatus('节点编辑：点击要素选中后拖拽节点')
+  1001	    setActiveTool(tool.id)
+  1002	    return
+  1003	  }
+  1004	
+  1005	  // 测量（距离 / 面积 / 角度）
+  1006	  if (tool.id === 'measureDistance') { dispatchMapEvent('map-measure-start', { mode: 'distance' }); setActiveTool(tool.id); return }
+  1007	  if (tool.id === 'measureArea') { dispatchMapEvent('map-measure-start', { mode: 'area' }); setActiveTool(tool.id); return }
+  1008	  if (tool.id === 'measureAngle') { dispatchMapEvent('map-measure-start', { mode: 'angle' }); setActiveTool(tool.id); return }
+  1009	
+  1010	  // 选择工具 -> 进入编辑模式后点击要素选中
+  1011	  if (tool.id.startsWith('select') && tool.id !== 'selectAll') {
+  1012	    appStore.showEditPanel = true
+  1013	    editStore.setStatus('选择要素：点击地图上的要素进行选择')
+  1014	    setActiveTool(tool.id)
+  1015	    return
+  1016	  }
+  1017	  if (tool.id === 'selectAll') { appStore.showEditPanel = true; dispatchMapEvent('map-edit-select-all'); finishToolClick(tool.id); return }
+  1018	  if (tool.id === 'deselect') { dispatchMapEvent('map-edit-clear-selection'); finishToolClick(tool.id); return }
+  1019	
+  1020	  // 视图导航
+  1021	  const mapEvents: Record<string, string> = { zoomIn: 'map-zoom-in', zoomOut: 'map-zoom-out', zoomFull: 'map-zoom-full' }
+  1022	  if (mapEvents[tool.id]) { dispatchMapEvent(mapEvents[tool.id]); finishToolClick(tool.id); return }
+  1023	  if (tool.id === 'prevView') { dispatchMapEvent('map-view-prev'); finishToolClick(tool.id); return }
+  1024	  if (tool.id === 'nextView') { dispatchMapEvent('map-view-next'); finishToolClick(tool.id); return }
+  1025	  if (tool.id === 'zoomLayer') { zoomToSelectedLayer(); finishToolClick(tool.id); return }
+  1026	  if (tool.id === 'pan') { setActiveTool(tool.id); return }
+  1027	
+  1028	  // 空间分析工具组 -> 复用 AnalysisPanel（缓冲/点面叠加）
+  1029	  if (['buffer', 'bufferAnalysis'].includes(tool.id)) { appStore.setAnalysisMode('buffer'); finishToolClick(tool.id); return }
+  1030	  if (['overlay', 'clip', 'intersect', 'union', 'symDiff'].includes(tool.id)) { appStore.setAnalysisMode('overlay'); finishToolClick(tool.id); return }
+  1031	
+  1032	  // 图层工具
+  1033	  if (['addVector', 'newVector', 'newShapefile'].includes(tool.id)) { addLayerByDialog(); return }
+  1034	  if (['addRaster', 'addWMS'].includes(tool.id)) { showToast('栅格/WMS 图层暂不支持，请使用导入或矢量图层'); return }
+  1035	
+  1036	  // 几何变换（旋转 / 缩放 / 镜像 / 偏移 / 合并节点 / 分割 / 合并）
+  1037	  if (tool.id === 'rotate') {
+  1038	    appStore.showEditPanel = true
+  1039	    const v = await showInputDialog({ title: '旋转角度（度，正值顺时针）', defaultValue: '45' })
+  1040	    if (v !== null && v.trim() !== '') { dispatchMapEvent('map-edit-rotate', { angle: parseFloat(v) }); finishToolClick(tool.id) }
+  1041	    return
+  1042	  }
+  1043	  if (tool.id === 'scale') {
+  1044	    appStore.showEditPanel = true
+  1045	    const v = await showInputDialog({ title: '缩放比例（1.5 放大 / 0.5 缩小）', defaultValue: '1.5' })
+  1046	    if (v !== null && v.trim() !== '') { dispatchMapEvent('map-edit-scale', { factor: parseFloat(v) }); finishToolClick(tool.id) }
+  1047	    return
+  1048	  }
+  1049	  if (tool.id === 'mirror') {
+  1050	    appStore.showEditPanel = true
+  1051	    const v = await showInputDialog({ title: '镜像方向（h=水平 / v=垂直）', defaultValue: 'h' })
+  1052	    if (v !== null) { dispatchMapEvent('map-edit-mirror', { axis: (v || 'h').toLowerCase().startsWith('v') ? 'vertical' : 'horizontal' }); finishToolClick(tool.id) }
+  1053	    return
+  1054	  }
+  1055	  if (tool.id === 'offset') {
+  1056	    appStore.showEditPanel = true
+  1057	    const v = await showInputDialog({ title: '偏移距离（米）', defaultValue: '500' })
+  1058	    if (v !== null && v.trim() !== '') { dispatchMapEvent('map-edit-offset', { distance: parseFloat(v) }); finishToolClick(tool.id) }
+  1059	    return
+  1060	  }
+  1061	  if (tool.id === 'mergeVertex') { appStore.showEditPanel = true; dispatchMapEvent('map-edit-merge-vertex'); finishToolClick(tool.id); return }
+  1062	  if (tool.id === 'splitFeature') { appStore.showEditPanel = true; dispatchMapEvent('map-edit-split'); finishToolClick(tool.id); return }
+  1063	  if (tool.id === 'mergeFeatures') { appStore.showEditPanel = true; dispatchMapEvent('map-edit-merge'); finishToolClick(tool.id); return }
+  1064	
+  1065	  // 校准工具组（矢量制图场景：映射到节点编辑与仿射变换）
+  1066	  if (['addControlPoint', 'addVertex'].includes(tool.id)) { appStore.showEditPanel = true; editStore.setStatus('添加控制点：点击要素后在节点间插入'); setActiveTool(tool.id); return }
+  1067	  if (['deleteControlPoint', 'deleteVertex'].includes(tool.id)) { appStore.showEditPanel = true; editStore.setStatus('删除控制点：选中要素后删除节点'); setActiveTool(tool.id); return }
+  1068	  if (tool.id === 'transform') {
+  1069	    appStore.showEditPanel = true
+  1070	    const v = await showInputDialog({ title: '仿射变换缩放比例', defaultValue: '1.2' })
+  1071	    if (v !== null && v.trim() !== '') { dispatchMapEvent('map-edit-scale', { factor: parseFloat(v) }); finishToolClick(tool.id) }
+  1072	    return
+  1073	  }
+  1074	  if (tool.id === 'adjust') {
+  1075	    appStore.showEditPanel = true
+  1076	    const v = await showInputDialog({ title: '调整缩放比例', defaultValue: '1.1' })
+  1077	    if (v !== null && v.trim() !== '') { dispatchMapEvent('map-edit-scale', { factor: parseFloat(v) }); finishToolClick(tool.id) }
+  1078	    return
+  1079	  }
+  1080	  if (['georeference', 'warp'].includes(tool.id)) { showToast('矢量数据已带坐标，无需栅格配准/影像校正'); return }
+  1081	
+  1082	  // 文件
+  1083	  if (tool.id === 'save') { await saveMapFile(); return }
+  1084	  if (tool.id === 'new') { showToast('新建工程：请返回主界面开启新会话'); return }
+  1085	  if (tool.id === 'open') { showToast('打开工程：请通过主界面历史记录加载会话'); return }
+  1086	  if (tool.id === 'print') { window.print(); showToast('已发送打印任务'); return }
+  1087	
+  1088	  // 高级几何变换 / 校准 / 栅格处理等专业 GIS 功能（明确提示暂未实现）
+  1089	  showToast(`「${tool.title}」暂未实现`)
+  1090	}
+  1091	
+  1092	function toggleEditing() {
+  1093	  appStore.toggleEditPanel()
+  1094	  isEditing.value = appStore.showEditPanel
+  1095	  showToast(isEditing.value ? '编辑模式已开启' : '已退出编辑模式')
+  1096	}
+  1097	
+  1098	function toggleToolboxGroup(group: string) {
+  1099	  toolboxGroups.value[group] = !toolboxGroups.value[group]
+  1100	}
+  1101	
+  1102	function handleMenuAction(item: any) {
+  1103	  const actions: Record<string, () => void> = {
+  1104	    // 文件
+  1105	    save: () => dispatchMapEvent('map-edit-save'),
+  1106	    saveas: () => dispatchMapEvent('map-edit-save'),
+  1107	    export: () => openExportMenu(),
+  1108	    import: () => appStore.toggleImportModal(),
+  1109	    print: () => window.print(),
+  1110	    exit: () => goBack(),
+  1111	    new: () => goBack(),
+  1112	    open: () => appStore.toggleSessionDrawer(),
+  1113	    // 编辑
+  1114	    undo: () => dispatchMapEvent('map-edit-undo'),
+  1115	    redo: () => dispatchMapEvent('map-edit-redo'),
+  1116	    cut: () => dispatchMapEvent('map-edit-copy'),
+  1117	    copy: () => dispatchMapEvent('map-edit-copy'),
+  1118	    paste: () => dispatchMapEvent('map-edit-paste'),
+  1119	    selectAll: () => { appStore.showEditPanel = true; dispatchMapEvent('map-edit-select-all') },
+  1120	    deselect: () => dispatchMapEvent('map-edit-clear-selection'),
+  1121	    // 视图
+  1122	    zoomIn: () => dispatchMapEvent('map-zoom-in'),
+  1123	    zoomOut: () => dispatchMapEvent('map-zoom-out'),
+  1124	    zoomFull: () => dispatchMapEvent('map-zoom-full'),
+  1125	    zoomLayer: () => zoomToSelectedLayer(),
+  1126	    pan: () => setActiveTool('pan'),
+  1127	    fullscreen: () => toggleFullscreen(),
+  1128	    // 图层
+  1129	    addVector: () => addLayerByDialog(),
+  1130	    addRaster: () => showToast('栅格图层暂不支持，请使用导入或矢量图层'),
+  1131	    addWMS: () => showToast('WMS 图层暂不支持'),
+  1132	    newVector: () => addLayerByDialog(),
+  1133	    newShapefile: () => addLayerByDialog(),
+  1134	    attrTable: () => openAttrTable(),
+  1135	    // 设置
+  1136	    options: () => appStore.toggleSettings(),
+  1137	    projection: () => appStore.toggleParamsPanel(),
+  1138	    styles: () => { leftPanelTab.value = 'style' },
+  1139	    // 插件 / 帮助
+  1140	    manage: () => showToast('插件管理暂不支持'),
+  1141	    install: () => showToast('插件安装暂不支持'),
+  1142	    docs: () => window.open('https://leafletjs.com', '_blank'),
+  1143	    about: () => showToast('CartoAgent 地图制图智能体'),
+  1144	    // 兼容
+  1145	    metadata: () => appStore.toggleMetadataModal(),
+  1146	    params: () => appStore.toggleParamsPanel(),
+  1147	    addLayer: () => addLayerByDialog(),
+  1148	  }
+  1149	  const fn = actions[item.id]
+  1150	  if (fn) fn()
+  1151	  else showToast(item.label)
+  1152	}
+  1153	
+  1154	function showToast(message: string) {
+  1155	  toastMessage.value = message
+  1156	  toastVisible.value = true
+  1157	  if (toastTimer) clearTimeout(toastTimer)
+  1158	  toastTimer = setTimeout(() => {
+  1159	    toastVisible.value = false
+  1160	    toastTimer = null
+  1161	  }, 2000)
+  1162	}
+  1163	
+  1164	function goBack() {
+  1165	  appStore.switchToMainView()
+  1166	}
+  1167	
+  1168	function dispatchMapEvent(name: string, detail?: any) {
+  1169	  const el = document.getElementById('map-container')
+  1170	  if (el) {
+  1171	    el.dispatchEvent(new CustomEvent(name, detail !== undefined ? { detail } : undefined))
+  1172	  }
+  1173	}
+  1174	
+  1175	async function addLayerByDialog() {
+  1176	  if (!mapStore.currentMapId) {
+  1177	    showToast('请先生成地图')
+  1178	    return
+  1179	  }
+  1180	  const name = await showInputDialog({ title: '输入图层名称（如：医院）' })
+  1181	  if (!name || !name.trim()) return
+  1182	  const type = await showInputDialog({ title: '输入图层类型（point / line / polygon）', defaultValue: 'point' })
+  1183	  if (!type || !['point', 'line', 'polygon'].includes(type.trim())) {
+  1184	    showToast('图层类型仅支持 point / line / polygon')
+  1185	    return
+  1186	  }
+  1187	  try {
+  1188	    await api.addLayer(mapStore.currentMapId, {
+  1189	      layer_type: type.trim(),
+  1190	      name: name.trim(),
+  1191	    })
+  1192	    const resp = await api.getMap(mapStore.currentMapId)
+  1193	    const data = resp.data || resp
+  1194	    mapStore.setMapData(data)
+  1195	    dispatchMapEvent('map-apply-data', { data })
+  1196	    showToast('图层已添加')
+  1197	  } catch (e: any) {
+  1198	    showToast('添加图层失败: ' + e.message)
+  1199	  }
+  1200	}
+  1201	
+  1202	async function removeSelectedLayer() {
+  1203	  const layerId = selectedLayer.value
+  1204	  if (!layerId || !mapStore.currentMapId) {
+  1205	    showToast('请先选择图层')
+  1206	    return
+  1207	  }
+  1208	  const known = mapStore.currentMapData?.layers?.some((l) => l.id === layerId)
+  1209	  mapStore.removeLayer(layerId)
+  1210	  selectedLayer.value = null
+  1211	  if (known) {
+  1212	    try {
+  1213	      await api.removeLayer(mapStore.currentMapId, layerId)
+  1214	    } catch {}
+  1215	  }
+  1216	  dispatchMapEvent('map-refresh-layers')
+  1217	}
+  1218	
+  1219	function moveLayer(dir: number) {
+  1220	  const layerId = selectedLayer.value
+  1221	  if (!layerId) {
+  1222	    showToast('请先选择图层')
+  1223	    return
+  1224	  }
+  1225	  if (dir < 0) mapStore.moveLayerUp(layerId)
+  1226	  else mapStore.moveLayerDown(layerId)
+  1227	  dispatchMapEvent('map-refresh-layers')
+  1228	}
+  1229	
+  1230	function openAttrTable() {
+  1231	  if (!selectedLayer.value) {
+  1232	    showToast('请先选择图层')
+  1233	    return
+  1234	  }
+  1235	  appStore.openAttributeTable(selectedLayer.value)
+  1236	}
+  1237	
+  1238	function zoomToSelectedLayer() {
+  1239	  if (!selectedLayer.value) {
+  1240	    showToast('请先选择图层')
+  1241	    return
+  1242	  }
+  1243	  dispatchMapEvent('map-zoom-to-layer', { layerId: selectedLayer.value })
+  1244	}
+  1245	
+  1246	function updateStyle(key: string, value: any) {
+  1247	  if (!selectedLayer.value) return
+  1248	  mapStore.updateLayerStyle(selectedLayer.value, { [key]: value })
+  1249	  if (key === 'fillColor') styleFill.value = value
+  1250	  if (key === 'color') styleColor.value = value
+  1251	  if (key === 'weight') styleWeight.value = value
+  1252	  if (key === 'opacity') styleOpacity.value = value
+  1253	  dispatchMapEvent('map-refresh-layers')
+  1254	}
+  1255	
+  1256	function layerIconClass(type: string): string {
+  1257	  if (type === 'polyline' || type === 'line') return 'line-icon'
+  1258	  if (type === 'polygon' || type === 'area') return 'polygon-icon water-color'
+  1259	  if (type === 'textLabel' || type === 'label') return 'point-icon label-color'
+  1260	  return 'point-icon poi-color'
+  1261	}
+  1262	
+  1263	function openAnalysis(mode: 'buffer' | 'overlay' | 'nearest' | 'clip' | 'intersect' | 'union') {
+  1264	  appStore.setAnalysisMode(mode)
+  1265	}
+  1266	
+  1267	function toggleFullscreen() {
+  1268	  const el = document.querySelector('.qgis-editor')
+  1269	  if (!el) return
+  1270	  if (!document.fullscreenElement) {
+  1271	    el.requestFullscreen?.().catch(() => showToast('无法全屏'))
+  1272	  } else {
+  1273	    document.exitFullscreen?.()
+  1274	  }
+  1275	}
+  1276	
+  1277	function refreshMap() {
+  1278	  dispatchMapEvent('map-refresh-layers')
+  1279	  showToast('图层已刷新')
+  1280	}
+  1281	
+  1282	async function openExportMenu() {
+  1283	  const fmt = await showInputDialog({ title: '选择导出格式：geojson / svg / png', defaultValue: 'png' })
+  1284	  if (!fmt) return
+  1285	  const format = fmt.trim().toLowerCase()
+  1286	  if (!['geojson', 'svg', 'png'].includes(format)) {
+  1287	    showToast('仅支持 geojson / svg / png')
+  1288	    return
+  1289	  }
+  1290	  const mapId = mapStore.currentMapId
+  1291	  if (!mapId) {
+  1292	    showToast('请先生成地图')
+  1293	    return
+  1294	  }
+  1295	  exportMapFile(mapId, format)
+  1296	}
+  1297	
+  1298	async function exportMapFile(mapId: string, format: string) {
+  1299	  try {
+  1300	    const resp: any = await api.exportMap(mapId, format)
+  1301	    const data = resp.data || resp
+  1302	    const ext = format === 'geojson' ? 'geojson' : format
+  1303	    const filename = `map-${Date.now()}.${ext}`
+  1304	    if (typeof data === 'string' && data.startsWith('data:image')) {
+  1305	      const link = document.createElement('a')
+  1306	      link.href = data
+  1307	      link.download = filename
+  1308	      link.click()
+  1309	    } else {
+  1310	      const mime = format === 'geojson' ? 'application/geo+json' : format === 'svg' ? 'image/svg+xml' : 'image/png'
+  1311	      const blob = new Blob([String(data)], { type: mime })
+  1312	      const url = URL.createObjectURL(blob)
+  1313	      const link = document.createElement('a')
+  1314	      link.href = url
+  1315	      link.download = filename
+  1316	      link.click()
+  1317	      URL.revokeObjectURL(url)
+  1318	    }
+  1319	    showToast(`已导出 ${format.toUpperCase()}`)
+  1320	  } catch (e: any) {
+  1321	    showToast('导出失败: ' + e.message)
+  1322	  }
+  1323	}
+  1324	
+  1325	function runDensityAnalysis() {
+  1326	  dispatchMapEvent('map-density')
+  1327	}
+  1328	
+  1329	/** 图层类型 → GeoJSON 几何类型 */
+  1330	function geomTypeToGeoJson(type: string): string {
+  1331	  const t = (type || '').toLowerCase()
+  1332	  if (['polygon', 'area'].includes(t)) return 'Polygon'
+  1333	  if (['polyline', 'line', 'linestring'].includes(t)) return 'LineString'
+  1334	  return 'Point'
+  1335	}
+  1336	
+  1337	/** 将图层坐标按目标投影转换并生成 GeoJSON */
+  1338	function buildProjectedGeoJson(layer: any, targetEpsg: string): any {
+  1339	  const fn = targetEpsg === '3857' ? lonLatToWebMercator : webMercatorToLonLat
+  1340	  const gjType = geomTypeToGeoJson(layer?.type || '')
+  1341	  const features: any[] = []
+  1342	  if (Array.isArray(layer?.features) && layer.features.length > 0) {
+  1343	    layer.features.forEach((f: any) => {
+  1344	      features.push({
+  1345	        type: 'Feature',
+  1346	        properties: f?.properties || {},
+  1347	        geometry: { type: gjType, coordinates: projectCoordsDeep(f?.coordinates, fn) },
+  1348	      })
+  1349	    })
+  1350	  } else if (layer?.coordinates) {
+  1351	    features.push({
+  1352	      type: 'Feature',
+  1353	      properties: {},
+  1354	      geometry: { type: gjType, coordinates: projectCoordsDeep(layer.coordinates, fn) },
+  1355	    })
+  1356	  }
+  1357	  return {
+  1358	    type: 'FeatureCollection',
+  1359	    crs: { type: 'name', properties: { name: `EPSG:${targetEpsg}` } },
+  1360	    features,
+  1361	  }
+  1362	}
+  1363	
+  1364	/** 触发浏览器下载 JSON 文件 */
+  1365	function downloadJson(obj: any, filename: string) {
+  1366	  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/geo+json' })
+  1367	  const url = URL.createObjectURL(blob)
+  1368	  const a = document.createElement('a')
+  1369	  a.href = url
+  1370	  a.download = filename
+  1371	  a.click()
+  1372	  URL.revokeObjectURL(url)
+  1373	}
+  1374	
+  1375	/** 投影转换：将选中图层坐标从 WGS84 转换到目标投影并导出 GeoJSON */
+  1376	async function runProjection() {
+  1377	  const layer = selectedLayer.value ? mapStore.layerGroups[selectedLayer.value]?.data : null
+  1378	  if (!layer) {
+  1379	    showToast('请先在左侧图层面板选中要转换的图层')
+  1380	    return
+  1381	  }
+  1382	  const input = await showInputDialog({ title: '目标坐标系 EPSG 代码（当前 WGS84 经纬度 4326，可转 3857）', defaultValue: '3857' })
+  1383	  if (!input) return
+  1384	  const epsg = input.trim().replace(/^epsg:/i, '')
+  1385	  if (epsg === '4326') {
+  1386	    showToast('当前已是 EPSG:4326 经纬度，无需转换')
+  1387	    return
+  1388	  }
+  1389	  if (epsg !== '3857') {
+  1390	    showToast('目前支持 4326 ↔ 3857（Web 墨卡托）')
+  1391	    return
+  1392	  }
+  1393	  const geojson = buildProjectedGeoJson(layer, epsg)
+  1394	  downloadJson(geojson, `${layer.name || '图层'}-EPSG${epsg}.geojson`)
+  1395	  showToast(`已按 EPSG:${epsg} 转换并导出 GeoJSON`)
+  1396	}
+  1397	
+  1398	function formatAttrValue(value: any): string {
+  1399	  if (value === null || value === undefined) return ''
+  1400	  if (typeof value === 'object') return JSON.stringify(value)
+  1401	  return String(value)
+  1402	}
+  1403	
+  1404	watch(
+  1405	  selectedLayer,
+  1406	  (layerId) => {
+  1407	    const layer = layerId ? mapStore.layerGroups[layerId]?.data : null
+  1408	    const style = layer?.style || {}
+  1409	    styleFill.value = style.fillColor || '#3b82f6'
+  1410	    styleColor.value = style.color || '#1e40af'
+  1411	    styleWeight.value = style.weight ?? 1
+  1412	    styleOpacity.value = style.opacity ?? 1
+  1413	  }
+  1414	)
+  1415	
+  1416	onMounted(() => {
+  1417	  const el = document.getElementById('map-container')
+  1418	  const handler = (e: Event) => {
+  1419	    const denom = (e as CustomEvent).detail?.denominator
+  1420	    if (denom) scale.value = denom
+  1421	  }
+  1422	  el?.addEventListener('map-scale-update', handler)
+  1423	})
+  1424	
+  1425	onUnmounted(() => {
+  1426	  const el = document.getElementById('map-container')
+  1427	  el?.removeEventListener('map-scale-update', () => {})
+  1428	})
+  1429	</script>
+  1430	
+  1431	<style scoped>
+  1432	.qgis-editor {
+  1433	  width: 100%;
+  1434	  height: 100%;
+  1435	  display: flex;
+  1436	  flex-direction: column;
+  1437	  background: #f0f0f0;
+  1438	  font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  1439	  font-size: 12px;
+  1440	  color: #2c2c2c;
+  1441	}
+  1442	
+  1443	/* 菜单栏 */
+  1444	.qgis-menu-bar {
+  1445	  height: 28px;
+  1446	  background: #fafafa;
+  1447	  border-bottom: 1px solid #d0d0d0;
+  1448	  display: flex;
+  1449	  align-items: center;
+  1450	  padding: 0 4px;
+  1451	  gap: 2px;
+  1452	}
+  1453	
+  1454	.menu-item {
+  1455	  position: relative;
+  1456	  padding: 4px 10px;
+  1457	  cursor: pointer;
+  1458	  border-radius: 3px;
+  1459	  font-size: 12px;
+  1460	}
+  1461	
+  1462	.menu-item:hover {
+  1463	  background: #e8e8e8;
+  1464	}
+  1465	
+  1466	.menu-label {
+  1467	  user-select: none;
+  1468	}
+  1469	
+  1470	.menu-dropdown {
+  1471	  position: absolute;
+  1472	  top: 100%;
+  1473	  left: 0;
+  1474	  min-width: 200px;
+  1475	  background: #fff;
+  1476	  border: 1px solid #c0c0c0;
+  1477	  border-radius: 4px;
+  1478	  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  1479	  padding: 4px 0;
+  1480	  z-index: 1000;
+  1481	  display: none;
+  1482	}
+  1483	
+  1484	.menu-item:hover .menu-dropdown {
+  1485	  display: block;
+  1486	}
+  1487	
+  1488	.menu-bar-right {
+  1489	  margin-left: auto;
+  1490	  display: flex;
+  1491	  align-items: center;
+  1492	  padding-right: 8px;
+  1493	}
+  1494	
+  1495	.back-btn {
+  1496	  display: flex;
+  1497	  align-items: center;
+  1498	  gap: 6px;
+  1499	  padding: 4px 12px;
+  1500	  border: 1px solid #d0d0d0;
+  1501	  background: #fff;
+  1502	  border-radius: 4px;
+  1503	  cursor: pointer;
+  1504	  font-size: 12px;
+  1505	  color: #555;
+  1506	  transition: all 0.2s;
+  1507	}
+  1508	
+  1509	.back-btn:hover {
+  1510	  background: #0066cc;
+  1511	  color: #fff;
+  1512	  border-color: #0066cc;
+  1513	}
+  1514	
+  1515	.menu-item-child {
+  1516	  display: flex;
+  1517	  align-items: center;
+  1518	  gap: 8px;
+  1519	  padding: 6px 12px;
+  1520	  cursor: pointer;
+  1521	  white-space: nowrap;
+  1522	}
+  1523	
+  1524	.menu-item-child:hover {
+  1525	  background: #0078d7;
+  1526	  color: #fff;
+  1527	}
+  1528	
+  1529	.menu-item-child i {
+  1530	  width: 16px;
+  1531	  text-align: center;
+  1532	  font-size: 12px;
+  1533	}
+  1534	
+  1535	.menu-separator {
+  1536	  height: 1px;
+  1537	  margin: 4px 8px;
+  1538	  background: #e5e5e5;
+  1539	  pointer-events: none;
+  1540	}
+  1541	
+  1542	.shortcut {
+  1543	  margin-left: auto;
+  1544	  color: #888;
+  1545	  font-size: 11px;
+  1546	}
+  1547	
+  1548	.menu-item-child:hover .shortcut {
+  1549	  color: rgba(255,255,255,0.8);
+  1550	}
+  1551	
+  1552	/* 工具栏 */
+  1553	.qgis-toolbar {
+  1554	  height: 36px;
+  1555	  background: #f5f5f5;
+  1556	  border-bottom: 1px solid #d0d0d0;
+  1557	  display: flex;
+  1558	  align-items: center;
+  1559	  padding: 0 4px;
+  1560	  gap: 4px;
+  1561	}
+  1562	
+  1563	.qgis-toolbar-second {
+  1564	  height: 32px;
+  1565	  background: #f0f0f0;
+  1566	}
+  1567	
+  1568	.toolbar-group {
+  1569	  display: flex;
+  1570	  align-items: center;
+  1571	  gap: 2px;
+  1572	  padding: 0 4px;
+  1573	}
+  1574	
+  1575	.toolbar-separator {
+  1576	  width: 1px;
+  1577	  height: 20px;
+  1578	  background: #d0d0d0;
+  1579	  margin: 0 6px;
+  1580	}
+  1581	
+  1582	.toolbar-label {
+  1583	  font-size: 11px;
+  1584	  color: #666;
+  1585	  padding: 0 4px;
+  1586	  font-weight: 500;
+  1587	}
+  1588	
+  1589	.tool-btn {
+  1590	  width: 28px;
+  1591	  height: 28px;
+  1592	  border: 1px solid transparent;
+  1593	  background: transparent;
+  1594	  border-radius: 3px;
+  1595	  cursor: pointer;
+  1596	  display: flex;
+  1597	  align-items: center;
+  1598	  justify-content: center;
+  1599	  font-size: 13px;
+  1600	  color: #444;
+  1601	  transition: all 0.15s;
+  1602	}
+  1603	
+  1604	.tool-btn:hover {
+  1605	  background: #e4f0fb;
+  1606	  border-color: #a8d5ff;
+  1607	}
+  1608	
+  1609	.tool-btn.active {
+  1610	  background: #c4e0f9;
+  1611	  border-color: #6cb6ff;
+  1612	  color: #0066cc;
+  1613	}
+  1614	
+  1615	/* 自定义工具栏按钮 */
+  1616	.toolbar-customize {
+  1617	  position: relative;
+  1618	}
+  1619	
+  1620	.tool-customize-btn {
+  1621	  background: linear-gradient(135deg, #0ea5e9, #06b6d4) !important;
+  1622	  color: white !important;
+  1623	  border-color: transparent !important;
+  1624	}
+  1625	
+  1626	.tool-customize-btn:hover {
+  1627	  background: linear-gradient(135deg, #0284c7, #0891b2) !important;
+  1628	}
+  1629	
+  1630	/* 工具组选择器 */
+  1631	.tool-group-selector {
+  1632	  position: absolute;
+  1633	  top: 100%;
+  1634	  right: 0;
+  1635	  margin-top: 4px;
+  1636	  width: 240px;
+  1637	  background: white;
+  1638	  border: 1px solid #d0d0d0;
+  1639	  border-radius: 8px;
+  1640	  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  1641	  z-index: 1000;
+  1642	  overflow: hidden;
+  1643	}
+  1644	
+  1645	.selector-header {
+  1646	  display: flex;
+  1647	  align-items: center;
+  1648	  gap: 8px;
+  1649	  padding: 12px 16px;
+  1650	  background: linear-gradient(135deg, #0ea5e9, #06b6d4);
+  1651	  color: white;
+  1652	  font-weight: 600;
+  1653	  font-size: 14px;
+  1654	}
+  1655	
+  1656	.selector-hint {
+  1657	  padding: 8px 16px;
+  1658	  font-size: 12px;
+  1659	  color: #666;
+  1660	  background: #f8fafc;
+  1661	  border-bottom: 1px solid #e2e8f0;
+  1662	}
+  1663	
+  1664	.selector-list {
+  1665	  max-height: 300px;
+  1666	  overflow-y: auto;
+  1667	  padding: 4px 0;
+  1668	}
+  1669	
+  1670	.selector-item {
+  1671	  display: flex;
+  1672	  align-items: center;
+  1673	  gap: 10px;
+  1674	  padding: 8px 16px;
+  1675	  cursor: pointer;
+  1676	  transition: background 0.15s;
+  1677	  font-size: 13px;
+  1678	}
+  1679	
+  1680	.selector-item:hover {
+  1681	  background: #f0f9ff;
+  1682	}
+  1683	
+  1684	.selector-item i {
+  1685	  color: #0ea5e9;
+  1686	  font-size: 14px;
+  1687	}
+  1688	
+  1689	.selector-item .tool-count {
+  1690	  margin-left: auto;
+  1691	  font-size: 11px;
+  1692	  color: #94a3b8;
+  1693	}
+  1694	
+  1695	.selector-footer {
+  1696	  display: flex;
+  1697	  gap: 8px;
+  1698	  padding: 10px 16px;
+  1699	  background: #f8fafc;
+  1700	  border-top: 1px solid #e2e8f0;
+  1701	}
+  1702	
+  1703	.selector-btn {
+  1704	  flex: 1;
+  1705	  padding: 6px 8px;
+  1706	  border: 1px solid #d0d0d0;
+  1707	  background: white;
+  1708	  border-radius: 4px;
+  1709	  font-size: 12px;
+  1710	  cursor: pointer;
+  1711	  transition: all 0.15s;
+  1712	}
+  1713	
+  1714	.selector-btn:hover {
+  1715	  background: #f0f9ff;
+  1716	  border-color: #0ea5e9;
+  1717	}
+  1718	
+  1719	.selector-btn.primary {
+  1720	  background: linear-gradient(135deg, #0ea5e9, #06b6d4);
+  1721	  color: white;
+  1722	  border-color: transparent;
+  1723	}
+  1724	
+  1725	.selector-btn.primary:hover {
+  1726	  background: linear-gradient(135deg, #0284c7, #0891b2);
+  1727	}
+  1728	
+  1729	/* 主体区域 */
+  1730	.qgis-main {
+  1731	  flex: 1;
+  1732	  display: flex;
+  1733	  overflow: hidden;
+  1734	}
+  1735	
+  1736	/* 左侧面板 */
+  1737	.qgis-left-panel {
+  1738	  width: 260px;
+  1739	  background: #fff;
+  1740	  border-right: 1px solid #d0d0d0;
+  1741	  display: flex;
+  1742	  flex-direction: column;
+  1743	}
+  1744	
+  1745	.panel-tabs {
+  1746	  display: flex;
+  1747	  background: #f5f5f5;
+  1748	  border-bottom: 1px solid #d0d0d0;
+  1749	}
+  1750	
+  1751	.panel-tab {
+  1752	  flex: 1;
+  1753	  padding: 8px 4px;
+  1754	  border: none;
+  1755	  background: transparent;
+  1756	  cursor: pointer;
+  1757	  display: flex;
+  1758	  flex-direction: column;
+  1759	  align-items: center;
+  1760	  gap: 3px;
+  1761	  font-size: 11px;
+  1762	  color: #666;
+  1763	  border-bottom: 2px solid transparent;
+  1764	  transition: all 0.2s;
+  1765	}
+  1766	
+  1767	.panel-tab:hover {
+  1768	  background: #e8e8e8;
+  1769	}
+  1770	
+  1771	.panel-tab.active {
+  1772	  color: #0066cc;
+  1773	  border-bottom-color: #0066cc;
+  1774	  background: #fff;
+  1775	}
+  1776	
+  1777	.panel-tab i {
+  1778	  font-size: 14px;
+  1779	}
+  1780	
+  1781	.panel-content {
+  1782	  flex: 1;
+  1783	  overflow: auto;
+  1784	}
+  1785	
+  1786	/* 图层面板 */
+  1787	.panel-toolbar {
+  1788	  display: flex;
+  1789	  align-items: center;
+  1790	  gap: 2px;
+  1791	  padding: 6px 8px;
+  1792	  border-bottom: 1px solid #e8e8e8;
+  1793	  background: #fafafa;
+  1794	}
+  1795	
+  1796	.panel-tool-btn {
+  1797	  width: 24px;
+  1798	  height: 24px;
+  1799	  border: 1px solid transparent;
+  1800	  background: transparent;
+  1801	  border-radius: 3px;
+  1802	  cursor: pointer;
+  1803	  display: flex;
+  1804	  align-items: center;
+  1805	  justify-content: center;
+  1806	  font-size: 11px;
+  1807	  color: #555;
+  1808	}
+  1809	
+  1810	.panel-tool-btn:hover {
+  1811	  background: #e4f0fb;
+  1812	  border-color: #a8d5ff;
+  1813	}
+  1814	
+  1815	.panel-tool-separator {
+  1816	  width: 1px;
+  1817	  height: 16px;
+  1818	  background: #d0d0d0;
+  1819	  margin: 0 4px;
+  1820	}
+  1821	
+  1822	.layer-tree {
+  1823	  padding: 4px 0;
+  1824	}
+  1825	
+  1826	.layer-empty {
+  1827	  padding: 20px;
+  1828	  text-align: center;
+  1829	  color: #999;
+  1830	  font-size: 12px;
+  1831	}
+  1832	
+  1833	.layer-name-text {
+  1834	  overflow: hidden;
+  1835	  text-overflow: ellipsis;
+  1836	  white-space: nowrap;
+  1837	}
+  1838	
+  1839	.label-color {
+  1840	  background: #7c3aed;
+  1841	}
+  1842	
+  1843	.layer-group-header {
+  1844	  display: flex;
+  1845	  align-items: center;
+  1846	  gap: 6px;
+  1847	  padding: 6px 8px;
+  1848	  cursor: pointer;
+  1849	  font-weight: 500;
+  1850	  font-size: 12px;
+  1851	}
+  1852	
+  1853	.layer-group-header:hover {
+  1854	  background: #f0f7ff;
+  1855	}
+  1856	
+  1857	.group-icon {
+  1858	  color: #f59e0b;
+  1859	  font-size: 12px;
+  1860	}
+  1861	
+  1862	.group-count {
+  1863	  margin-left: auto;
+  1864	  font-size: 10px;
+  1865	  color: #94a3b8;
+  1866	  background: #f1f5f9;
+  1867	  padding: 0 6px;
+  1868	  border-radius: 8px;
+  1869	}
+  1870	
+  1871	.layer-items {
+  1872	  padding-left: 20px;
+  1873	}
+  1874	
+  1875	.layer-item {
+  1876	  display: flex;
+  1877	  align-items: center;
+  1878	  gap: 6px;
+  1879	  padding: 5px 8px;
+  1880	  cursor: pointer;
+  1881	  font-size: 12px;
+  1882	  border-left: 3px solid transparent;
+  1883	}
+  1884	
+  1885	.layer-item:hover {
+  1886	  background: #f0f7ff;
+  1887	}
+  1888	
+  1889	.layer-item.selected {
+  1890	  background: #e4f0fb;
+  1891	  border-left-color: #0066cc;
+  1892	}
+  1893	
+  1894	.layer-icon {
+  1895	  width: 18px;
+  1896	  height: 14px;
+  1897	  border-radius: 2px;
+  1898	  flex-shrink: 0;
+  1899	}
+  1900	
+  1901	.point-icon {
+  1902	  width: 12px;
+  1903	  height: 12px;
+  1904	  border-radius: 50%;
+  1905	}
+  1906	
+  1907	.line-icon {
+  1908	  height: 3px;
+  1909	  background: #3b82f6;
+  1910	  border-radius: 2px;
+  1911	}
+  1912	
+  1913	.polygon-icon {
+  1914	  border: 1.5px solid #1e40af;
+  1915	  background: rgba(59, 130, 246, 0.3);
+  1916	}
+  1917	
+  1918	.water-color {
+  1919	  border-color: #1e40af;
+  1920	  background: rgba(59, 130, 246, 0.5);
+  1921	}
+  1922	
+  1923	.building-color {
+  1924	  border-color: #92400e;
+  1925	  background: rgba(217, 119, 6, 0.5);
+  1926	}
+  1927	
+  1928	.poi-color {
+  1929	  background: #dc2626;
+  1930	}
+  1931	
+  1932	.osm-icon {
+  1933	  background: linear-gradient(135deg, #7eb87e 0%, #a8d8a8 100%);
+  1934	}
+  1935	
+  1936	.satellite-icon {
+  1937	  background: linear-gradient(135deg, #4a5568 0%, #718096 100%);
+  1938	}
+  1939	
+  1940	/* 样式面板 */
+  1941	.style-header {
+  1942	  padding: 10px 12px;
+  1943	  border-bottom: 1px solid #e8e8e8;
+  1944	  font-weight: 500;
+  1945	  display: flex;
+  1946	  justify-content: space-between;
+  1947	  align-items: center;
+  1948	}
+  1949	
+  1950	.layer-name {
+  1951	  font-size: 11px;
+  1952	  color: #888;
+  1953	  font-weight: normal;
+  1954	}
+  1955	
+  1956	.style-content {
+  1957	  padding: 12px;
+  1958	}
+  1959	
+  1960	.style-section {
+  1961	  margin-bottom: 16px;
+  1962	}
+  1963	
+  1964	.style-section label {
+  1965	  display: block;
+  1966	  margin-bottom: 6px;
+  1967	  font-size: 12px;
+  1968	  color: #555;
+  1969	  font-weight: 500;
+  1970	}
+  1971	
+  1972	.style-select {
+  1973	  width: 100%;
+  1974	  padding: 6px 8px;
+  1975	  border: 1px solid #d0d0d0;
+  1976	  border-radius: 4px;
+  1977	  font-size: 12px;
+  1978	  background: #fff;
+  1979	}
+  1980	
+  1981	.color-row {
+  1982	  display: flex;
+  1983	  align-items: center;
+  1984	  gap: 10px;
+  1985	}
+  1986	
+  1987	.color-input {
+  1988	  width: 40px;
+  1989	  height: 28px;
+  1990	  border: 1px solid #d0d0d0;
+  1991	  border-radius: 4px;
+  1992	  cursor: pointer;
+  1993	  padding: 2px;
+  1994	}
+  1995	
+  1996	.color-hex {
+  1997	  font-size: 11px;
+  1998	  color: #666;
+  1999	  font-family: monospace;
+  2000	}
+  2001	
+  2002	.style-slider {
+  2003	  width: 100%;
+  2004	  margin: 4px 0;
+  2005	}
+  2006	
+  2007	.slider-value {
+  2008	  font-size: 11px;
+  2009	  color: #888;
+  2010	}
+  2011	
+  2012	/* 历史面板 */
+  2013	.history-list {
+  2014	  padding: 8px;
+  2015	}
+  2016	
+  2017	.history-item {
+  2018	  display: flex;
+  2019	  align-items: flex-start;
+  2020	  gap: 10px;
+  2021	  padding: 8px;
+  2022	  border-radius: 4px;
+  2023	  margin-bottom: 4px;
+  2024	}
+  2025	
+  2026	.history-item:hover {
+  2027	  background: #f5f5f5;
+  2028	}
+  2029	
+  2030	.history-icon {
+  2031	  width: 24px;
+  2032	  height: 24px;
+  2033	  border-radius: 50%;
+  2034	  display: flex;
+  2035	  align-items: center;
+  2036	  justify-content: center;
+  2037	  font-size: 10px;
+  2038	  flex-shrink: 0;
+  2039	}
+  2040	
+  2041	.history-icon.add {
+  2042	  background: #dcfce7;
+  2043	  color: #16a34a;
+  2044	}
+  2045	
+  2046	.history-icon.style {
+  2047	  background: #fef3c7;
+  2048	  color: #d97706;
+  2049	}
+  2050	
+  2051	.history-icon.zoom {
+  2052	  background: #dbeafe;
+  2053	  color: #2563eb;
+  2054	}
+  2055	
+  2056	.history-info {
+  2057	  flex: 1;
+  2058	  min-width: 0;
+  2059	}
+  2060	
+  2061	.history-action {
+  2062	  display: block;
+  2063	  font-size: 12px;
+  2064	  color: #333;
+  2065	  margin-bottom: 2px;
+  2066	}
+  2067	
+  2068	.history-time {
+  2069	  font-size: 11px;
+  2070	  color: #999;
+  2071	}
+  2072	
+  2073	/* 地图画布 */
+  2074	.qgis-map-canvas {
+  2075	  flex: 1;
+  2076	  position: relative;
+  2077	  background: #fff;
+  2078	  overflow: hidden;
+  2079	}
+  2080	
+  2081	.map-container {
+  2082	  width: 100%;
+  2083	  height: 100%;
+  2084	}
+  2085	
+  2086	.map-floating-tools {
+  2087	  position: absolute;
+  2088	  top: 12px;
+  2089	  right: 12px;
+  2090	  display: flex;
+  2091	  flex-direction: column;
+  2092	  gap: 6px;
+  2093	  z-index: 810;
+  2094	}
+  2095	
+  2096	.float-tool {
+  2097	  width: 32px;
+  2098	  height: 32px;
+  2099	  border: 1px solid #d0d0d0;
+  2100	  background: #fff;
+  2101	  border-radius: 4px;
+  2102	  cursor: pointer;
+  2103	  display: flex;
+  2104	  align-items: center;
+  2105	  justify-content: center;
+  2106	  font-size: 13px;
+  2107	  color: #555;
+  2108	  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  2109	}
+  2110	
+  2111	.float-tool:hover {
+  2112	  background: #f0f7ff;
+  2113	  color: #0066cc;
+  2114	}
+  2115	
+  2116	/* 右侧面板 */
+  2117	.qgis-right-panel {
+  2118	  width: 280px;
+  2119	  background: #fff;
+  2120	  border-left: 1px solid #d0d0d0;
+  2121	  display: flex;
+  2122	  flex-direction: column;
+  2123	}
+  2124	
+  2125	/* 处理工具箱 */
+  2126	.toolbox-search {
+  2127	  display: flex;
+  2128	  align-items: center;
+  2129	  gap: 8px;
+  2130	  padding: 8px 12px;
+  2131	  border-bottom: 1px solid #e8e8e8;
+  2132	}
+  2133	
+  2134	.toolbox-search i {
+  2135	  color: #999;
+  2136	  font-size: 12px;
+  2137	}
+  2138	
+  2139	.toolbox-search input {
+  2140	  flex: 1;
+  2141	  border: none;
+  2142	  outline: none;
+  2143	  font-size: 12px;
+  2144	  background: transparent;
+  2145	}
+  2146	
+  2147	.toolbox-groups {
+  2148	  padding: 4px 0;
+  2149	}
+  2150	
+  2151	.toolbox-group-header {
+  2152	  display: flex;
+  2153	  align-items: center;
+  2154	  gap: 6px;
+  2155	  padding: 8px 12px;
+  2156	  cursor: pointer;
+  2157	  font-weight: 500;
+  2158	  font-size: 12px;
+  2159	  background: #fafafa;
+  2160	  border-bottom: 1px solid #f0f0f0;
+  2161	}
+  2162	
+  2163	.toolbox-group-header:hover {
+  2164	  background: #f0f7ff;
+  2165	}
+  2166	
+  2167	.toolbox-items {
+  2168	  padding: 4px 0;
+  2169	}
+  2170	
+  2171	.toolbox-item {
+  2172	  display: flex;
+  2173	  align-items: center;
+  2174	  gap: 8px;
+  2175	  padding: 6px 12px 6px 32px;
+  2176	  cursor: pointer;
+  2177	  font-size: 12px;
+  2178	  color: #444;
+  2179	}
+  2180	
+  2181	.toolbox-item:hover {
+  2182	  background: #e4f0fb;
+  2183	  color: #0066cc;
+  2184	}
+  2185	
+  2186	.toolbox-item i {
+  2187	  font-size: 12px;
+  2188	  width: 14px;
+  2189	  text-align: center;
+  2190	}
+  2191	
+  2192	.toolbox-empty {
+  2193	  padding: 20px 12px;
+  2194	  text-align: center;
+  2195	  color: #999;
+  2196	  font-size: 12px;
+  2197	}
+  2198	
+  2199	/* 属性面板 */
+  2200	.attr-header {
+  2201	  padding: 10px 12px;
+  2202	  border-bottom: 1px solid #e8e8e8;
+  2203	  font-weight: 500;
+  2204	  display: flex;
+  2205	  justify-content: space-between;
+  2206	  align-items: center;
+  2207	}
+  2208	
+  2209	.feature-count {
+  2210	  font-size: 11px;
+  2211	  color: #888;
+  2212	  font-weight: normal;
+  2213	}
+  2214	
+  2215	.attr-empty {
+  2216	  padding: 40px 20px;
+  2217	  text-align: center;
+  2218	  color: #999;
+  2219	}
+  2220	
+  2221	.attr-empty i {
+  2222	  font-size: 32px;
+  2223	  margin-bottom: 12px;
+  2224	  display: block;
+  2225	  color: #ccc;
+  2226	}
+  2227	
+  2228	.attr-empty p {
+  2229	  font-size: 12px;
+  2230	}
+  2231	
+  2232	.attr-content {
+  2233	  padding: 8px 12px;
+  2234	  overflow-y: auto;
+  2235	  max-height: calc(100vh - 220px);
+  2236	}
+  2237	
+  2238	.attr-row {
+  2239	  display: flex;
+  2240	  align-items: flex-start;
+  2241	  padding: 6px 0;
+  2242	  border-bottom: 1px solid #f0f0f0;
+  2243	  font-size: 12px;
+  2244	}
+  2245	
+  2246	.attr-key {
+  2247	  flex: 0 0 90px;
+  2248	  color: #666;
+  2249	  font-weight: 500;
+  2250	  word-break: break-all;
+  2251	}
+  2252	
+  2253	.attr-value {
+  2254	  flex: 1;
+  2255	  color: #333;
+  2256	  word-break: break-all;
+  2257	}
+  2258	
+  2259	/* 状态栏 */
+  2260	.qgis-status-bar {
+  2261	  height: 24px;
+  2262	  background: #f0f0f0;
+  2263	  border-top: 1px solid #d0d0d0;
+  2264	  display: flex;
+  2265	  align-items: center;
+  2266	  justify-content: space-between;
+  2267	  padding: 0 12px;
+  2268	  font-size: 11px;
+  2269	  color: #666;
+  2270	}
+  2271	
+  2272	.status-left,
+  2273	.status-center,
+  2274	.status-right {
+  2275	  display: flex;
+  2276	  align-items: center;
+  2277	  gap: 16px;
+  2278	}
+  2279	
+  2280	.status-item {
+  2281	  display: flex;
+  2282	  align-items: center;
+  2283	  gap: 4px;
+  2284	}
+  2285	
+  2286	.status-item .ok {
+  2287	  color: #22c55e;
+  2288	}
+  2289	
+  2290	/* Toast */
+  2291	.qgis-toast {
+  2292	  position: fixed;
+  2293	  bottom: 40px;
+  2294	  left: 50%;
+  2295	  transform: translateX(-50%);
+  2296	  background: rgba(0, 0, 0, 0.8);
+  2297	  color: #fff;
+  2298	  padding: 10px 20px;
+  2299	  border-radius: 6px;
+  2300	  font-size: 13px;
+  2301	  display: flex;
+  2302	  align-items: center;
+  2303	  gap: 8px;
+  2304	  z-index: 9999;
+  2305	  animation: fadeIn 0.2s ease;
+  2306	}
+  2307	
+  2308	@keyframes fadeIn {
+  2309	  from {
+  2310	    opacity: 0;
+  2311	    transform: translateX(-50%) translateY(10px);
+  2312	  }
+  2313	  to {
+  2314	    opacity: 1;
+  2315	    transform: translateX(-50%) translateY(0);
+  2316	  }
+  2317	}
+  2318	</style>

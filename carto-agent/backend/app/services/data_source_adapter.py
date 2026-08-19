@@ -23,6 +23,8 @@
    OSM  Amap TDT  LocalFile ...
 """
 
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 import json
 import os
 import time
@@ -352,7 +354,7 @@ class OSMSourceAdapter(DataSourceAdapter):
         except Exception as e:
             error_msg = f"OSM data fetch failed: {e}"
             warnings_list.append(error_msg)
-            print(f"[OSMSourceAdapter] {error_msg}")
+            logger.info(f"[OSMSourceAdapter] {error_msg}")
             return DataResult.empty(self.source_name, error_msg)
 
     def _osm_element_to_feature(self, elem: Dict, base_tag: str) -> Optional[Dict]:
@@ -479,7 +481,7 @@ class AmapPOIAdapter(DataSourceAdapter):
             "User-Agent": "CartoAgent/1.0 (Map Cartography Agent)",
         })
         if not self.api_key:
-            print("[AmapPOIAdapter] 未配置 AMAP_KEY 环境变量，"
+            logger.info("[AmapPOIAdapter] 未配置 AMAP_KEY 环境变量，"
                   "高德 POI 适配器将自动跳过（在 .env 中设置 AMAP_KEY 后启用）")
 
     @property
@@ -578,7 +580,7 @@ class AmapPOIAdapter(DataSourceAdapter):
 
         except Exception as e:
             error_msg = f"Amap POI fetch failed: {e}"
-            print(f"[AmapPOIAdapter] {error_msg}")
+            logger.info(f"[AmapPOIAdapter] {error_msg}")
             warnings_list.append(error_msg)
             return DataResult.empty(self.source_name, error_msg)
 
@@ -667,10 +669,10 @@ class AmapPOIAdapter(DataSourceAdapter):
             return data.get("pois") or []
 
         except requests.exceptions.RequestException as e:
-            print(f"[AmapPOIAdapter] 关键词[{keywords}]请求失败: {e}")
+            logger.info(f"[AmapPOIAdapter] 关键词[{keywords}]请求失败: {e}")
             return []
         except Exception as e:
-            print(f"[AmapPOIAdapter] 关键词[{keywords}]解析失败: {e}")
+            logger.info(f"[AmapPOIAdapter] 关键词[{keywords}]解析失败: {e}")
             return []
 
     def _reverse_geocode_city(self, bbox: List[float]) -> str:
@@ -899,7 +901,7 @@ class TiandituTileAdapter(DataSourceAdapter):
 
         except Exception as e:
             error_msg = f"Tianditu fetch failed: {e}"
-            print(f"[TiandituTileAdapter] {error_msg}")
+            logger.info(f"[TiandituTileAdapter] {error_msg}")
             warnings_list.append(error_msg)
             return DataResult.empty(self.source_name, error_msg)
 
@@ -951,7 +953,7 @@ class LocalFileAdapter(DataSourceAdapter):
         """
         self.data_dir = data_dir or self._DATA_DIR
         if not os.path.isdir(self.data_dir):
-            print(f"[LocalFileAdapter] 数据目录不存在: {self.data_dir}"
+            logger.info(f"[LocalFileAdapter] 数据目录不存在: {self.data_dir}"
                   f"（将在首次查询时创建）")
 
     @property
@@ -1017,7 +1019,7 @@ class LocalFileAdapter(DataSourceAdapter):
                 except Exception as e:
                     fname = os.path.basename(filepath)
                     warnings_list.append(f"failed to load {fname}: {e}")
-                    print(f"[LocalFileAdapter] 加载 {fname} 失败: {e}")
+                    logger.info(f"[LocalFileAdapter] 加载 {fname} 失败: {e}")
 
             if query.limit and len(all_features) > query.limit:
                 all_features = all_features[:query.limit]
@@ -1040,7 +1042,7 @@ class LocalFileAdapter(DataSourceAdapter):
 
         except Exception as e:
             error_msg = f"Local file fetch failed: {e}"
-            print(f"[LocalFileAdapter] {error_msg}")
+            logger.info(f"[LocalFileAdapter] {error_msg}")
             return DataResult.empty(self.source_name, error_msg)
 
     def _find_matching_files(self, data_type: str) -> List[str]:
@@ -1226,9 +1228,9 @@ class DataSourceRegistry:
         """
         name = adapter.source_name
         if name in self.adapters:
-            print(f"[DataSourceRegistry] 覆盖已注册的适配器: {name}")
+            logger.info(f"[DataSourceRegistry] 覆盖已注册的适配器: {name}")
         self.adapters[name] = adapter
-        print(f"[DataSourceRegistry] 已注册数据源: {name} ({type(adapter).__name__})")
+        logger.info(f"[DataSourceRegistry] 已注册数据源: {name} ({type(adapter).__name__})")
 
     def unregister(self, source_name: str) -> bool:
         """注销数据源适配器
@@ -1241,7 +1243,7 @@ class DataSourceRegistry:
         """
         if source_name in self.adapters:
             del self.adapters[source_name]
-            print(f"[DataSourceRegistry] 已注销数据源: {source_name}")
+            logger.info(f"[DataSourceRegistry] 已注销数据源: {source_name}")
             return True
         return False
 
@@ -1273,22 +1275,22 @@ class DataSourceRegistry:
         if preferred_source:
             adapter = self.adapters.get(preferred_source)
             if adapter and adapter.supports(query):
-                print(f"[DataSourceRegistry] 使用指定数据源: {preferred_source}"
+                logger.info(f"[DataSourceRegistry] 使用指定数据源: {preferred_source}"
                       f" 查询 {query.data_type}")
                 return adapter.fetch(query)
             else:
-                print(f"[DataSourceRegistry] 指定数据源 {preferred_source}"
+                logger.info(f"[DataSourceRegistry] 指定数据源 {preferred_source}"
                       f" 不可用或不支持 {query.data_type}，回退到自动选择")
 
         # 策略 2：自动选择第一个支持的适配器
         for name, adapter in self.adapters.items():
             if adapter.supports(query):
-                print(f"[DataSourceRegistry] 自动选择数据源: {name}"
+                logger.info(f"[DataSourceRegistry] 自动选择数据源: {name}"
                       f" 查询 {query.data_type}")
                 return adapter.fetch(query)
 
         # 策略 3：无适配器支持
-        print(f"[DataSourceRegistry] 无适配器支持查询类型: {query.data_type}")
+        logger.info(f"[DataSourceRegistry] 无适配器支持查询类型: {query.data_type}")
         return DataResult.empty(
             "none",
             f"no adapter supports query type: {query.data_type}"
@@ -1314,18 +1316,18 @@ class DataSourceRegistry:
         for name in target_sources:
             adapter = self.adapters.get(name)
             if adapter is None:
-                print(f"[DataSourceRegistry] 忽略未知数据源: {name}")
+                logger.info(f"[DataSourceRegistry] 忽略未知数据源: {name}")
                 continue
             if not adapter.supports(query):
-                print(f"[DataSourceRegistry] 数据源 {name} 不支持 {query.data_type}")
+                logger.info(f"[DataSourceRegistry] 数据源 {name} 不支持 {query.data_type}")
                 continue
 
-            print(f"[DataSourceRegistry] 多源获取: 从 {name} 查询 {query.data_type}")
+            logger.info(f"[DataSourceRegistry] 多源获取: 从 {name} 查询 {query.data_type}")
             result = adapter.fetch(query)
             if result and result.features:
                 results.append(result)
             else:
-                print(f"[DataSourceRegistry] 数据源 {name} 返回空结果")
+                logger.info(f"[DataSourceRegistry] 数据源 {name} 返回空结果")
 
         # 按质量评分降序排列
         results.sort(key=lambda r: r.quality_score, reverse=True)

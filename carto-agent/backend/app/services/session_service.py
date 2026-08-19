@@ -4,6 +4,8 @@
 会话数据持久化到JSON文件，同时在内存中缓存以加快访问速度。
 持久化采用防抖策略：短时间内多次修改合并为一次磁盘写入，避免高频I/O。
 """
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 import os
 import threading
 from typing import List, Optional, Dict, Any
@@ -40,7 +42,7 @@ class SessionService:
 
         # 加载历史会话
         self._load_sessions()
-        print(f"[SessionService] 初始化完成，已加载{len(self.sessions)}个会话")
+        logger.info(f"[SessionService] 初始化完成，已加载{len(self.sessions)}个会话")
 
     def create_session(self, title: str = "新会话") -> Session:
         """创建新会话
@@ -60,7 +62,7 @@ class SessionService:
         )
         self.sessions[session.session_id] = session
         self._schedule_save()
-        print(f"[SessionService] 创建会话: {session.session_id} ({title})")
+        logger.info(f"[SessionService] 创建会话: {session.session_id} ({title})")
         return session
 
     def get_session(self, session_id: str) -> Optional[Session]:
@@ -105,10 +107,31 @@ class SessionService:
         if session_id in self.sessions:
             del self.sessions[session_id]
             self._schedule_save()
-            print(f"[SessionService] 删除会话: {session_id}")
+            logger.info(f"[SessionService] 删除会话: {session_id}")
             return True
-        print(f"[SessionService] 会话不存在: {session_id}")
+        logger.info(f"[SessionService] 会话不存在: {session_id}")
         return False
+
+    def rename_session(self, session_id: str, title: str) -> Optional[Session]:
+        """重命名会话
+
+        Args:
+            session_id: 会话ID
+            title: 新标题
+
+        Returns:
+            更新后的 Session 对象；会话不存在时返回 None
+        """
+        session = self.sessions.get(session_id)
+        if session is None:
+            return None
+        new_title = (title or "").strip()
+        if new_title:
+            session.title = new_title[:50]
+        session.updated_at = get_timestamp()
+        self._schedule_save()
+        logger.info(f"[SessionService] 会话重命名: {session_id} -> {session.title}")
+        return session
 
     def add_message(
         self,
@@ -171,7 +194,7 @@ class SessionService:
             session.title = truncate_text(content, 20)
 
         self._schedule_save()
-        print(f"[SessionService] 添加消息到会话 {session_id}: role={role}, 内容长度={len(content)}")
+        logger.info(f"[SessionService] 添加消息到会话 {session_id}: role={role}, 内容长度={len(content)}")
         return message
 
     def build_llm_context(self, session_id: str, max_messages: int = 6) -> List[Dict[str, str]]:
@@ -211,7 +234,7 @@ class SessionService:
         """从JSON文件加载历史会话"""
         try:
             if not os.path.exists(self.sessions_file):
-                print("[SessionService] 会话文件不存在，跳过加载")
+                logger.info("[SessionService] 会话文件不存在，跳过加载")
                 return
 
             with open(self.sessions_file, "r", encoding="utf-8") as f:
@@ -219,7 +242,7 @@ class SessionService:
 
             data = safe_json_loads(content, {})
             if not isinstance(data, dict):
-                print("[SessionService] 会话文件格式无效，跳过加载")
+                logger.info("[SessionService] 会话文件格式无效，跳过加载")
                 return
 
             for session_id, session_data in data.items():
@@ -255,11 +278,11 @@ class SessionService:
                     )
                     self.sessions[session.session_id] = session
                 except Exception as e:
-                    print(f"[SessionService] 加载会话 {session_id} 失败: {e}")
+                    logger.info(f"[SessionService] 加载会话 {session_id} 失败: {e}")
                     continue
 
         except Exception as e:
-            print(f"[SessionService] 加载会话文件失败: {e}")
+            logger.info(f"[SessionService] 加载会话文件失败: {e}")
 
     def _schedule_save(self):
         """防抖调度持久化：延迟 _SAVE_DEBOUNCE_SECONDS 后写入，期间的新调用会重置计时器
@@ -320,4 +343,4 @@ class SessionService:
                 f.write(safe_json_dumps(data))
 
         except Exception as e:
-            print(f"[SessionService] 保存会话失败: {e}")
+            logger.info(f"[SessionService] 保存会话失败: {e}")

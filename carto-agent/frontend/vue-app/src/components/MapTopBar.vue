@@ -8,19 +8,6 @@
     <span class="map-top-spacer"></span>
 
     <span class="map-top-ctrl-group">
-      <label class="scale-setter-label">底图</label>
-      <select
-        class="map-theme-select"
-        :value="mapStore.currentTheme"
-        @change="onThemeChange"
-      >
-        <option v-for="(theme, key) in CONFIG.mapThemes" :key="key" :value="key">
-          {{ theme.name }}
-        </option>
-      </select>
-    </span>
-
-    <span class="map-top-ctrl-group">
       <label class="scale-setter-label">比例尺</label>
       <input
         class="map-scale-input"
@@ -92,7 +79,6 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useAppStore } from '@/stores/appStore'
 import { useMapStore } from '@/stores/mapStore'
-import { CONFIG } from '@/config'
 
 const appStore = useAppStore()
 const mapStore = useMapStore()
@@ -114,11 +100,6 @@ function dispatch(name: string, detail?: any) {
   const el = document.getElementById('map-container')
   if (!el) return
   el.dispatchEvent(new CustomEvent(name, detail !== undefined ? { detail } : undefined))
-}
-
-function onThemeChange(e: Event) {
-  const theme = (e.target as HTMLSelectElement).value
-  dispatch('map-set-theme', { theme })
 }
 
 function onProjectionChange(e: Event) {
@@ -196,7 +177,7 @@ onUnmounted(() => {
   background: rgba(255, 255, 255, 0.9);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--color-border);
-  z-index: 8;
+  z-index: 810;
   font-size: 12px;
   box-shadow: 0 1px 8px rgba(0, 0, 0, 0.06);
 }

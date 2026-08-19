@@ -5,6 +5,8 @@ KGPriorPlanner 实现 KG 知识优先的制图任务规划策略：
 2. KG信息不足时，用LLM补充缺失的规划信息
 3. 将执行计划转换为LLM可用的prompt上下文，用于后续任务规划
 """
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 from typing import Dict, Any, List, Optional
 
 from app.models.agent_models import CartographyTask
@@ -102,9 +104,9 @@ class KGPriorPlanner:
             try:
                 kg_decision = self.kg_service.query_cartographic_decision(map_type, audience)
                 confidence = kg_decision.get("confidence", "none")
-                print(f"[KGPriorPlanner] KG决策获取成功 (confidence={confidence})")
+                logger.info(f"[KGPriorPlanner] KG决策获取成功 (confidence={confidence})")
             except Exception as e:
-                print(f"[KGPriorPlanner] KG决策获取失败: {e}")
+                logger.info(f"[KGPriorPlanner] KG决策获取失败: {e}")
                 plan.quality_warnings.append(f"KG决策查询异常: {str(e)[:80]}")
 
         # ===== 步骤2：从KG决策提取数据获取步骤 =====
@@ -161,7 +163,7 @@ class KGPriorPlanner:
 
         # ===== 步骤5：KG信息不足时用LLM补充 =====
         if len(plan.data_steps) < 2 or len(plan.style_steps) < 1:
-            print("[KGPriorPlanner] KG信息不足，调用LLM补充...")
+            logger.info("[KGPriorPlanner] KG信息不足，调用LLM补充...")
             plan.llm_enhanced = True
             plan.quality_warnings.append(
                 f"KG覆盖不足（data_steps={len(plan.data_steps)}, "
@@ -208,7 +210,7 @@ class KGPriorPlanner:
             LLM补充的规划字典，解析失败返回None
         """
         if not self.llm_service:
-            print("[KGPriorPlanner] LLM服务不可用，跳过补充")
+            logger.info("[KGPriorPlanner] LLM服务不可用，跳过补充")
             return None
 
         from app.utils.helpers import safe_json_loads
@@ -240,12 +242,12 @@ class KGPriorPlanner:
 
             parsed = safe_json_loads(result, None)
             if parsed and isinstance(parsed, dict):
-                print(f"[KGPriorPlanner] LLM补充成功: "
+                logger.info(f"[KGPriorPlanner] LLM补充成功: "
                       f"data_steps={len(parsed.get('data_steps', []))}, "
                       f"style_steps={len(parsed.get('style_steps', []))}")
                 return parsed
         except Exception as e:
-            print(f"[KGPriorPlanner] LLM补充失败: {e}")
+            logger.info(f"[KGPriorPlanner] LLM补充失败: {e}")
 
         return None
 

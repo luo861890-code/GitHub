@@ -282,7 +282,6 @@ function close() {
 
 function exportMap() {
   emit('export', { ...layout })
-  alert('导出功能开发中...')
 }
 </script>
 

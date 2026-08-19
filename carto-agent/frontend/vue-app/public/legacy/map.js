@@ -421,6 +421,8 @@ class MapPanel {
             };
             mapData.layers.sort((a, b) => layerZ(a) - layerZ(b));
             this._layerOrder = mapData.layers.map(l => l.id);
+            // 先重建全局 POI 预算保留集，再逐层渲染（多比例尺：先保留重要地标/建筑，其次次要）
+            this._rebuildPoiKeep(mapData.layers);
             mapData.layers.forEach(layerData => {
                 this.renderLayer(layerData);
             });
@@ -613,14 +615,16 @@ class MapPanel {
                         Array.isArray(feat.coordinates[0]) ? feat.coordinates : [feat.coordinates]
                     );
                     if (coords.length > 0) {
-                        // 行政区划图：面完全透明（兜底旧地图数据），露出瓦片底图
+                        // 行政区划图：政区面不描边；新数据保留四色普染（行政区颜色区分明显），
+                        // 旧数据无 fillColor 时兜底极浅纹理（露出底图且不空心）
                         let fColor = featStyle.color || "#3388ff";
                         let fFill = featStyle.fillColor || featStyle.color || "#3388ff";
                         let fWeight = featStyle.weight || 1;
                         let fOpac = featStyle.opacity !== undefined ? featStyle.opacity : 0.5;
                         let fFillOpac = featStyle.fillOpacity !== undefined ? featStyle.fillOpacity : 0.4;
                         if (this.currentMapType === "administrative") {
-                            fFillOpac = 0.2; fWeight = 0; fFill = "#f0f4f8";  // 极浅纹理：露出底图且不空心
+                            fWeight = 0;
+                            if (!featStyle.fillColor) { fFill = "#f0f4f8"; fFillOpac = 0.2; }
                         }
                         const poly = L.polygon(coords, {
                             color: fColor, fillColor: fFill, weight: fWeight,
@@ -695,6 +699,13 @@ class MapPanel {
                             layer = _gg;
                         } else {
                             layer = L.polyline(validCoords[0], lineStyle);
+                            const _prop0 = lineProps[0] || {};
+                            if (_prop0.name || _prop0.subtype) {
+                                let _html = '<div style="font-size:13px;"><strong>' +
+                                    Utils.escapeHtml(_prop0.name || layerData.name || '') + '</strong></div>';
+                                layer.bindPopup(_html);
+                            }
+                            layer.on("click", () => this._selectFeature(layerData.id, 0, _prop0));
                         }
                     } else {
                         const group = L.layerGroup();
@@ -723,6 +734,7 @@ class MapPanel {
                                 line.bindPopup(popupHtml);
                             }
                             line.addTo(group);
+                            line.on("click", () => this._selectFeature(layerData.id, idx, prop));
                         });
                         layer = group;
                     }
@@ -1038,6 +1050,9 @@ class MapPanel {
                         if (prop.category) {
                             html += '<br><span style="color:#666;">分类: ' + Utils.escapeHtml(prop.category) + '</span>';
                         }
+                        if (prop.area_km2) {
+                            html += '<br><span style="color:#666;">面积: ' + Utils.escapeHtml(String(prop.area_km2)) + ' km²</span>';
+                        }
                         html += '</div>';
                         return html;
                     };
@@ -1047,6 +1062,7 @@ class MapPanel {
                         if (prop.name || prop.subtype) {
                             layer.bindPopup(buildPolyPopup(prop, layerData.name));
                         }
+                        layer.on("click", () => this._selectFeature(layerData.id, 0, prop));
                     } else {
                         // 多个独立多边形
                         const group = L.layerGroup();
@@ -1056,6 +1072,7 @@ class MapPanel {
                             if (prop.name || prop.subtype) {
                                 poly.bindPopup(buildPolyPopup(prop, layerData.name));
                             }
+                            poly.on("click", () => this._selectFeature(layerData.id, idx, prop));
                             poly.addTo(group);
                         });
                         layer = group;
@@ -3254,6 +3271,17 @@ class MapPanel {
         } catch (e) {
             Utils.showToast("导出失败: " + e.message, "error");
         }
+    }
+
+    /**
+     * 选中要素：通知 Vue 侧同步图层选中状态（图层面板高亮）
+     */
+    _selectFeature(layerId, idx, props) {
+        try {
+            this.map.getContainer().dispatchEvent(new CustomEvent("map-feature-select", {
+                detail: { layerId: layerId, idx: idx, props: props || {} }
+            }));
+        } catch (e) { /* ignore */ }
     }
 
     /**

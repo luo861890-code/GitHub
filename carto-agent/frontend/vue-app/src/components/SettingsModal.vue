@@ -220,6 +220,11 @@ function onProviderChange() {
 
 function handleThemeChange(key: string) {
   mapStore.setTheme(key)
+  // 通知地图组件切换底图（主视图 LegacyMapPanel / 编辑视图 MapCanvas）
+  const el = document.getElementById('map-container')
+  if (el) {
+    el.dispatchEvent(new CustomEvent('map-set-theme', { detail: { theme: key } }))
+  }
 }
 
 async function saveApiKey(provider: string) {

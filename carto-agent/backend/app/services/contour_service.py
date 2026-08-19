@@ -5,6 +5,8 @@
 （数据源：SRTM 30m DEM，已做舍谷/扩谷/鞍部保持等制图综合），
 转换为系统图层：计曲线(每100m加粗) + 首曲线(每20m细线)。
 """
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 import copy
 import json
 import os
@@ -36,7 +38,7 @@ class ContourService:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
-            print(f"[Contour] 读取 wuhan_contours.geojson 失败: {e}")
+            logger.info(f"[Contour] 读取 wuhan_contours.geojson 失败: {e}")
             return {}
 
     def get_contour_layers(self) -> list:

@@ -107,6 +107,20 @@ const CONFIG = {
             attribution: "&copy; Esri",
             maxZoom: 19,
             subdomains: ""
+        },
+        hillshade: {
+            name: "山体阴影（DEM）",
+            url: "https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}",
+            attribution: "&copy; Esri, USGS",
+            maxZoom: 19,
+            subdomains: ""
+        },
+        terrain: {
+            name: "地形地势",
+            url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{z}/{y}/{x}",
+            attribution: "&copy; Esri, USGS",
+            maxZoom: 19,
+            subdomains: ""
         }
     },
 

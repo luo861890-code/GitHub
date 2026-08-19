@@ -4,6 +4,8 @@
 返回路径坐标、距离、预计时间等信息。
 当OSRM服务不可用时，使用直线连接作为降级方案。
 """
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 import math
 from typing import List, Dict, Any, Optional
 
@@ -38,7 +40,7 @@ class RoutingService:
 
     def __init__(self):
         """初始化路径规划服务"""
-        print("[RoutingService] 初始化完成，使用OSRM公共API")
+        logger.info("[RoutingService] 初始化完成，使用OSRM公共API")
 
     def plan_route(
         self,
@@ -86,7 +88,7 @@ class RoutingService:
         }
 
         try:
-            print(f"[RoutingService] 请求OSRM路径规划: {profile}模式, "
+            logger.info(f"[RoutingService] 请求OSRM路径规划: {profile}模式, "
                   f"起点({start[0]:.4f}, {start[1]:.4f}) -> "
                   f"终点({end[0]:.4f}, {end[1]:.4f})")
 
@@ -95,7 +97,7 @@ class RoutingService:
             data = response.json()
 
             if data.get("code") != "Ok" or not data.get("routes"):
-                print(f"[RoutingService] OSRM返回错误: {data.get('message', '未知错误')}")
+                logger.info(f"[RoutingService] OSRM返回错误: {data.get('message', '未知错误')}")
                 return self._fallback_route(start, end, profile, waypoints)
 
             route = data["routes"][0]
@@ -120,16 +122,16 @@ class RoutingService:
 
             distance_km = result["distance"] / 1000
             duration_min = result["duration"] / 60
-            print(f"[RoutingService] 路径规划成功: {len(route_coords)}个坐标点, "
+            logger.info(f"[RoutingService] 路径规划成功: {len(route_coords)}个坐标点, "
                   f"距离{distance_km:.2f}km, 预计{duration_min:.0f}分钟")
 
             return result
 
         except requests.exceptions.RequestException as e:
-            print(f"[RoutingService] OSRM请求失败: {e}，使用降级方案")
+            logger.info(f"[RoutingService] OSRM请求失败: {e}，使用降级方案")
             return self._fallback_route(start, end, profile, waypoints)
         except Exception as e:
-            print(f"[RoutingService] 路径规划异常: {e}，使用降级方案")
+            logger.info(f"[RoutingService] 路径规划异常: {e}，使用降级方案")
             return self._fallback_route(start, end, profile, waypoints)
 
     def _extract_steps(self, legs: List[dict]) -> List[Dict[str, str]]:
@@ -199,7 +201,7 @@ class RoutingService:
         speed = speed_map.get(profile, 40)
         duration = (total_distance / 1000) / speed * 3600  # 转换为秒
 
-        print(f"[RoutingService] 使用直线降级方案: {len(coords)}个点, "
+        logger.info(f"[RoutingService] 使用直线降级方案: {len(coords)}个点, "
               f"距离{total_distance / 1000:.2f}km")
 
         return {
@@ -227,16 +229,5 @@ class RoutingService:
         Returns:
             两点间距离（米）
         """
-        R = 6371000  # 地球半径（米）
-        lat1_rad = math.radians(lat1)
-        lat2_rad = math.radians(lat2)
-        delta_lat = math.radians(lat2 - lat1)
-        delta_lng = math.radians(lng2 - lng1)
-
-        a = (
-            math.sin(delta_lat / 2) ** 2
-            + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lng / 2) ** 2
-        )
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-        return R * c
+        from app.utils.geometry import haversine_m
+        return haversine_m(lat1, lng1, lat2, lng2)

@@ -31,7 +31,12 @@ export const useKGStore = defineStore('kg', () => {
   async function loadGraph(limit?: number) {
     loading.value = true
     try {
-      graphData.value = await api.getKGGraph(limit ?? CONFIG.kgDefaultLimit)
+      const result = await api.getKGGraph(limit ?? CONFIG.kgDefaultLimit)
+      const data = result?.data || result || {}
+      graphData.value = {
+        nodes: Array.isArray(data.nodes) ? data.nodes : [],
+        links: Array.isArray(data.links) ? data.links : [],
+      }
     } catch (error) {
       console.error('加载知识图谱失败:', error)
       graphData.value = { nodes: [], links: [] }

@@ -6,6 +6,7 @@
 """
 import asyncio
 import json
+import threading
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
@@ -13,6 +14,7 @@ from app.api.deps import get_session_service, get_agent_service, get_llm_service
 from app.core.exceptions import CartoAgentError
 from app.models.schemas import (
     CreateSessionRequest,
+    RenameSessionRequest,
     SendMessageRequest,
     ApiResponse,
 )
@@ -83,6 +85,28 @@ async def delete_session(
         return ApiResponse(success=False, message=str(e))
     except Exception as e:
         return ApiResponse(success=False, message=f"删除会话失败: {e}")
+
+
+@router.put("/sessions/{session_id}", response_model=ApiResponse, summary="重命名会话")
+async def rename_session(
+    session_id: str,
+    request: RenameSessionRequest,
+    session_service: SessionService = Depends(get_session_service),
+):
+    """重命名会话（会话抽屉双击标题触发）"""
+    try:
+        session = session_service.rename_session(session_id, request.title)
+        if session is None:
+            return ApiResponse(success=False, message="会话不存在")
+        return ApiResponse(
+            success=True,
+            message="会话已重命名",
+            data={"session_id": session.session_id, "title": session.title},
+        )
+    except CartoAgentError as e:
+        return ApiResponse(success=False, message=str(e))
+    except Exception as e:
+        return ApiResponse(success=False, message=f"重命名会话失败: {e}")
 
 
 @router.post("/sessions/{session_id}/messages", response_model=ApiResponse, summary="发送消息")
@@ -215,12 +239,43 @@ async def send_message_stream(
             # 推送思考过程
             yield f"data: {json.dumps({'type': 'thinking', 'content': '正在分析您的请求...'}, ensure_ascii=False)}\n\n"
 
-            # 执行智能体处理（在线程池中运行）
-            result = await run_in_thread(
-                agent_service.process_request,
-                message=request.message,
-                session_id=session_id,
-            )
+            # 在后台线程执行智能体处理，同时通过队列实时推送步骤进度
+            loop = asyncio.get_running_loop()
+            queue: asyncio.Queue = asyncio.Queue()
+            result_holder: dict = {}
+
+            def progress_cb(event: dict):
+                # 只透传步骤进度，thinking 由最终结果统一推送，避免重复累加
+                if event.get("type") == "steps":
+                    loop.call_soon_threadsafe(queue.put_nowait, event)
+
+            def run_agent():
+                try:
+                    result_holder["result"] = agent_service.process_request(
+                        message=request.message,
+                        session_id=session_id,
+                        progress_cb=progress_cb,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    result_holder["error"] = e
+                finally:
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+
+            threading.Thread(target=run_agent, daemon=True).start()
+
+            # 处理过程中逐条推送步骤进度
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+
+            if "error" in result_holder:
+                error_content = f"处理失败: {result_holder['error']}"
+                yield f"data: {json.dumps({'type': 'error', 'content': error_content}, ensure_ascii=False)}\n\n"
+                return
+
+            result = result_holder.get("result") or {}
 
             # 如果有地图数据，推送地图
             if result.get("map_data"):
@@ -240,6 +295,11 @@ async def send_message_stream(
             graphrag_entities = result.get("graphrag_entities", [])
             if graphrag_entities:
                 yield f"data: {json.dumps({'type': 'graphrag', 'content': {'entities': graphrag_entities}}, ensure_ascii=False)}\n\n"
+
+            # 推送 GraphRAG 推理路径（计划 1.4，前端可视化多跳推理链）
+            graphrag_chain = result.get("graphrag_reasoning_chain", [])
+            if graphrag_chain:
+                yield f"data: {json.dumps({'type': 'graphrag_chain', 'content': graphrag_chain}, ensure_ascii=False)}\n\n"
 
             # 推送知识来源（问答场景）
             knowledge_sources = result.get("knowledge_sources", {})
@@ -277,7 +337,8 @@ async def send_message_stream(
             yield f"data: {json.dumps({'type': 'done', 'content': '完成', 'provider': result.get('provider'), 'model': result.get('model')}, ensure_ascii=False)}\n\n"
 
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'content': f'处理失败: {e}'}, ensure_ascii=False)}\n\n"
+            error_content = f"处理失败: {e}"
+            yield f"data: {json.dumps({'type': 'error', 'content': error_content}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_generator(),

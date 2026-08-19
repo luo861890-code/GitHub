@@ -16,6 +16,8 @@ GeoJSON 约定（WGS84 EPSG:4326，坐标 [lng, lat]）：
   - wuhan_roads.geojson : FeatureCollection
       * LineString -> 道路（properties.highway: motorway/trunk/primary/secondary/tertiary/residential）
 """
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 import json
 import os
 import copy
@@ -24,6 +26,7 @@ from shapely.ops import unary_union
 
 from app.utils.helpers import generate_id
 from app.utils.geometry import _convex_hull, _ring_area_km2
+from app.core.constants import TOURISM_CATEGORIES
 
 GEO_DATA_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -34,7 +37,7 @@ WATER_COLOR = "#1e90ff"
 # 路网分级配色：高速/主干道用暖色加粗突出，次级/支路逐级变浅变细，
 # 与行政区面/水系形成清晰层级
 ROAD_COLOR = {
-    "motorway": "#F97316", "trunk": "#EA580C", "primary": "#94A3B8",
+    "motorway": "#C2410C", "trunk": "#D97706", "primary": "#94A3B8",
     "secondary": "#B9C4D0", "tertiary": "#D3DBE3", "residential": "#E6EBF0",
     "service": "#EDF1F5", "living_street": "#EDF1F5",
     "unclassified": "#E9EEF3", "other": "#E9EEF3",
@@ -67,6 +70,15 @@ class LocalGeoService:
         self._layer_cache[key] = layers
         return copy.deepcopy(layers)
 
+    @staticmethod
+    def _poly_area_km2(geom) -> float:
+        """球面多边形面积（km²），用经纬度环精确计算"""
+        try:
+            ring = [[p[1], p[0]] for p in geom.exterior.coords]
+            return _ring_area_km2(ring)
+        except Exception:
+            return geom.area * 9700.0
+
     def _load(self, fname: str) -> dict:
         path = os.path.join(self.data_dir, fname)
         if not os.path.exists(path):
@@ -75,11 +87,73 @@ class LocalGeoService:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
-            print(f"[LocalGeo] 读取 {fname} 失败: {e}")
+            logger.info(f"[LocalGeo] 读取 {fname} 失败: {e}")
             return {}
 
     def get_water_layers(self, region: str = "武汉市") -> List[dict]:
         return self._cached(("water", region), lambda: self._compute_water_layers(region))
+
+    def get_peaks_layers(self, region: str = "武汉市") -> List[dict]:
+        """山峰注记（DEM 地势图）：山峰点符号 + 名称/高程注记，高程越高 importance 越高（抽稀优先保留）"""
+        return self._cached(("peaks", region), lambda: self._compute_peaks_layers(region))
+
+    def _compute_peaks_layers(self, region: str = "武汉市") -> List[dict]:
+        data = self._load("wuhan_peaks.geojson")
+        features = data.get("features", []) if isinstance(data, dict) else []
+        if not features:
+            return []
+        points, props = [], []
+        for f in features:
+            geom = f.get("geometry") or {}
+            if geom.get("type") != "Point":
+                continue
+            coords = geom.get("coordinates") or []
+            if len(coords) < 2:
+                continue
+            p = f.get("properties") or {}
+            name = (p.get("name") or "").strip()
+            if not name:
+                continue
+            try:
+                ele_v = float(p.get("ele")) if p.get("ele") else 0.0
+            except (TypeError, ValueError):
+                ele_v = 0.0
+            points.append([round(float(coords[1]), 6), round(float(coords[0]), 6)])
+            props.append({
+                "name": name,
+                "category": "peak",
+                "ele": round(ele_v, 1),
+                # 高程越高 importance 越大（多比例尺抽稀时主要山峰优先保留）
+                "importance": max(0.1, round(ele_v / 100.0, 2)),
+            })
+        if not points:
+            return []
+        layers = []
+        # 山峰点符号（棕褐色三角/圆点）
+        layers.append({
+            "id": generate_id("layer"),
+            "type": "circleMarker",
+            "name": "山峰",
+            "coordinates": points,
+            "properties": props,
+            "style": {"color": "#7A5230", "fillColor": "#A9743F", "fillOpacity": 0.9,
+                      "weight": 1.5, "radius": 4, "icon": "▲"},
+        })
+        # 山峰注记（名称 + 高程）
+        labels = [{
+            "coords": pt,
+            "text": pr["name"] + (f" {pr['ele']:.0f}m" if pr["ele"] else ""),
+        } for pt, pr in zip(points, props)]
+        layers.append({
+            "id": generate_id("layer"),
+            "type": "textLabel",
+            "name": "山峰注记",
+            "coordinates": [lbl["coords"] for lbl in labels],
+            "properties": [{"name": lbl["text"], "category": "peak"} for lbl in labels],
+            "style": {"color": "#6B4A2B", "fontSize": 11, "weight": 2,
+                      "font": "song", "offset": [0, -14], "center": True},
+        })
+        return layers
 
     def _compute_water_layers(self, region: str = "武汉市") -> List[dict]:
         """读取本地水系 GeoJSON → [河流polyline, 湖泊polygon, 水系注记]"""
@@ -258,7 +332,7 @@ class LocalGeoService:
                     _out.append(r)
                 _filtered = _out
             except Exception as e:
-                print(f"[LocalGeo] 湖泊去重失败(保留原样): {e}")
+                logger.info(f"[LocalGeo] 湖泊去重失败(保留原样): {e}")
         # ============ 多比例尺湖泊综合（选取/合并/化简/降维/载负量）============
         # 每个比例尺档位独立执行：
         #   选取  - 实地面积 >= 档位阈值（图上 >=2mm²）
@@ -298,22 +372,37 @@ class LocalGeoService:
                 parts = list(u.geoms) if u.geom_type == "MultiPolygon" else [u]
                 for part in parts:
                     if part.geom_type == "Polygon" and not part.is_empty:
-                        _pool.append({"geom": part, "name": nm, "area": part.area * 9700})
+                        _pool.append({"geom": part, "name": nm, "area": self._poly_area_km2(part)})
             except Exception:
                 for g in gs:
-                    _pool.append({"geom": g, "name": nm, "area": g.area * 9700})
+                    _pool.append({"geom": g, "name": nm, "area": self._poly_area_km2(g)})
 
         for bname, min_area, tol, merge_dist, max_count in LAKE_BANDS:
             sel = [dict(p) for p in _pool if p["area"] >= min_area]
             if not sel:
                 continue
 
-            # 合并：仅无名湖按图上间距阈值聚合（保持湖群外包络与分布格局）；
-            # 命名湖保持独立，避免合并后丢失水体名称
+            # 合并：同名湖泊按间距阈值聚合（保持水体名称），无名湖按阈值聚合（保持湖群格局）
             final_polys = []
             named_geoms = [g for g in sel if g["name"]]
             unnamed_geoms = [g for g in sel if not g["name"]]
-            final_polys = [dict(g) for g in named_geoms]
+            named_by_name: Dict[str, List[dict]] = {}
+            for g in named_geoms:
+                named_by_name.setdefault(g["name"], []).append(g)
+            for nm, group in named_by_name.items():
+                if len(group) == 1 or merge_dist <= 0:
+                    final_polys.extend(dict(g) for g in group)
+                    continue
+                try:
+                    merged = unary_union([g["geom"].buffer(merge_dist) for g in group]).buffer(-merge_dist)
+                    mparts = list(merged.geoms) if merged.geom_type == "MultiPolygon" else [merged]
+                    for mp in mparts:
+                        if mp.geom_type != "Polygon" or mp.is_empty or not mp.is_valid:
+                            continue
+                        final_polys.append({"geom": mp, "name": nm, "area": self._poly_area_km2(mp)})
+                except Exception as e:
+                    logger.info(f"[LocalGeo] {bname} 同名湖合并失败(保留原样): {e}")
+                    final_polys.extend(dict(g) for g in group)
             if merge_dist > 0 and unnamed_geoms:
                 try:
                     merged = unary_union([
@@ -323,9 +412,9 @@ class LocalGeoService:
                     for mp in mparts:
                         if mp.geom_type != "Polygon" or mp.is_empty or not mp.is_valid:
                             continue
-                        final_polys.append({"geom": mp, "name": "", "area": mp.area * 9700})
+                        final_polys.append({"geom": mp, "name": "", "area": self._poly_area_km2(mp)})
                 except Exception as e:
-                    print(f"[LocalGeo] {bname} 湖群合并失败(保留原样): {e}")
+                    logger.info(f"[LocalGeo] {bname} 湖群合并失败(保留原样): {e}")
                     final_polys.extend(dict(g) for g in unnamed_geoms)
             else:
                 final_polys.extend(dict(g) for g in unnamed_geoms)
@@ -339,8 +428,8 @@ class LocalGeoService:
                 simp = g.simplify(tol, preserve_topology=True)
                 if simp.geom_type != "Polygon" or simp.is_empty or len(simp.exterior.coords) < 4:
                     simp = g
-                a0 = g.area * 9700
-                a1 = simp.area * 9700
+                a0 = self._poly_area_km2(g)
+                a1 = self._poly_area_km2(simp)
                 if a0 > 1e-9 and abs(a1 - a0) / a0 > 0.20:
                     simp = g      # 面积变形超限，退回原几何（保持图形相似性）
                     a1 = a0
@@ -447,7 +536,7 @@ class LocalGeoService:
             lake_shores = None
         # 河流中心线（单线河）：小比例尺下双线河收缩为单线，保证水系连通性表达
         layers.extend(self._compute_riverline_layers(region, lake_shores=lake_shores))
-        print(f"[LocalGeo] 使用本地水系数据: {len(big_rivers)}条大江, {len(main_rivers)}条主河, "
+        logger.info(f"[LocalGeo] 使用本地水系数据: {len(big_rivers)}条大江, {len(main_rivers)}条主河, "
               f"{len(minor_rivers)}条支流, 河流水面 {len(river_bodies)}, "
               f"湖泊档位 " + "/".join(f"{name}:{len(lake_bands[name])}"
                                       for name, *_ in LAKE_BANDS) +
@@ -646,7 +735,7 @@ class LocalGeoService:
                     "metadata": {"subtype": "builtup", "min_area_km2": min_area,
                                  "legend_title": "居民地", "feature_count": len(items)},
                 })
-        print(f"[LocalGeo] 居民地街区: 合并后 {len(big)}大/{len(mid)}中/{len(small)}小 (源 {len(features)} 块)")
+        logger.info(f"[LocalGeo] 居民地街区: 合并后 {len(big)}大/{len(mid)}中/{len(small)}小 (源 {len(features)} 块)")
         return layers
 
     @staticmethod
@@ -698,7 +787,7 @@ class LocalGeoService:
                 if len(pts) >= 4:
                     poly = Polygon([[p[1], p[0]] for p in _convex_hull(pts)])
         except Exception as e:
-            print(f"[LocalGeo] 市域边界获取失败: {e}")
+            logger.info(f"[LocalGeo] 市域边界获取失败: {e}")
         self._boundary_cache = poly
         return poly
 
@@ -807,7 +896,7 @@ class LocalGeoService:
                              "group": "道路", "subgroup": ROAD_SUBGROUP.get(hw, "其他道路"),
                              "description": ROAD_CN.get(hw, hw)},
             })
-        print(f"[LocalGeo] 使用本地路网数据: {clipped_total}条道路(已裁剪到市域内), {len(layers)}个等级图层")
+        logger.info(f"[LocalGeo] 使用本地路网数据: {clipped_total}条道路(已裁剪到市域内), {len(layers)}个等级图层")
         return layers
 
     # ==================== 旅游POI（武汉旅游图） ====================
@@ -837,7 +926,18 @@ class LocalGeoService:
             "monument", "memorial", "castle", "ruins", "archaeological_site",
             "park", "arts_centre", "theatre", "cinema", "library", "place_of_worship",
         }
-        coords, props = [], []
+        # 本地原始类目 → 制图旅游类目（与 TOURISM_CATEGORIES 对齐，保证配色协调）
+        CATEGORY_MAP = {
+            "attraction": "attraction", "viewpoint": "attraction", "zoo": "attraction",
+            "theme_park": "attraction", "artwork": "cultural",
+            "museum": "museum",
+            "monument": "historic", "memorial": "historic", "castle": "historic",
+            "ruins": "historic", "archaeological_site": "historic",
+            "park": "park",
+            "arts_centre": "cultural", "theatre": "cultural", "cinema": "cultural",
+            "library": "cultural", "place_of_worship": "religious",
+        }
+        grouped = {}
         for feat in features:
             geom = feat.get("geometry") or {}
             if geom.get("type") != "Point":
@@ -852,21 +952,38 @@ class LocalGeoService:
             cat = (p.get("category") or "poi").lower()
             if cat not in KEEP:
                 continue
-            coords.append([c[1], c[0]])  # [lat, lng]
-            props.append({"name": name, "category": cat})
-        if not coords:
+            mapped = CATEGORY_MAP.get(cat, "attraction")
+            grouped.setdefault(mapped, []).append({
+                "coords": [c[1], c[0]],  # [lat, lng]
+                "name": name,
+                "category": mapped,
+            })
+        if not grouped:
             return []
-        layers = [{
-            "id": generate_id("layer"),
-            "type": "circleMarker",
-            "name": "旅游景点",
-            "coordinates": coords,
-            "properties": props,
-            "style": {"color": "#d97706", "fillColor": "#ffffff", "fillOpacity": 0.95,
-                      "weight": 2.2, "radius": 7, "icon": "🏯", "iconClass": "fa-location-dot",
-                      "group": "旅游景点", "kind": "poi"},
-        }]
-        print(f"[LocalGeo] 使用本地旅游POI数据: {len(coords)}个景点")
+
+        layers = []
+        for cat, items in grouped.items():
+            cfg = TOURISM_CATEGORIES.get(cat, TOURISM_CATEGORIES["default"])
+            layers.append({
+                "id": generate_id("layer"),
+                "type": "circleMarker",
+                "name": cfg["name"],
+                "coordinates": [it["coords"] for it in items],
+                "properties": [{"name": it["name"], "category": cat} for it in items],
+                "style": {
+                    "color": cfg["color"],
+                    "fillColor": cfg["fillColor"],
+                    "fillOpacity": cfg.get("fillOpacity", 0.7),
+                    "weight": cfg.get("weight", 2),
+                    "radius": cfg.get("radius", 6),
+                    "icon": cfg.get("icon", "📍"),
+                    "iconClass": cfg.get("iconClass"),
+                    "group": "旅游景点",
+                    "kind": "poi",
+                },
+            })
+        logger.info(f"[LocalGeo] 使用本地旅游POI数据: {sum(len(v) for v in grouped.values())}个景点, "
+              f"{len(layers)}个类目")
         return layers
 
     # ==================== 轨道交通（武汉交通图） ====================
@@ -919,5 +1036,5 @@ class LocalGeoService:
                           "weight": 1.6, "radius": 4.5, "icon": "🚉", "iconClass": "fa-train-subway",
                           "group": "轨道交通", "kind": "station"},
             })
-        print(f"[LocalGeo] 使用本地轨道交通数据: {len(line_coords)}条线路, {len(station_coords)}个站点")
+        logger.info(f"[LocalGeo] 使用本地轨道交通数据: {len(line_coords)}条线路, {len(station_coords)}个站点")
         return layers

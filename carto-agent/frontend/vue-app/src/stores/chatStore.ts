@@ -6,7 +6,10 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import type { Session, Message, MapData, Step, GeoTokenInfo, RagSource, KnowledgeSources } from '@/types'
+import type { GraphragChainHop } from '@/types'
 import api from '@/services/api'
+import { useMapStore } from './mapStore'
+import { useAppStore } from './appStore'
 
 export const useChatStore = defineStore('chat', () => {
   /** 会话列表 */
@@ -40,9 +43,13 @@ export const useChatStore = defineStore('chat', () => {
   const streamingRag = ref<RagSource[]>([])
 
   const streamingGraphrag = ref<{ entities?: string[] } | null>(null)
+  const streamingGraphragChain = ref<GraphragChainHop[]>([])
 
   /** 流式消息的模型/提供者信息 */
   const streamingInfo = ref<{ provider?: string; model?: string } | null>(null)
+
+  /** 当前流式请求的取消控制器 */
+  const streamAbort = ref<AbortController | null>(null)
 
   // ========== Getters ==========
 
@@ -63,17 +70,49 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** 创建新会话，返回会话ID */
+  /** 创建新会话，返回会话ID（同时清空地图区域） */
   async function createSession(title?: string): Promise<string> {
     const result = await api.createSession(title || '新会话')
     const session = result.data || result
     sessions.value.unshift(session)
     currentSessionId.value = session.session_id
     messages.value = []
+    // 新对话：清空地图区域
+    clearMapState()
     return session.session_id
   }
 
-  /** 切换到指定会话 */
+  /** 清空地图状态（新对话时调用） */
+  function clearMapState() {
+    const mapStore = useMapStore()
+    const appStore = useAppStore()
+    mapStore.setMapData(null as any)
+    mapStore.layerGroups = {}
+    appStore.setSelectedLayer(null)
+    appStore.setMapTitle('未命名地图')
+    // 派发事件通知MapCanvas清空
+    const el = document.getElementById('map-container')
+    if (el) el.dispatchEvent(new CustomEvent('map-clear-all'))
+  }
+
+  /** 从消息列表中恢复地图状态（切换历史对话时调用） */
+  function restoreMapFromMessages(msgs: Message[]) {
+    const mapStore = useMapStore()
+    const appStore = useAppStore()
+    // 找到最后一条包含map_data的消息
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const msg = msgs[i]
+      if (msg.map_data) {
+        mapStore.setMapData(msg.map_data)
+        if (msg.map_data.map_name) appStore.setMapTitle(msg.map_data.map_name)
+        return
+      }
+    }
+    // 没有地图数据，清空
+    clearMapState()
+  }
+
+  /** 切换到指定会话（同时回溯地图状态） */
   async function switchSession(sessionId: string) {
     currentSessionId.value = sessionId
     messages.value = []
@@ -82,6 +121,8 @@ export const useChatStore = defineStore('chat', () => {
       const list = result.data || result
       const arr = Array.isArray(list) ? list : (list?.messages || list?.items || [])
       messages.value = arr
+      // 回溯地图状态到该对话最后一次生成的地图
+      restoreMapFromMessages(arr)
     } catch (error) {
       console.error('加载会话消息失败:', error)
     }
@@ -102,6 +143,7 @@ export const useChatStore = defineStore('chat', () => {
     streamingKnowledgeSources.value = null
     streamingRag.value = []
     streamingGraphrag.value = null
+    streamingGraphragChain.value = []
     streamingInfo.value = null
   }
 
@@ -114,6 +156,8 @@ export const useChatStore = defineStore('chat', () => {
     const sessionId = currentSessionId.value!
     isSending.value = true
     clearStreamingState()
+    const controller = new AbortController()
+    streamAbort.value = controller
 
     // 添加用户消息到列表
     const userMsg: Message = {
@@ -145,6 +189,9 @@ export const useChatStore = defineStore('chat', () => {
         onGraphrag: (data: { entities?: string[] }) => {
           streamingGraphrag.value = data
         },
+        onGraphragChain: (chain: GraphragChainHop[]) => {
+          streamingGraphragChain.value = chain
+        },
         onGeotoken: (info: GeoTokenInfo) => {
           streamingGeotoken.value = info
         },
@@ -167,6 +214,7 @@ export const useChatStore = defineStore('chat', () => {
               knowledge_sources: streamingKnowledgeSources.value || undefined,
               rag_sources: streamingRag.value,
               graphrag_entities: streamingGraphrag.value?.entities,
+              graphrag_chain: streamingGraphragChain.value,
               provider: info.provider,
               model: info.model,
               created_at: new Date().toISOString(),
@@ -177,21 +225,31 @@ export const useChatStore = defineStore('chat', () => {
         onError: (error: string) => {
           console.error('流式消息错误:', error)
         },
-      })
+      }, controller.signal)
     } catch (error) {
       console.error('发送消息失败:', error)
-      // 添加错误消息
+      const aborted = (error as any)?.name === 'AbortError'
+      const partial = streamingText.value
+      // 添加错误/中断消息（保留已生成的部分内容）
       const errorMsg: Message = {
         id: `error-${Date.now()}`,
         session_id: sessionId,
         role: 'assistant',
-        content: `抱歉，请求失败: ${error instanceof Error ? error.message : '未知错误'}`,
+        content: partial
+          ? `${partial}\n\n[${aborted ? '已停止生成' : '输出中断：连接异常'}]`
+          : `抱歉，请求失败: ${error instanceof Error ? error.message : '未知错误'}`,
         created_at: new Date().toISOString(),
       }
       messages.value.push(errorMsg)
     } finally {
+      streamAbort.value = null
       isSending.value = false
     }
+  }
+
+  /** 取消当前流式生成 */
+  function cancelStream() {
+    streamAbort.value?.abort()
   }
 
   /** 删除会话 */
@@ -211,6 +269,20 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  /** 重命名会话 */
+  async function renameSession(sessionId: string, title: string) {
+    try {
+      const result = await api.renameSession(sessionId, title)
+      const data = result.data || result
+      if (data && data.title) {
+        const target = sessions.value.find((s) => s.session_id === sessionId)
+        if (target) target.title = data.title
+      }
+    } catch (error) {
+      console.error('重命名会话失败:', error)
+    }
+  }
+
   return {
     // State
     sessions,
@@ -225,7 +297,9 @@ export const useChatStore = defineStore('chat', () => {
     streamingKnowledgeSources,
     streamingRag,
     streamingGraphrag,
+    streamingGraphragChain,
     streamingInfo,
+    streamAbort,
     // Getters
     currentSession,
     // Actions
@@ -235,6 +309,10 @@ export const useChatStore = defineStore('chat', () => {
     addMessage,
     clearStreamingState,
     sendMessage,
+    cancelStream,
+    renameSession,
     deleteCurrentSession,
+    clearMapState,
+    restoreMapFromMessages,
   }
 })

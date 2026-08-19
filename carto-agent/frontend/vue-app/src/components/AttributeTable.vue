@@ -106,6 +106,8 @@
 import { ref, computed, watch } from 'vue'
 import { useAppStore } from '@/stores/appStore'
 import { useMapStore } from '@/stores/mapStore'
+import api from '@/services/api'
+import { showInputDialog } from '@/utils/dialog'
 
 const appStore = useAppStore()
 const mapStore = useMapStore()
@@ -273,49 +275,71 @@ function exportCSV() {
   URL.revokeObjectURL(url)
 }
 
-function addField() {
+/** 将属性表编辑（增删字段/字段计算）持久化回后端 */
+let attrSaveTimer: ReturnType<typeof setTimeout> | null = null
+function persistLayerData() {
+  const layer = currentLayer.value?.data
+  if (!layer || !mapStore.currentMapId) return
+  if (attrSaveTimer) clearTimeout(attrSaveTimer)
+  attrSaveTimer = setTimeout(async () => {
+    try {
+      await api.updateLayerGeometry(
+        mapStore.currentMapId!,
+        layer.id,
+        { features: layer.features }
+      )
+    } catch (e) {
+      console.warn('属性表保存失败:', e)
+    }
+  }, 400)
+}
+
+async function addField() {
   const layer = currentLayer.value?.data
   if (!layer || !layer.features || layer.features.length === 0) {
     alert('当前图层没有要素数据')
     return
   }
-  const name = prompt('请输入新字段名（英文/数字，如 area_km2）')
+  const name = await showInputDialog({ title: '请输入新字段名（英文/数字，如 area_km2）' })
   if (!name || !name.trim()) return
   const field = name.trim()
   layer.features.forEach((f: any) => {
     if (!f.properties) f.properties = {}
     f.properties[field] = null
   })
+  persistLayerData()
   searchQuery.value = ''
 }
 
-function deleteField() {
+async function deleteField() {
   const layer = currentLayer.value?.data
   if (!layer || !layer.features || layer.features.length === 0) return
-  const field = prompt('请输入要删除的字段名')
+  const field = await showInputDialog({ title: '请输入要删除的字段名' })
   if (!field || !field.trim()) return
   layer.features.forEach((f: any) => {
     if (f.properties) delete f.properties[field.trim()]
   })
+  persistLayerData()
 }
 
-function fieldCalculator() {
+async function fieldCalculator() {
   const layer = currentLayer.value?.data
   if (!layer || !layer.features || layer.features.length === 0) {
     alert('当前图层没有要素数据')
     return
   }
   const fieldList = fields.value
-  const expr = prompt(
-    '输入计算表达式（支持字段名和 + - * / % 括号，如 pop / area）\n可用字段: ' + fieldList.join(', ')
-  )
+  const expr = await showInputDialog({
+    title: '输入计算表达式（支持字段名和 + - * / % 括号，如 pop / area）',
+    label: '可用字段: ' + fieldList.join(', '),
+  })
   if (!expr) return
   const calculator = buildCalculator(expr, fieldList)
   if (!calculator) {
     alert('表达式无效，请检查语法和字段名')
     return
   }
-  const target = prompt('结果写入字段名（可新建）')
+  const target = await showInputDialog({ title: '结果写入字段名（可新建）' })
   if (!target || !target.trim()) return
   const field = target.trim()
   layer.features.forEach((f: any) => {
@@ -326,6 +350,7 @@ function fieldCalculator() {
       f.properties[field] = null
     }
   })
+  persistLayerData()
 }
 
 function buildCalculator(
@@ -370,7 +395,7 @@ watch(
   background: #fff;
   border-top: 1px solid var(--color-border);
   box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.08);
-  z-index: 50;
+  z-index: 850;
   display: flex;
   flex-direction: column;
 }

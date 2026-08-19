@@ -23,7 +23,7 @@ export const useAppStore = defineStore('app', () => {
   /** 空间分析面板是否显示 */
   const showAnalysisPanel = ref(false)
 
-  const analysisMode = ref<'buffer' | 'overlay' | 'nearest' | null>(null)
+  const analysisMode = ref<'buffer' | 'overlay' | 'nearest' | 'clip' | 'intersect' | 'union' | null>(null)
 
   /** 设置面板是否显示 */
   const showSettings = ref(false)
@@ -50,6 +50,9 @@ export const useAppStore = defineStore('app', () => {
 
   const markerMode = ref(false)
 
+  /** 载负量等级（简洁/标准/详细，计划 3.3） */
+  const loadLevel = ref<'lite' | 'standard' | 'detail'>('standard')
+
   /** 当前选中的图层ID */
   const selectedLayerId = ref<string | null>(null)
 
@@ -61,6 +64,18 @@ export const useAppStore = defineStore('app', () => {
 
   /** 当前属性表的图层ID */
   const attributeTableLayerId = ref<string | null>(null)
+
+  /** 地图标题（图名） */
+  const mapTitle = ref('未命名地图')
+
+  /** 布局导出面板是否显示 */
+  const showLayoutExport = ref(false)
+
+  /** 当前工程文件路径 */
+  const currentProjectPath = ref<string | null>(null)
+
+  /** 工程是否有未保存修改 */
+  const projectDirty = ref(false)
 
   /** LLM提供者状态 */
   const providerStatus = ref<{
@@ -110,7 +125,7 @@ export const useAppStore = defineStore('app', () => {
     showAnalysisPanel.value = !showAnalysisPanel.value
   }
 
-  function setAnalysisMode(mode: 'buffer' | 'overlay' | 'nearest' | null) {
+  function setAnalysisMode(mode: 'buffer' | 'overlay' | 'nearest' | 'clip' | 'intersect' | 'union' | null) {
     analysisMode.value = mode
     if (mode) showAnalysisPanel.value = true
   }
@@ -170,6 +185,10 @@ export const useAppStore = defineStore('app', () => {
     markerMode.value = !markerMode.value
   }
 
+  function setLoadLevel(level: 'lite' | 'standard' | 'detail') {
+    loadLevel.value = level
+  }
+
   /** 切换到主界面 */
   function switchToMainView() {
     currentView.value = 'main'
@@ -200,6 +219,93 @@ export const useAppStore = defineStore('app', () => {
   /** 切换属性表 */
   function toggleAttributeTable() {
     showAttributeTable.value = !showAttributeTable.value
+  }
+
+  /** 设置地图标题 */
+  function setMapTitle(title: string) {
+    mapTitle.value = title
+    projectDirty.value = true
+  }
+
+  /** 切换布局导出面板 */
+  function toggleLayoutExport() {
+    showLayoutExport.value = !showLayoutExport.value
+  }
+
+  /** 标记工程为已修改 */
+  function markProjectDirty() {
+    projectDirty.value = true
+  }
+
+  /** 清除工程修改标记 */
+  function clearProjectDirty() {
+    projectDirty.value = false
+  }
+
+  /** 保存工程到本地文件（.carto JSON格式，类似QGIS .qgz） */
+  function saveProject(mapStore: any) {
+    const project = {
+      version: '1.0',
+      type: 'carto-project',
+      title: mapTitle.value,
+      savedAt: new Date().toISOString(),
+      mapData: mapStore.currentMapData,
+      layerGroups: mapStore.layerGroups,
+      layerOrder: mapStore.sortedLayers.map((l: any) => l.id),
+      viewState: mapStore.currentMapData ? {
+        center: mapStore.currentMapData.center,
+        zoom: mapStore.currentMapData.zoom,
+        theme: mapStore.currentMapData.theme,
+      } : null,
+      uiState: {
+        selectedLayerId: selectedLayerId.value,
+        loadLevel: loadLevel.value,
+      },
+    }
+    const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = (mapTitle.value || '未命名地图') + '.carto'
+    a.click()
+    URL.revokeObjectURL(url)
+    projectDirty.value = false
+    currentProjectPath.value = a.download
+  }
+
+  /** 从本地文件加载工程 */
+  function loadProject(file: File, mapStore: any): Promise<boolean> {
+    return new Promise((resolve) => {
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        try {
+          const project = JSON.parse(e.target?.result as string)
+          if (project.type !== 'carto-project') {
+            alert('无效的工程文件格式')
+            resolve(false)
+            return
+          }
+          mapTitle.value = project.title || '未命名地图'
+          if (project.mapData) {
+            mapStore.setMapData(project.mapData)
+          }
+          if (project.layerGroups) {
+            Object.assign(mapStore.layerGroups, project.layerGroups)
+          }
+          currentProjectPath.value = file.name
+          projectDirty.value = false
+          resolve(true)
+        } catch (err) {
+          alert('工程文件解析失败: ' + (err as Error).message)
+          resolve(false)
+        }
+      }
+      reader.onerror = () => {
+        alert('文件读取失败')
+        resolve(false)
+      }
+      reader.readAsText(file)
+    })
   }
 
   /** 加载LLM状态（兼容旧接口） */
@@ -243,12 +349,14 @@ export const useAppStore = defineStore('app', () => {
   /** 加载当前提供者/模型 */
   async function loadProviders() {
     try {
-      const providers = await api.getProviders()
-      if (providers && providers.length > 0) {
+      const result = await api.getProviders()
+      const data = result.data || result
+      const providers = data.providers || data.available || []
+      if (Array.isArray(providers) && providers.length > 0) {
         const active = providers.find((p: any) => p.active)
         if (active) {
-          currentProvider.value = active.name || ''
-          currentModel.value = active.current_model || active.models?.[0]?.name || ''
+          currentProvider.value = active.id || active.name || ''
+          currentModel.value = active.current_model || active.model || active.models?.[0] || ''
         }
       }
     } catch (error) {
@@ -286,6 +394,7 @@ export const useAppStore = defineStore('app', () => {
     showLegendPanel,
     showGraticule,
     markerMode,
+    loadLevel,
     selectedLayerId,
     currentProvider,
     currentModel,
@@ -293,6 +402,10 @@ export const useAppStore = defineStore('app', () => {
     currentView,
     showAttributeTable,
     attributeTableLayerId,
+    mapTitle,
+    showLayoutExport,
+    currentProjectPath,
+    projectDirty,
     // Actions
     toggleLayerPanel,
     toggleChatPanel,
@@ -311,6 +424,7 @@ export const useAppStore = defineStore('app', () => {
     toggleLegendPanel,
     toggleGraticule,
     toggleMarkerMode,
+    setLoadLevel,
     setSelectedLayer,
     switchToMainView,
     switchToEditorView,
@@ -318,6 +432,12 @@ export const useAppStore = defineStore('app', () => {
     openAttributeTable,
     closeAttributeTable,
     toggleAttributeTable,
+    setMapTitle,
+    toggleLayoutExport,
+    markProjectDirty,
+    clearProjectDirty,
+    saveProject,
+    loadProject,
     loadLLMStatus,
     loadProviders,
     switchProvider,

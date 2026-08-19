@@ -19,11 +19,10 @@ MapPanel.prototype._initEditable = function() {
         try {
             if (!this.map.editTools) {
                 this.map.editTools = new L.Editable(this.map);
-                // 顶点编辑事件统一标记图层为“已修改”
+                // 顶点编辑事件统一标记图层为“已修改”，并回写几何到数据源（实时同步）
                 this.map.on("editable:vertex:dragend editable:vertex:deleted editable:vertex:new",
                     (e) => {
-                        const lid = e && e.layer ? e.layer._cartoLayerId : null;
-                        if (lid) this._markDirty(lid);
+                        this._syncFeatureGeom(e && e.layer);
                     });
                 // 开始编辑/节点拖动前拍快照（供撤销）
                 this.map.on("editable:editing:start editable:vertex:dragstart",
@@ -55,6 +54,7 @@ MapPanel.prototype.enterEditMode = function() {
         this._redoStack = {};
         this._currentEdit = null;   // {layerId, idx, layer}
         this._tempEditLayer = null;
+        this._editClipboard = null; // 复制/粘贴剪贴板
         // 立即弹出编辑面板，保证按钮响应；重渲染异步执行避免卡顿
         const panel = document.getElementById("map-edit-panel");
         if (panel) panel.classList.remove("hidden");
@@ -255,10 +255,12 @@ MapPanel.prototype.copySelectedFeature = function() {
             if (Array.isArray(data.properties)) {
                 data.properties.push(JSON.parse(JSON.stringify(data.properties[idx] || {})));
             }
+            this._editClipboard = { layerId, feature: { coordinates: JSON.parse(JSON.stringify(copy)) } };
         } else if (Array.isArray(data.features) && data.features[idx]) {
             const copy = JSON.parse(JSON.stringify(data.features[idx]));
             if (copy.coordinates) offset(copy.coordinates);
             data.features.push(copy);
+            this._editClipboard = { layerId, feature: JSON.parse(JSON.stringify(copy)) };
         } else {
             Utils.showToast("该图层不支持复制", "warning");
             return;
@@ -435,6 +437,8 @@ MapPanel.prototype._selectEditFeature = function(layerId, idx, leafletLayer) {
                     if (this._currentEdit && this._currentEdit.layer.setLatLng) {
                         this._currentEdit.layer.setLatLng(ll);
                     }
+                    // 回写数据源，保证主界面与编辑界面一致
+                    this._syncFeatureGeom(leafletLayer);
                     this._markDirty(layerId);
                 });
             }
@@ -696,4 +700,267 @@ MapPanel.prototype.saveEdits = async function() {
         } catch (e) { /* ignore */ }
         Utils.showToast(`已保存 ${ok} 个图层的修改`, "success");
     }
+};
+
+    // ==================== 几何回写（实时同步主/编辑界面） ====================
+MapPanel.prototype._syncFeatureGeom = function(leafletLayer) {
+    if (!leafletLayer) return;
+    const lid = leafletLayer._cartoLayerId;
+    const idx = leafletLayer._cartoFeatureIdx;
+    if (lid == null || idx == null) return;
+    const item = this.layerGroups[lid];
+    if (!item || !item.data) return;
+    const data = item.data;
+    const gtype = leafletLayer._cartoGeomType === "polygon" ? "polygon"
+        : leafletLayer._cartoGeomType === "polyline" ? "line"
+        : "point";
+    const geom = this._leafletGeomToData(gtype, leafletLayer);
+    if (!geom) return;
+    if (Array.isArray(data.coordinates)) {
+        data.coordinates[idx] = geom;
+    } else if (Array.isArray(data.features) && data.features[idx]) {
+        data.features[idx].coordinates = geom;
+    }
+    this._markDirty(lid);
+};
+
+    // ==================== 高级几何编辑（旋转/缩放/镜像/偏移/合并/分割/平滑/粘贴/全选） ====================
+MapPanel.prototype._getSelectedCoords = function() {
+    if (!this._currentEdit) return null;
+    const item = this.layerGroups[this._currentEdit.layerId];
+    if (!item || !item.data) return null;
+    const data = item.data;
+    const idx = this._currentEdit.idx;
+    if (Array.isArray(data.coordinates) && Array.isArray(data.coordinates[idx])) return data.coordinates[idx];
+    if (Array.isArray(data.features) && data.features[idx] && Array.isArray(data.features[idx].coordinates)) return data.features[idx].coordinates;
+    return null;
+};
+
+MapPanel.prototype._setSelectedCoords = function(newCoords) {
+    if (!this._currentEdit) return;
+    const item = this.layerGroups[this._currentEdit.layerId];
+    if (!item || !item.data) return;
+    const data = item.data;
+    const idx = this._currentEdit.idx;
+    if (Array.isArray(data.coordinates) && data.coordinates[idx]) data.coordinates[idx] = newCoords;
+    else if (Array.isArray(data.features) && data.features[idx]) data.features[idx].coordinates = newCoords;
+};
+
+MapPanel.prototype._coordsCentroid = function(coords) {
+    let lat = 0, lng = 0, n = 0;
+    coords.forEach(p => {
+        if (Array.isArray(p) && p.length >= 2 && isFinite(p[0]) && isFinite(p[1])) { lat += p[0]; lng += p[1]; n++; }
+    });
+    return n ? [lat / n, lng / n] : [0, 0];
+};
+
+MapPanel.prototype._applySelectedTransform = function(fn, label) {
+    if (!this._currentEdit) { Utils.showToast("请先点击选中要素", "warning"); return; }
+    const layerId = this._currentEdit.layerId;
+    const coords = this._getSelectedCoords();
+    if (!coords || coords.length < 1) { Utils.showToast("请先点击选中要素", "warning"); return; }
+    this._pushUndoSnapshot(layerId);
+    const result = fn(coords);
+    this._setSelectedCoords(result);
+    this._markDirty(layerId);
+    this._clearEditSelection();
+    this.rerenderLayer(layerId);
+    Utils.showToast(label, "success", 1600);
+};
+
+MapPanel.prototype.rotateSelected = function(angleDeg) {
+    this._applySelectedTransform((coords) => {
+        const c = this._coordsCentroid(coords);
+        const rad = (angleDeg * Math.PI) / 180;
+        const cos = Math.cos(rad), sin = Math.sin(rad);
+        return coords.map(p => {
+            const dLat = p[0] - c[0];
+            const dLng = p[1] - c[1];
+            return [c[0] + dLat * cos - dLng * sin, c[1] + dLat * sin + dLng * cos];
+        });
+    }, `已旋转 ${angleDeg}°`);
+};
+
+MapPanel.prototype.scaleSelected = function(factor) {
+    this._applySelectedTransform((coords) => {
+        const c = this._coordsCentroid(coords);
+        return coords.map(p => [c[0] + (p[0] - c[0]) * factor, c[1] + (p[1] - c[1]) * factor]);
+    }, `已缩放 ${factor}×`);
+};
+
+MapPanel.prototype.mirrorSelected = function(axis) {
+    this._applySelectedTransform((coords) => {
+        const c = this._coordsCentroid(coords);
+        return coords.map(p => axis === "horizontal"
+            ? [c[0] + (p[0] - c[0]), c[1] - (p[1] - c[1])]
+            : [c[0] - (p[0] - c[0]), c[1] + (p[1] - c[1])]);
+    }, axis === "horizontal" ? "已水平镜像" : "已垂直镜像");
+};
+
+MapPanel.prototype.offsetSelected = function(distanceMeters) {
+    this._applySelectedTransform((coords) => {
+        const result = [];
+        for (let i = 0; i < coords.length; i++) {
+            const prev = coords[Math.max(0, i - 1)];
+            const next = coords[Math.min(coords.length - 1, i + 1)];
+            const dx = next[0] - prev[0];
+            const dy = next[1] - prev[1];
+            const len = Math.hypot(dx, dy) || 1;
+            const nx = -dy / len;
+            const ny = dx / len;
+            const dLat = distanceMeters / 111320;
+            const dLng = distanceMeters / (111320 * Math.max(0.01, Math.cos((coords[i][0] * Math.PI) / 180)));
+            result.push([coords[i][0] + nx * dLat, coords[i][1] + ny * dLng]);
+        }
+        return result;
+    }, `已偏移 ${distanceMeters}m`);
+};
+
+MapPanel.prototype.mergeVerticesSelected = function() {
+    this._applySelectedTransform((coords) => {
+        const result = [coords[0]];
+        for (let i = 1; i < coords.length; i++) {
+            const last = result[result.length - 1];
+            if (Math.hypot(coords[i][0] - last[0], coords[i][1] - last[1]) > 0.0001) result.push(coords[i]);
+        }
+        return result;
+    }, "已合并邻近节点");
+};
+
+MapPanel.prototype.splitSelectedFeature = function() {
+    if (!this._currentEdit) { Utils.showToast("请先点击选中线要素", "warning"); return; }
+    const item = this.layerGroups[this._currentEdit.layerId];
+    if (!item || !item.data) return;
+    const data = item.data;
+    const idx = this._currentEdit.idx;
+    const coords = this._getSelectedCoords();
+    if (!coords || coords.length < 4) { Utils.showToast("线要素节点太少，无法分割", "warning"); return; }
+    const mid = Math.floor(coords.length / 2);
+    const seg1 = coords.slice(0, mid + 1);
+    const seg2 = coords.slice(mid);
+    const layerId = this._currentEdit.layerId;
+    this._pushUndoSnapshot(layerId);
+    if (Array.isArray(data.coordinates)) {
+        data.coordinates[idx] = seg1;
+        data.coordinates.splice(idx + 1, 0, seg2);
+        if (Array.isArray(data.properties)) data.properties.splice(idx + 1, 0, { name: "分割要素 2" });
+    } else if (Array.isArray(data.features)) {
+        data.features[idx].coordinates = seg1;
+        const copy = JSON.parse(JSON.stringify(data.features[idx]));
+        copy.coordinates = seg2;
+        copy.properties = { name: "分割要素 2" };
+        data.features.splice(idx + 1, 0, copy);
+    }
+    this._markDirty(layerId);
+    this._clearEditSelection();
+    this.rerenderLayer(layerId);
+    Utils.showToast("已分割要素", "success", 1600);
+};
+
+MapPanel.prototype.mergeSelectedFeatures = function() {
+    if (!this._currentEdit) { Utils.showToast("请先点击选中要合并的线要素", "warning"); return; }
+    const item = this.layerGroups[this._currentEdit.layerId];
+    if (!item || !item.data) return;
+    const data = item.data;
+    const idx = this._currentEdit.idx;
+    const coords = this._getSelectedCoords();
+    if (!coords || coords.length < 2) { Utils.showToast("请选择线要素进行合并", "warning"); return; }
+    const allCoords = Array.isArray(data.coordinates)
+        ? data.coordinates
+        : (Array.isArray(data.features) ? data.features.map(f => f.coordinates) : []);
+    let bestIdx = -1, bestDist = Infinity;
+    allCoords.forEach((c, i) => {
+        if (i === idx || !Array.isArray(c) || c.length < 2) return;
+        const d1 = Math.hypot(coords[coords.length - 1][0] - c[0][0], coords[coords.length - 1][1] - c[0][1]);
+        const d2 = Math.hypot(coords[coords.length - 1][0] - c[c.length - 1][0], coords[coords.length - 1][1] - c[c.length - 1][1]);
+        const d = Math.min(d1, d2);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+    });
+    if (bestIdx < 0) { Utils.showToast("没有可合并的相邻线要素", "warning"); return; }
+    const layerId = this._currentEdit.layerId;
+    this._pushUndoSnapshot(layerId);
+    const merged = [...coords, ...allCoords[bestIdx]];
+    if (Array.isArray(data.coordinates)) {
+        data.coordinates[idx] = merged;
+        data.coordinates.splice(bestIdx, 1);
+        if (Array.isArray(data.properties)) data.properties.splice(bestIdx, 1);
+    } else if (Array.isArray(data.features)) {
+        data.features[idx].coordinates = merged;
+        data.features.splice(bestIdx, 1);
+    }
+    this._markDirty(layerId);
+    this._clearEditSelection();
+    this.rerenderLayer(layerId);
+    Utils.showToast("已合并要素", "success", 1600);
+};
+
+MapPanel.prototype._chaikin = function(points, iterations) {
+    let pts = points;
+    const closed = pts.length > 0 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1];
+    for (let it = 0; it < iterations; it++) {
+        if (pts.length < 3) break;
+        const next = [];
+        for (let i = 0; i < pts.length - 1; i++) {
+            const p0 = pts[i], p1 = pts[i + 1];
+            next.push([0.75 * p0[0] + 0.25 * p1[0], 0.75 * p0[1] + 0.25 * p1[1]]);
+            next.push([0.25 * p0[0] + 0.75 * p1[0], 0.25 * p0[1] + 0.75 * p1[1]]);
+        }
+        if (closed) next.push(next[0]);
+        pts = next;
+    }
+    return pts;
+};
+
+MapPanel.prototype.smoothSelectedFeature = function() {
+    if (!this._currentEdit) { Utils.showToast("请先点击选中要平滑的要素", "warning"); return; }
+    const layerId = this._currentEdit.layerId;
+    const coords = this._getSelectedCoords();
+    if (!coords || coords.length < 3) { Utils.showToast("节点太少，无法平滑", "warning"); return; }
+    this._pushUndoSnapshot(layerId);
+    const smoothed = this._chaikin(coords, 2);
+    this._setSelectedCoords(smoothed);
+    this._markDirty(layerId);
+    this._clearEditSelection();
+    this.rerenderLayer(layerId);
+    Utils.showToast("已平滑要素（记得保存）", "success", 1800);
+};
+
+MapPanel.prototype.pasteSelectedFeature = function() {
+    if (!this._editClipboard) { Utils.showToast("剪贴板为空，请先复制要素", "warning"); return; }
+    const { layerId, feature } = this._editClipboard;
+    const item = this.layerGroups[layerId];
+    if (!item || !item.data) { Utils.showToast("目标图层不存在", "warning"); return; }
+    const data = item.data;
+    this._pushUndoSnapshot(layerId);
+    if (feature.coordinates) {
+        if (!Array.isArray(data.coordinates)) data.coordinates = [];
+        data.coordinates.push(JSON.parse(JSON.stringify(feature.coordinates)));
+        if (!Array.isArray(data.properties)) data.properties = [];
+        data.properties.push({ name: "粘贴要素" });
+    } else if (feature.type) {
+        if (!Array.isArray(data.features)) data.features = [];
+        data.features.push(JSON.parse(JSON.stringify(feature)));
+    } else {
+        Utils.showToast("剪贴板数据无效", "warning");
+        return;
+    }
+    this._markDirty(layerId);
+    this.rerenderLayer(layerId);
+    Utils.showToast("已粘贴要素（记得保存）", "success", 1800);
+};
+
+MapPanel.prototype._selectAllFeatures = function() {
+    let targetId = null;
+    for (const [id, item] of Object.entries(this.layerGroups)) {
+        const t = item.data && item.data.type;
+        if (["polyline", "line", "polygon", "area", "circleMarker", "marker", "point"].includes(t)) { targetId = id; break; }
+    }
+    if (!targetId) { Utils.showToast("没有可选择的矢量图层", "warning"); return; }
+    const children = this._leafletChildren(this.layerGroups[targetId].layer);
+    if (children.length === 0) { Utils.showToast("图层无要素", "warning"); return; }
+    this._clearEditSelection();
+    children.forEach(l => { if (l && l.setStyle) l.setStyle({ color: "#ff6b00", weight: 4, opacity: 1 }); });
+    this._currentEdit = { layerId: targetId, idx: 0, layer: children[0] };
+    this._updateEditStatus();
+    Utils.showToast(`已全选 ${children.length} 个要素`, "success", 1600);
 };

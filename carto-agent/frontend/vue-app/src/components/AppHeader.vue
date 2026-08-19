@@ -110,6 +110,11 @@ const mapThemes = computed(() => CONFIG.mapThemes)
 function setTheme(theme: string) {
   mapStore.setTheme(theme)
   showThemeMenu.value = false
+  // 通知地图组件切换底图（主视图 LegacyMapPanel / 编辑视图 MapCanvas）
+  const el = document.getElementById('map-container')
+  if (el) {
+    el.dispatchEvent(new CustomEvent('map-set-theme', { detail: { theme } }))
+  }
 }
 
 function getThemePreviewColor(key: string): string {
@@ -125,6 +130,8 @@ function getThemePreviewColor(key: string): string {
     tianditu_img: '#5a7a5a',
     tencent_normal: '#e0f0ff',
     esri_street_cn: '#f5f0e6',
+    hillshade: '#b8b8a8',
+    terrain: '#e8dcc8',
   }
   return colorMap[key] || '#ccc'
 }
@@ -168,9 +175,10 @@ function handleDownload() {
   background: linear-gradient(135deg, #a78bfa 0%, #8b5cf6 50%, #7c3aed 100%);
   color: #fff;
   position: relative;
-  z-index: 100;
+  z-index: 2000;
   box-shadow: 0 2px 12px rgba(139, 92, 246, 0.3);
-  overflow: hidden;
+  /* 主题下拉面板会延伸到头部下方，必须允许溢出，否则被裁剪不可见 */
+  overflow: visible;
 }
 
 .app-header::before {
@@ -346,7 +354,7 @@ function handleDownload() {
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
   padding: 6px;
   min-width: 160px;
-  z-index: 1000;
+  z-index: 2100;
 }
 
 .header-dropdown-item {

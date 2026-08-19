@@ -155,9 +155,21 @@
               <option value="">请选择</option>
               <option value="administrative">行政区划图</option>
               <option value="traffic">交通地图</option>
+              <option value="terrain">地势图/地形图</option>
+              <option value="water">水系图</option>
               <option value="tourism">旅游地图</option>
-              <option value="thematic">专题地图</option>
-              <option value="topographic">地形图</option>
+              <option value="basic">基础地图</option>
+              <option value="population">人口密度图</option>
+              <option value="landuse">土地利用图</option>
+              <option value="greenery">绿化覆盖图</option>
+              <option value="healthcare">医疗资源图</option>
+              <option value="education">教育设施图</option>
+              <option value="commercial">商业分布图</option>
+              <option value="food">美食地图</option>
+              <option value="campus">校园图</option>
+              <option value="economic">经济分布图</option>
+              <option value="climate">气候图</option>
+              <option value="heatmap">热力图</option>
             </select>
           </div>
         </div>
@@ -388,6 +400,16 @@
             </div>
           </div>
 
+          <!-- GraphRAG 推理路径（计划 1.4） -->
+          <div v-if="msg.graphrag_chain && msg.graphrag_chain.length" class="graphrag-chain-card">
+            <div class="ks-header"><i class="fa-solid fa-sitemap"></i> <span>GraphRAG 推理路径</span></div>
+            <div v-for="(hop, hi) in msg.graphrag_chain" :key="hi" class="chain-hop">
+              <span class="chain-hop-badge">第{{ hop.hop || hi + 1 }}跳</span>
+              <span class="chain-hop-entities">{{ (hop.entities || []).join(' → ') }}</span>
+              <span v-if="hop.confidence" class="chain-hop-conf">置信度 {{ hop.confidence }}</span>
+            </div>
+          </div>
+
           <!-- GeoToken 数据规模卡片 -->
           <div v-if="msg.geotoken_info" class="geotoken-card">
             <div class="ks-header">
@@ -473,11 +495,11 @@
         ></textarea>
         <button
           class="chat-send-btn"
-          :disabled="chatStore.isSending"
-          @click="sendMessage"
-          title="发送 (Enter)"
+          :class="{ stop: chatStore.isSending }"
+          @click="handleSendClick"
+          :title="chatStore.isSending ? '停止生成' : '发送 (Enter)'"
         >
-          <div v-if="chatStore.isSending" class="btn-spinner"></div>
+          <i v-if="chatStore.isSending" class="fa-solid fa-stop"></i>
           <i v-else class="fa-solid fa-paper-plane"></i>
         </button>
       </div>
@@ -507,6 +529,9 @@ const maxMsgLen = CONFIG.maxMessageLength
 const expandedThinking = reactive<Record<number, boolean>>({})
 
 const quickCommands = CONFIG.quickCommands
+
+/** 待应用到下一次制图的任务参数（由「任务参数」面板设置，随下一条消息发送） */
+let pendingTaskParams: Record<string, any> | null = null
 
 // 地图统计数据
 const mapStats = reactive({
@@ -554,7 +579,9 @@ const taskParams = reactive({
 
 function refreshMapStats() {
   // 从地图获取最新统计数据
-  window.dispatchEvent(new CustomEvent('map-get-stats'))
+  const el = document.getElementById('map-container')
+  if (el) el.dispatchEvent(new CustomEvent('map-get-stats'))
+  else window.dispatchEvent(new CustomEvent('map-get-stats'))
 }
 
 function resetTaskParams() {
@@ -571,12 +598,50 @@ function resetTaskParams() {
   taskParams.includePolygons = true
   taskParams.showLabels = true
   taskParams.showLegend = true
+  pendingTaskParams = null
 }
 
 function applyTaskParams() {
   // 应用任务参数到地图
-  window.dispatchEvent(new CustomEvent('map-apply-task-params', { detail: { ...taskParams } }))
+  const el = document.getElementById('map-container')
+  pendingTaskParams = JSON.parse(JSON.stringify(taskParams))
+  if (el) el.dispatchEvent(new CustomEvent('map-apply-task-params', { detail: { ...taskParams } }))
+  else window.dispatchEvent(new CustomEvent('map-apply-task-params', { detail: { ...taskParams } }))
   showTaskParams.value = false
+  alert('任务参数已应用：将随下一条指令一起发送给智能体')
+}
+
+/** 将任务参数转换为结构化指令文本，附加到下一条消息 */
+function buildTaskParamsText(): string {
+  if (!pendingTaskParams) return ''
+  const p = pendingTaskParams
+  const parts: string[] = []
+  if (p.mapName) parts.push(`地图名称：${p.mapName}`)
+  if (p.mapType) {
+    const typeNames: Record<string, string> = {
+      administrative: '行政区划图', traffic: '交通地图', terrain: '地势图/地形图',
+      water: '水系图', tourism: '旅游地图', basic: '基础地图',
+      population: '人口密度图', landuse: '土地利用图', greenery: '绿化覆盖图',
+      healthcare: '医疗资源图', education: '教育设施图', commercial: '商业分布图',
+      food: '美食地图', campus: '校园图', economic: '经济分布图',
+      climate: '气候图', heatmap: '热力图',
+    }
+    parts.push(`地图类型：${typeNames[p.mapType] || p.mapType}`)
+  }
+  if (p.region) parts.push(`地理范围：${p.region}`)
+  if (p.projection && p.projection !== 'Web墨卡托') parts.push(`投影方式：${p.projection}`)
+  if (p.scale) parts.push(`目标比例尺：${p.scale}`)
+  if (p.baseMap && p.baseMap !== '高德地图') parts.push(`底图样式：${p.baseMap}`)
+  if (p.colorScheme && p.colorScheme !== '默认') parts.push(`配色方案：${p.colorScheme}`)
+  if (p.opacityValue !== undefined && p.opacityValue !== 100) parts.push(`图层透明度：${p.opacityValue}%`)
+  const types: string[] = []
+  if (p.includePoints) types.push('点')
+  if (p.includeLines) types.push('线')
+  if (p.includePolygons) types.push('面')
+  if (types.length > 0 && types.length < 3) parts.push(`要素类型：${types.join('/')}要素`)
+  if (p.showLabels === false) parts.push('不显示标注')
+  if (p.showLegend === false) parts.push('不显示图例')
+  return parts.join('；')
 }
 
 const stepIcons: Record<string, string> = {
@@ -632,14 +697,28 @@ function handleKeydown(e: KeyboardEvent) {
 }
 
 async function sendMessage() {
-  const text = inputText.value.trim()
+  let text = inputText.value.trim()
   if (!text || chatStore.isSending) return
   if (text.length > maxMsgLen) return
+
+  // 追加任务参数为结构化指令
+  const paramsText = buildTaskParamsText()
+  if (paramsText) {
+    text = `${text}\n\n【制图参数】${paramsText}`
+  }
 
   inputText.value = ''
   autoResize()
   await chatStore.sendMessage(text)
   scrollToBottom()
+}
+
+function handleSendClick() {
+  if (chatStore.isSending) {
+    chatStore.cancelStream()
+  } else {
+    sendMessage()
+  }
 }
 
 function handleQuickCommand(cmd: { message: string }) {
@@ -667,17 +746,23 @@ async function handleMapClick(msg: Message) {
 
 function handleOptimize(msg: Message) {
   // 触发优化操作
-  const input = inputRef.value
-  if (input) {
-    inputText.value = '请根据质量报告优化这张地图'
-    autoResize()
-    input.focus()
-  }
+  inputText.value = '请根据质量报告优化这张地图'
+  autoResize()
+  sendMessage()
 }
 
-function handleAccept(msg: Message) {
-  // 接受当前结果
-  console.log('接受当前结果:', msg)
+async function handleAccept(msg: Message) {
+  if (!mapStore.currentMapId) {
+    alert('当前没有地图')
+    return
+  }
+  try {
+    await api.acceptQuality(mapStore.currentMapId)
+    ;(msg as any).qualityAccepted = true
+    alert('已接受当前质量检测结果，结论已写入编制说明')
+  } catch (e: any) {
+    alert('操作失败: ' + e.message)
+  }
 }
 
 function scrollToBottom() {
@@ -706,6 +791,27 @@ watch(
     }
   }
 )
+
+// 监听地图组件回传的统计数据，更新「地图统计数据」面板
+onMounted(() => {
+  window.addEventListener('map-stats-data', (e: Event) => {
+    const s = (e as CustomEvent).detail || {}
+    if (s.totalLayers !== undefined) mapStats.totalLayers = s.totalLayers
+    if (s.totalFeatures !== undefined) mapStats.totalFeatures = s.totalFeatures
+    if (s.pointLayers !== undefined) mapStats.pointLayers = s.pointLayers
+    if (s.lineLayers !== undefined) mapStats.lineLayers = s.lineLayers
+    if (s.polygonLayers !== undefined) mapStats.polygonLayers = s.polygonLayers
+    if (s.pointFeatures !== undefined) mapStats.pointFeatures = s.pointFeatures
+    if (s.lineFeatures !== undefined) mapStats.lineFeatures = s.lineFeatures
+    if (s.polygonFeatures !== undefined) mapStats.polygonFeatures = s.polygonFeatures
+    if (s.center !== undefined) mapStats.center = s.center
+    if (s.zoom !== undefined) mapStats.zoom = s.zoom
+    if (s.bounds !== undefined) mapStats.bounds = s.bounds
+    if (s.baseMap !== undefined) mapStats.baseMap = s.baseMap
+    if (s.dataSource !== undefined) mapStats.dataSource = s.dataSource
+    if (s.createTime !== undefined) mapStats.createTime = s.createTime
+  })
+})
 </script>
 
 <style scoped>
@@ -1436,6 +1542,45 @@ watch(
   margin: 2px 4px 2px 0;
 }
 
+.graphrag-chain-card {
+  background: #f8fafc;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  font-size: 12px;
+}
+
+.chain-hop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 11px;
+}
+
+.chain-hop-badge {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  background: #ede9fe;
+  color: #7c3aed;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+.chain-hop-entities {
+  flex: 1;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chain-hop-conf {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
 /* GeoToken 卡片 */
 .geotoken-card {
   background: #f8fafc;
@@ -1613,6 +1758,9 @@ watch(
 .chat-send-btn:hover:not(:disabled) {
   transform: scale(1.05);
   box-shadow: 0 2px 8px rgba(124, 58, 237, 0.3);
+}
+.chat-send-btn.stop {
+  background: linear-gradient(135deg, #ef4444, #dc2626);
 }
 .chat-send-btn:disabled {
   opacity: 0.6;

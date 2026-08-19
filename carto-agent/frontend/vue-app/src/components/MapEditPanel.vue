@@ -158,6 +158,12 @@ function addCoord() {
 }
 
 function handleExit() {
+  if (editStore.dirtyIds.length > 0) {
+    const ok = confirm('有未保存的修改，是否先保存？')
+    if (ok) {
+      dispatch('map-edit-save')
+    }
+  }
   dispatch('map-edit-exit')
   appStore.toggleEditPanel()
 }
@@ -174,7 +180,7 @@ function handleExit() {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
-  z-index: 30;
+  z-index: 860;
   padding: 10px;
   font-size: 12px;
 }

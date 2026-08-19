@@ -1,0 +1,12 @@
+{"content": "符号层级：制图叠置顺序为底图→水系→道路→境界→注记，高等级要素绘制在上层。", "label": "CartographyRule", "category": "symbol_layer", "source": "制图规范"}
+{"content": "颜色规范：水系使用蓝色系，植被使用绿色系，地貌使用棕色系，行政边界使用黑色/紫色系。", "label": "CartographyRule", "category": "color", "source": "制图规范"}
+{"content": "注记规则：道路注记随线走向、面状要素注记居中、注记不得压盖重要要素（河流交汇点/道路交叉口/境界转折点）。", "label": "CartographyRule", "category": "annotation", "source": "制图规范"}
+{"content": "投影选择：市级区域宜用高斯-克吕格/UTM，省级宜用兰伯特等角圆锥，国家级宜用阿尔伯斯等积圆锥，世界地图用圆柱投影。", "label": "CartographyRule", "category": "projection", "source": "制图规范"}
+{"content": "载负量：比例尺越小要素抽稀比例越高，道路按等级取舍，注记按重要性分级显示。", "label": "CartographyRule", "category": "load", "source": "制图规范"}
+{"content": "整饰规范：图名居中上方、图例右下或左下、比例尺下方、指北针右上角，编制信息置于图廓下方。", "label": "CartographyRule", "category": "decoration", "source": "制图规范"}
+{"content": "行政区划图：国界/省界绝对保留并严格按权威资料绘制，地级界与县级界按比例尺取舍，飞地必须夸大保留。", "label": "CartographyRule", "category": "boundary", "source": "制图规范"}
+{"content": "道路分级：高速4-5px、主干道3-4px、次干道2-3px、支路1-1.5px，主线与匝道样式要区分。", "label": "CartographyRule", "category": "symbol", "source": "制图规范"}
+{"content": "水域制图综合：图上间距<0.2-0.3mm的相邻小湖可合并但保持湖群格局，最小上图面积2-4平方毫米。", "label": "CartographyRule", "category": "generalization", "source": "制图规范"}
+{"content": "等高距：等高距随比例尺减小而增大，同幅地图统一等高距，地形差异大时可加半距等高线。", "label": "CartographyRule", "category": "terrain", "source": "制图规范"}
+{"content": "符号冲突：要素冲突时次要要素位移避让主要要素，优先级为控制点>境界>主要水系>主要交通>居民地>地貌>植被。", "label": "CartographyRule", "category": "conflict", "source": "制图规范"}
+{"content": "专题地图：交通图应以道路和铁路为主、水系作底图；旅游图应标注景点并配套食宿；人口图宜用分级色。", "label": "CartographyRule", "category": "thematic", "source": "制图规范"}

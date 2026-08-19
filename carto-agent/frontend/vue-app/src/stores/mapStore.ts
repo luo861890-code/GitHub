@@ -114,9 +114,17 @@ export const useMapStore = defineStore('map', () => {
     if (normalized.layers) {
       normalized.layers.forEach((layer, index) => {
         layerGroups.value[layer.id] = { 
-          visible: true, 
+          visible: layer.visible !== false,
           data: layer,
           order: index
+        }
+        // 恢复图层分组（后端持久化的 group 字段）
+        if (layer.group && !layerGroups_meta.value[layer.group]) {
+          layerGroups_meta.value[layer.group] = {
+            name: layer.group,
+            expanded: true,
+            order: Object.keys(layerGroups_meta.value).length,
+          }
         }
       })
     }
@@ -238,7 +246,11 @@ export const useMapStore = defineStore('map', () => {
 
   /** 添加图层分组 */
   function addLayerGroup(name: string) {
-    const groupId = 'group_' + Date.now()
+    const groupId = name.trim()
+    if (layerGroups_meta.value[groupId]) {
+      layerGroups_meta.value[groupId].expanded = true
+      return groupId
+    }
     const maxOrder = Object.values(layerGroups_meta.value).length > 0
       ? Math.max(...Object.values(layerGroups_meta.value).map(g => g.order))
       : 0

@@ -32,6 +32,18 @@ export const useEditStore = defineStore('edit', () => {
   /** 编辑状态提示 */
   const statusText = ref('未选择要素')
 
+  /** 选中要素的属性信息（供编辑视图右侧「属性」面板显示） */
+  const selectedFeatureInfo = ref<{ layerName: string; properties: Record<string, any>; index: number } | null>(null)
+
+  /** 捕捉功能是否启用 */
+  const snappingEnabled = ref(false)
+  /** 捕捉模式：vertex 顶点 / edge 边 / intersection 交点 */
+  const snapModes = ref<Record<string, boolean>>({ vertex: true, edge: false, intersection: false })
+  /** 捕捉容差（像素） */
+  const snapTolerance = ref(10)
+  /** 规则形状约束：rect / circle / ellipse / heart / null(自由绘制) */
+  const shapeConstraint = ref<string | null>(null)
+
   function setActive(value: boolean) {
     active.value = value
     if (!value) {
@@ -39,6 +51,7 @@ export const useEditStore = defineStore('edit', () => {
       pendingVertices.value = []
       selectedLayerId.value = null
       selectedIndex.value = null
+      selectedFeatureInfo.value = null
       statusText.value = '未选择要素'
     }
   }
@@ -60,6 +73,11 @@ export const useEditStore = defineStore('edit', () => {
     selectedLayerId.value = layerId
     selectedIndex.value = index
     statusText.value = layerId && index !== null ? `已选择要素 #${index + 1}` : '未选择要素'
+    if (layerId === null) selectedFeatureInfo.value = null
+  }
+
+  function setSelectedFeatureInfo(info: { layerName: string; properties: Record<string, any>; index: number } | null) {
+    selectedFeatureInfo.value = info
   }
 
   function markDirty(layerId: string) {
@@ -106,6 +124,22 @@ export const useEditStore = defineStore('edit', () => {
     statusText.value = text
   }
 
+  function toggleSnapping() {
+    snappingEnabled.value = !snappingEnabled.value
+  }
+
+  function toggleSnapMode(mode: string) {
+    snapModes.value = { ...snapModes.value, [mode]: !snapModes.value[mode] }
+  }
+
+  function setSnapTolerance(tol: number) {
+    snapTolerance.value = Math.max(1, Math.min(50, tol))
+  }
+
+  function setShapeConstraint(shape: string | null) {
+    shapeConstraint.value = shape
+  }
+
   return {
     active,
     drawTool,
@@ -116,11 +150,17 @@ export const useEditStore = defineStore('edit', () => {
     undoStack,
     redoStack,
     statusText,
+    selectedFeatureInfo,
+    snappingEnabled,
+    snapModes,
+    snapTolerance,
+    shapeConstraint,
     setActive,
     setDrawTool,
     addPendingVertex,
     clearPending,
     setSelected,
+    setSelectedFeatureInfo,
     markDirty,
     clearDirty,
     pushUndo,
@@ -128,5 +168,9 @@ export const useEditStore = defineStore('edit', () => {
     pushRedo,
     popRedo,
     setStatus,
+    toggleSnapping,
+    toggleSnapMode,
+    setSnapTolerance,
+    setShapeConstraint,
   }
 })

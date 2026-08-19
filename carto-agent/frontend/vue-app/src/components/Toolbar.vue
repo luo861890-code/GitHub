@@ -1,21 +1,36 @@
 <template>
   <div class="map-toolbar">
-    <!-- 左侧：导航工具 -->
+    <!-- 导航工具 -->
     <div class="toolbar-group">
-      <button class="tool-btn" title="平移" @click="setTool('pan')">
+      <button
+        class="tool-btn"
+        :class="{ active: currentTool === 'pan' }"
+        title="平移地图"
+        @click="setTool('pan')"
+      >
         <i class="fa-solid fa-hand"></i>
+        <span>平移</span>
       </button>
-      <button class="tool-btn" title="框选缩放" @click="setTool('zoom-box')">
+      <button
+        class="tool-btn"
+        :class="{ active: currentTool === 'zoom-box' }"
+        title="框选缩放"
+        @click="setTool('zoom-box')"
+      >
         <i class="fa-solid fa-vector-square"></i>
+        <span>框选</span>
       </button>
       <button class="tool-btn" title="放大" @click="zoomIn">
         <i class="fa-solid fa-magnifying-glass-plus"></i>
+        <span>放大</span>
       </button>
       <button class="tool-btn" title="缩小" @click="zoomOut">
         <i class="fa-solid fa-magnifying-glass-minus"></i>
+        <span>缩小</span>
       </button>
       <button class="tool-btn" title="回到初始视图" @click="resetView">
         <i class="fa-solid fa-house"></i>
+        <span>复位</span>
       </button>
     </div>
 
@@ -23,11 +38,23 @@
 
     <!-- 测量工具 -->
     <div class="toolbar-group">
-      <button class="tool-btn" :class="{ active: currentTool === 'measure-distance' }" title="测量距离" @click="startMeasure('distance')">
+      <button
+        class="tool-btn"
+        :class="{ active: currentTool === 'measure-distance' }"
+        title="测量距离"
+        @click="startMeasure('distance')"
+      >
         <i class="fa-solid fa-ruler"></i>
+        <span>测距</span>
       </button>
-      <button class="tool-btn" :class="{ active: currentTool === 'measure-area' }" title="测量面积" @click="startMeasure('area')">
+      <button
+        class="tool-btn"
+        :class="{ active: currentTool === 'measure-area' }"
+        title="测量面积"
+        @click="startMeasure('area')"
+      >
         <i class="fa-solid fa-shapes"></i>
+        <span>测面</span>
       </button>
     </div>
 
@@ -35,58 +62,88 @@
 
     <!-- 选择工具 -->
     <div class="toolbar-group">
-      <button class="tool-btn" :class="{ active: currentTool === 'select' }" title="选择要素" @click="setTool('select')">
+      <button
+        class="tool-btn"
+        :class="{ active: currentTool === 'select' }"
+        title="选择要素"
+        @click="setTool('select')"
+      >
         <i class="fa-solid fa-pointer"></i>
+        <span>选择</span>
       </button>
       <button class="tool-btn" title="清除选择" @click="clearSelection">
         <i class="fa-solid fa-eraser"></i>
+        <span>清除</span>
       </button>
     </div>
 
     <div class="toolbar-divider"></div>
 
-    <!-- 绘图工具 -->
+    <!-- 地图工具（分析与绘制入口统一收敛到浮动面板，避免重复） -->
     <div class="toolbar-group">
-      <button class="tool-btn" :class="{ active: currentTool === 'draw-point' }" title="绘制点" @click="setTool('draw-point')">
+      <button
+        class="tool-btn"
+        :class="{ active: appStore.showAnalysisPanel }"
+        title="空间分析（缓冲区/叠加/最近邻等）"
+        @click="appStore.toggleAnalysisPanel()"
+      >
+        <i class="fa-solid fa-chart-line"></i>
+        <span>分析</span>
+      </button>
+      <button
+        class="tool-btn"
+        :class="{ active: appStore.showRoutePanel }"
+        title="路径规划"
+        @click="appStore.toggleRoutePanel()"
+      >
+        <i class="fa-solid fa-route"></i>
+        <span>路径</span>
+      </button>
+      <button
+        class="tool-btn"
+        :class="{ active: appStore.markerMode }"
+        title="在地图上添加标注"
+        @click="appStore.toggleMarkerMode()"
+      >
         <i class="fa-solid fa-location-dot"></i>
+        <span>标注</span>
       </button>
-      <button class="tool-btn" :class="{ active: currentTool === 'draw-line' }" title="绘制线" @click="setTool('draw-line')">
-        <i class="fa-solid fa-minus"></i>
+      <button
+        class="tool-btn"
+        :class="{ active: appStore.showLegendPanel }"
+        title="地图图例"
+        @click="appStore.toggleLegendPanel()"
+      >
+        <i class="fa-solid fa-book-open"></i>
+        <span>图例</span>
       </button>
-      <button class="tool-btn" :class="{ active: currentTool === 'draw-polygon' }" title="绘制面" @click="setTool('draw-polygon')">
-        <i class="fa-solid fa-draw-polygon"></i>
+      <button
+        class="tool-btn"
+        :class="{ active: appStore.showParamsPanel }"
+        title="任务参数（微调智能体规划参数）"
+        @click="appStore.toggleParamsPanel()"
+      >
+        <i class="fa-solid fa-sliders"></i>
+        <span>参数</span>
       </button>
-    </div>
-
-    <div class="toolbar-divider"></div>
-
-    <!-- 空间分析 -->
-    <div class="toolbar-group">
-      <div class="tool-dropdown" @click="toggleAnalysisMenu">
-        <button class="tool-btn" title="空间分析">
-          <i class="fa-solid fa-chart-line"></i>
-          <i class="fa-solid fa-caret-down dropdown-arrow"></i>
-        </button>
-        <div v-if="showAnalysisMenu" class="dropdown-menu">
-          <div class="dropdown-item" @click="doBuffer">
-            <i class="fa-solid fa-circle-notch"></i>
-            <span>缓冲区分析</span>
-          </div>
-          <div class="dropdown-item" @click="doIntersect">
-            <i class="fa-solid fa-layer-group"></i>
-            <span>叠加分析</span>
-          </div>
-          <div class="dropdown-item" @click="doDistance">
-            <i class="fa-solid fa-arrows-left-right"></i>
-            <span>最近邻分析</span>
-          </div>
-          <div class="dropdown-divider"></div>
-          <div class="dropdown-item" @click="openAnalysisPanel">
-            <i class="fa-solid fa-sliders"></i>
-            <span>更多分析工具...</span>
-          </div>
-        </div>
-      </div>
+      <button
+        class="tool-btn"
+        :class="{ active: appStore.showMetadataModal }"
+        title="编制说明"
+        @click="appStore.toggleMetadataModal()"
+      >
+        <i class="fa-solid fa-circle-info"></i>
+        <span>编制</span>
+      </button>
+      <button
+        class="tool-btn"
+        :class="{ active: appStore.showEditPanel }"
+        title="编辑工具（绘制点/线/面、几何编辑）"
+        @click="appStore.toggleEditPanel()"
+      >
+        <i class="fa-solid fa-pen-to-square"></i>
+        <span>编辑</span>
+      </button>
     </div>
 
     <div class="toolbar-divider"></div>
@@ -96,6 +153,7 @@
       <div class="tool-dropdown" @click="toggleExportMenu">
         <button class="tool-btn" title="导出地图">
           <i class="fa-solid fa-download"></i>
+          <span>导出</span>
           <i class="fa-solid fa-caret-down dropdown-arrow"></i>
         </button>
         <div v-if="showExportMenu" class="dropdown-menu dropdown-right">
@@ -120,33 +178,6 @@
       </div>
     </div>
 
-    <div class="toolbar-divider"></div>
-
-    <!-- 编辑 / 标注 / 经纬网 / 参数 / 编制说明 / 导入 / 清除 -->
-    <div class="toolbar-group">
-      <button class="tool-btn" :class="{ active: appStore.showEditPanel }" title="编辑模式（QGIS/ArcGIS 式几何编辑）" @click="appStore.toggleEditPanel()">
-        <i class="fa-solid fa-pen-to-square"></i>
-      </button>
-      <button class="tool-btn" :class="{ active: appStore.markerMode }" title="在地图上添加标注" @click="appStore.toggleMarkerMode()">
-        <i class="fa-solid fa-location-dot"></i>
-      </button>
-      <button class="tool-btn" :class="{ active: appStore.showGraticule }" title="经纬网" @click="appStore.toggleGraticule()">
-        <i class="fa-solid fa-border-all"></i>
-      </button>
-      <button class="tool-btn" :class="{ active: appStore.showParamsPanel }" title="任务参数（微调智能体规划参数）" @click="appStore.toggleParamsPanel()">
-        <i class="fa-solid fa-sliders"></i>
-      </button>
-      <button class="tool-btn" :class="{ active: appStore.showMetadataModal }" title="编制说明" @click="appStore.toggleMetadataModal()">
-        <i class="fa-solid fa-circle-info"></i>
-      </button>
-      <button class="tool-btn" title="导入文档到知识图谱" @click="appStore.toggleImportModal()">
-        <i class="fa-solid fa-file-import"></i>
-      </button>
-      <button class="tool-btn" title="清除地图" @click="clearMap">
-        <i class="fa-solid fa-trash-can"></i>
-      </button>
-    </div>
-
     <LayoutExport
       :visible="showLayoutExport"
       :map-title="mapStore.mapName"
@@ -160,18 +191,13 @@
 import { ref } from 'vue'
 import { useAppStore } from '@/stores/appStore'
 import { useMapStore } from '@/stores/mapStore'
-import { useEditStore } from '@/stores/editStore'
 import api from '@/services/api'
-import { CONFIG } from '@/config'
 import LayoutExport from './LayoutExport.vue'
 
 const appStore = useAppStore()
 const mapStore = useMapStore()
-const editStore = useEditStore()
 
 const currentTool = ref('pan')
-const showAnalysisMenu = ref(false)
-const showThemeMenu = ref(false)
 const showExportMenu = ref(false)
 const showLayoutExport = ref(false)
 
@@ -179,38 +205,27 @@ window.addEventListener('map-open-export', () => {
   showExportMenu.value = true
 })
 
+/** 切换地图工具（平移/框选缩放/选择要素） */
 function setTool(tool: string) {
   currentTool.value = tool
-  if (tool === 'draw-point' || tool === 'draw-line' || tool === 'draw-polygon') {
-    const mapTool = tool === 'draw-point' ? 'point' : tool === 'draw-line' ? 'line' : 'polygon'
-    appStore.showEditPanel = true
-    editStore.setDrawTool(mapTool)
-  }
-  // 关闭所有下拉菜单
-  showAnalysisMenu.value = false
-  showThemeMenu.value = false
+  const mapEl = document.getElementById('map-container')
+  mapEl?.dispatchEvent(new CustomEvent('map-set-tool', { detail: { tool } }))
   showExportMenu.value = false
 }
 
 function zoomIn() {
   const mapEl = document.getElementById('map-container')
-  if (mapEl) {
-    mapEl.dispatchEvent(new CustomEvent('map-zoom-in'))
-  }
+  mapEl?.dispatchEvent(new CustomEvent('map-zoom-in'))
 }
 
 function zoomOut() {
   const mapEl = document.getElementById('map-container')
-  if (mapEl) {
-    mapEl.dispatchEvent(new CustomEvent('map-zoom-out'))
-  }
+  mapEl?.dispatchEvent(new CustomEvent('map-zoom-out'))
 }
 
 function resetView() {
   const mapEl = document.getElementById('map-container')
-  if (mapEl) {
-    mapEl.dispatchEvent(new CustomEvent('map-reset-view'))
-  }
+  mapEl?.dispatchEvent(new CustomEvent('map-reset-view'))
 }
 
 function clearSelection() {
@@ -224,58 +239,8 @@ function startMeasure(mode: 'distance' | 'area') {
   mapEl?.dispatchEvent(new CustomEvent('map-measure-start', { detail: { mode } }))
 }
 
-function clearMap() {
-  const mapEl = document.getElementById('map-container')
-  if (mapEl) {
-    mapEl.dispatchEvent(new CustomEvent('map-clear-layers'))
-  }
-}
-
-function toggleAnalysisMenu() {
-  showAnalysisMenu.value = !showAnalysisMenu.value
-  showThemeMenu.value = false
-  showExportMenu.value = false
-}
-
-function toggleThemeMenu() {
-  showThemeMenu.value = !showThemeMenu.value
-  showAnalysisMenu.value = false
-  showExportMenu.value = false
-}
-
 function toggleExportMenu() {
   showExportMenu.value = !showExportMenu.value
-  showAnalysisMenu.value = false
-  showThemeMenu.value = false
-}
-
-function setTheme(theme: string) {
-  mapStore.setTheme(theme)
-  const mapEl = document.getElementById('map-container')
-  if (mapEl) {
-    mapEl.dispatchEvent(new CustomEvent('map-set-theme', { detail: { theme } }))
-  }
-  showThemeMenu.value = false
-}
-
-function doBuffer() {
-  appStore.setAnalysisMode('buffer')
-  showAnalysisMenu.value = false
-}
-
-function doIntersect() {
-  appStore.setAnalysisMode('overlay')
-  showAnalysisMenu.value = false
-}
-
-function doDistance() {
-  appStore.setAnalysisMode('nearest')
-  showAnalysisMenu.value = false
-}
-
-function openAnalysisPanel() {
-  appStore.toggleAnalysisPanel()
-  showAnalysisMenu.value = false
 }
 
 function exportImage(format: string) {
@@ -327,24 +292,32 @@ function exportLayout() {
 }
 
 async function handleLayoutExport(options: any) {
-  await exportMapFile('png', 'png', 'image/png')
-}
-
-function getThemePreviewColor(themeKey: string): string {
-  const colors: Record<string, string> = {
-    standard: '#a8d5ff',
-    positron: '#f5f5f5',
-    dark: '#2d3748',
-    satellite: '#4a5568',
-    plain: '#FAF8F3',
-    amap_normal: '#e8f4f8',
-    amap_satellite: '#3d4f5f',
-    tianditu_vec: '#f0e6d2',
-    tianditu_img: '#4a5568',
-    tencent_normal: '#e8f4f8',
-    esri_street_cn: '#f0e6d2',
+  if (!mapStore.currentMapId) {
+    alert('请先生成地图')
+    return
   }
-  return colors[themeKey] || '#eee'
+  showLayoutExport.value = false
+  try {
+    const resp = await api.exportMap(mapStore.currentMapId, 'png', options)
+    const data = resp.data || resp
+    const filename = `map-layout-${Date.now()}.png`
+    if (typeof data === 'string' && data.startsWith('data:image')) {
+      const link = document.createElement('a')
+      link.href = data
+      link.download = filename
+      link.click()
+      return
+    }
+    const blob = new Blob([String(data)], { type: 'image/png' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    link.click()
+    URL.revokeObjectURL(url)
+  } catch (e: any) {
+    alert('布局导出失败: ' + e.message)
+  }
 }
 </script>
 
@@ -354,7 +327,7 @@ function getThemePreviewColor(themeKey: string): string {
   flex-direction: column;
   align-items: center;
   gap: 1px;
-  padding: 6px 3px;
+  padding: 6px 2px;
   background: var(--color-surface);
   height: 100%;
   overflow-y: auto;
@@ -365,34 +338,45 @@ function getThemePreviewColor(themeKey: string): string {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 1px;
+  gap: 2px;
+  width: 100%;
 }
 
 .toolbar-divider {
-  width: 22px;
+  width: 28px;
   height: 1px;
   background: var(--color-border);
-  margin: 3px 0;
-}
-
-.toolbar-spacer {
-  flex: 1;
+  margin: 5px 0;
 }
 
 .tool-btn {
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 40px;
   border: none;
   background: transparent;
   color: var(--color-text-secondary);
   border-radius: 5px;
   cursor: pointer;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
+  gap: 1px;
+  font-size: 13px;
   transition: all 0.15s;
   position: relative;
+}
+
+.tool-btn i {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.tool-btn span {
+  font-size: 9px;
+  line-height: 1;
+  white-space: nowrap;
+  color: inherit;
 }
 
 .tool-btn:hover {
@@ -408,7 +392,7 @@ function getThemePreviewColor(themeKey: string): string {
 .dropdown-arrow {
   position: absolute;
   bottom: 3px;
-  right: 3px;
+  right: 6px;
   font-size: 8px;
   color: var(--color-text-secondary);
 }
@@ -429,7 +413,7 @@ function getThemePreviewColor(themeKey: string): string {
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
   padding: 4px 0;
-  z-index: 100;
+  z-index: 1200;
 }
 
 .dropdown-menu.dropdown-right {
@@ -471,43 +455,9 @@ function getThemePreviewColor(themeKey: string): string {
   flex: 1;
 }
 
-.check-icon {
-  color: var(--color-primary) !important;
-}
-
-.theme-preview {
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
-  border: 1px solid var(--color-border);
-}
-
 .dropdown-divider {
   height: 1px;
   background: var(--color-border);
   margin: 4px 0;
-}
-
-/* tooltip */
-.tool-btn::after {
-  content: attr(title);
-  position: absolute;
-  bottom: -32px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: var(--color-text);
-  color: #fff;
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  white-space: nowrap;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.2s;
-  z-index: 100;
-}
-
-.tool-btn:hover::after {
-  opacity: 1;
 }
 </style>

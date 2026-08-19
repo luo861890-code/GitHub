@@ -107,6 +107,20 @@ export const CONFIG = {
       maxZoom: 19,
       subdomains: '',
     },
+    hillshade: {
+      name: '山体阴影（DEM）',
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}',
+      attribution: '&copy; Esri, USGS',
+      maxZoom: 19,
+      subdomains: '',
+    },
+    terrain: {
+      name: '地形地势',
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{z}/{y}/{x}',
+      attribution: '&copy; Esri, USGS',
+      maxZoom: 19,
+      subdomains: '',
+    },
   } as Record<string, MapThemeConfig>,
 
   kgNodeColors: {
@@ -127,12 +141,18 @@ export const CONFIG = {
   } as Record<string, string>,
 
   quickCommands: [
-    { label: '武汉交通图', icon: 'fa-route', message: '生成一份武汉市交通图，显示主要道路和轨道交通' },
-    { label: '武汉旅游图', icon: 'fa-landmark', message: '生成一份武汉市旅游图，标注主要景点和名胜古迹' },
-    { label: '医疗资源图', icon: 'fa-hospital', message: '生成一份武汉市医疗资源图，显示医院和诊所分布' },
-    { label: '教育设施图', icon: 'fa-graduation-cap', message: '生成一份武汉市教育设施图，显示学校分布' },
+    { label: '武汉行政图', icon: 'fa-map', message: '生成武汉市行政区划图，以省界市界县界为主，湖泊水系和主要道路为辅，标注各级行政单位，不同行政区颜色区分' },
+    { label: '武汉交通图', icon: 'fa-route', message: '生成武汉市交通图，以行政边界为骨架，主要道路（高速/国道/省道/主干道）和铁路地铁为主，水系为辅，标注交通枢纽' },
+    { label: '武汉地势图', icon: 'fa-mountain-sun', message: '生成武汉市地势图，叠加DEM山体阴影底图与等高线，水系和主要道路作为辅助要素' },
+    { label: '武汉水系图', icon: 'fa-water', message: '生成武汉市水系图，以河流湖泊水库为主，流域界和水文站为辅，行政边界为骨架' },
+    { label: '武汉旅游图', icon: 'fa-landmark', message: '生成武汉市旅游图，标注主要景点、酒店、餐饮和交通枢纽' },
+    { label: '武汉基础地图', icon: 'fa-map-location-dot', message: '生成武汉市基础地图，全要素显示（道路/水系/绿地/建筑/POI）' },
+    { label: '医疗资源图', icon: 'fa-hospital', message: '生成武汉市医疗资源图，显示医院、诊所、药店分布' },
+    { label: '教育设施图', icon: 'fa-graduation-cap', message: '生成武汉市教育设施图，显示大学、中小学、幼儿园分布' },
+    { label: '绿化覆盖图', icon: 'fa-tree', message: '生成武汉市绿化覆盖图，显示公园、绿地、森林分布' },
+    { label: '商业分布图', icon: 'fa-store', message: '生成武汉市商业分布图，显示商圈、商场、超市分布' },
+    { label: '美食地图', icon: 'fa-utensils', message: '生成武汉市美食图，显示餐厅、小吃街、特色美食分布' },
     { label: '知识图谱问答', icon: 'fa-diagram-project', message: '什么是专题地图？地图制图有哪些基本原则？' },
-    { label: '校园分布图', icon: 'fa-school', message: '生成一份武汉市高校分布图' },
   ],
 
   requestTimeout: 60000,

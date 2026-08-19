@@ -5,6 +5,8 @@
 - QwenProvider / OpenAIProvider / DeepSeekProvider / ZhipuProvider: 通过openai库兼容模式调用云端API
 支持流式响应生成（streaming），用于SSE实时输出。
 """
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 import requests
 import json
 from abc import ABC, abstractmethod
@@ -94,7 +96,7 @@ class OllamaProvider(LLMProvider):
             data = response.json()
             return data.get("response", "")
         except Exception as e:
-            print(f"[OllamaProvider] 生成失败: {e}")
+            logger.info(f"[OllamaProvider] 生成失败: {e}")
             return ""
 
     def chat(self, messages: List[dict]) -> str:
@@ -111,7 +113,7 @@ class OllamaProvider(LLMProvider):
             data = response.json()
             return data.get("message", {}).get("content", "")
         except Exception as e:
-            print(f"[OllamaProvider] 对话失败: {e}")
+            logger.info(f"[OllamaProvider] 对话失败: {e}")
             return ""
 
     def is_available(self) -> bool:
@@ -147,7 +149,7 @@ class OpenAICompatibleProvider(LLMProvider):
                     base_url=self.base_url,
                 )
             except Exception as e:
-                print(f"[{self.name}] 初始化OpenAI客户端失败: {e}")
+                logger.info(f"[{self.name}] 初始化OpenAI客户端失败: {e}")
                 return None
         return self._client
 
@@ -172,7 +174,7 @@ class OpenAICompatibleProvider(LLMProvider):
             )
             return response.choices[0].message.content
         except Exception as e:
-            print(f"[{self.name}] 对话失败: {e}")
+            logger.info(f"[{self.name}] 对话失败: {e}")
             return ""
 
     def chat_stream(self, messages: List[dict]) -> Generator[str, None, None]:
@@ -198,7 +200,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
         except Exception as e:
-            print(f"[{self.name}] 流式对话失败: {e}")
+            logger.info(f"[{self.name}] 流式对话失败: {e}")
             yield f"[流式输出错误: {e}]"
 
     def is_available(self) -> bool:
@@ -288,10 +290,10 @@ class LLMService:
 
         # 如果默认provider不在列表中，回退到ollama
         if self._current_provider not in self.providers:
-            print(f"[LLMService] 未知的默认provider: {self._current_provider}，回退到ollama")
+            logger.info(f"[LLMService] 未知的默认provider: {self._current_provider}，回退到ollama")
             self._current_provider = "ollama"
 
-        print(f"[LLMService] 初始化完成，当前provider: {self._current_provider}, "
+        logger.info(f"[LLMService] 初始化完成，当前provider: {self._current_provider}, "
               f"模型: {self.get_current_model()}")
 
     def set_provider(self, provider: str) -> bool:
@@ -305,9 +307,9 @@ class LLMService:
         """
         if provider in self.providers:
             self._current_provider = provider
-            print(f"[LLMService] 已切换provider为: {provider}, 模型: {self.get_current_model()}")
+            logger.info(f"[LLMService] 已切换provider为: {provider}, 模型: {self.get_current_model()}")
             return True
-        print(f"[LLMService] 未知的provider: {provider}，支持的: {self.SUPPORTED_PROVIDERS}")
+        logger.info(f"[LLMService] 未知的provider: {provider}，支持的: {self.SUPPORTED_PROVIDERS}")
         return False
 
     @property
@@ -329,9 +331,9 @@ class LLMService:
         }
         if provider_name in provider_map:
             self.providers[provider_name] = provider_map[provider_name]()
-            print(f"[LLMService] 已重新初始化provider: {provider_name}")
+            logger.info(f"[LLMService] 已重新初始化provider: {provider_name}")
         else:
-            print(f"[LLMService] 未知的provider: {provider_name}，无法重新初始化")
+            logger.info(f"[LLMService] 未知的provider: {provider_name}，无法重新初始化")
 
     def generate(self, prompt: str, system_prompt: str = "") -> str:
         """统一生成接口 - 路由到当前provider
@@ -345,12 +347,12 @@ class LLMService:
         """
         provider = self.providers.get(self._current_provider)
         if provider is None:
-            print(f"[LLMService] 当前provider不存在: {self._current_provider}")
+            logger.info(f"[LLMService] 当前provider不存在: {self._current_provider}")
             return ""
         try:
             return provider.generate(prompt, system_prompt)
         except Exception as e:
-            print(f"[LLMService] generate调用异常: {e}")
+            logger.info(f"[LLMService] generate调用异常: {e}")
             return ""
 
     def chat(self, messages: List[dict]) -> str:
@@ -364,12 +366,12 @@ class LLMService:
         """
         provider = self.providers.get(self._current_provider)
         if provider is None:
-            print(f"[LLMService] 当前provider不存在: {self._current_provider}")
+            logger.info(f"[LLMService] 当前provider不存在: {self._current_provider}")
             return ""
         try:
             return provider.chat(messages)
         except Exception as e:
-            print(f"[LLMService] chat调用异常: {e}")
+            logger.info(f"[LLMService] chat调用异常: {e}")
             return ""
 
     def chat_stream(self, messages: List[dict]) -> Generator[str, None, None]:
@@ -383,12 +385,12 @@ class LLMService:
         """
         provider = self.providers.get(self._current_provider)
         if provider is None:
-            print(f"[LLMService] 当前provider不存在: {self._current_provider}")
+            logger.info(f"[LLMService] 当前provider不存在: {self._current_provider}")
             return
         try:
             yield from provider.chat_stream(messages)
         except Exception as e:
-            print(f"[LLMService] chat_stream调用异常: {e}")
+            logger.info(f"[LLMService] chat_stream调用异常: {e}")
             yield f"[流式输出错误: {e}]"
 
     def list_providers(self) -> List[Dict[str, Any]]:

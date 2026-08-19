@@ -3,6 +3,8 @@
 SixDimParser 是 DoMapAI 六维任务理解框架的核心解析组件，
 支持 LLM 解析和关键词规则降级两种模式。
 """
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 from typing import Optional
 
 from app.models.agent_models import CartographyTask
@@ -64,7 +66,7 @@ class SixDimParser:
                     if task:
                         return task
             except Exception as e:
-                print(f"[SixDimParser] LLM解析失败，使用降级规则: {e}")
+                logger.info(f"[SixDimParser] LLM解析失败，使用降级规则: {e}")
 
         # ===== 降级：关键词规则解析 =====
         return self._fallback_parse(user_input)
@@ -111,13 +113,37 @@ class SixDimParser:
         if not isinstance(data, dict):
             return None
 
+        # 归一化：LLM 可能返回 null/非字符串，统一转为合法值
+        def _clean(value, default: str = "") -> str:
+            if value is None:
+                return default
+            if isinstance(value, str):
+                return value.strip() or default
+            return str(value)
+
+        audience = _clean(data.get("audience"), "public")
+        method = _clean(data.get("cartographic_method"), "basic")
+        symbol = _clean(data.get("symbol_style"), "geometric")
+        valid_audiences = {"expert", "student", "public", "child", "elderly"}
+        valid_methods = {
+            "choropleth", "dot_density", "flow", "heatmap",
+            "symbol_map", "graduated_symbol", "basic",
+        }
+        valid_symbols = {"geometric", "pictorial", "abstract", "text"}
+        if audience not in valid_audiences:
+            audience = "public"
+        if method not in valid_methods:
+            method = "basic"
+        if symbol not in valid_symbols:
+            symbol = "geometric"
+
         return CartographyTask(
-            spatial_scope=data.get("spatial_scope", ""),
-            temporal_range=data.get("temporal_range"),
-            topic=data.get("topic", ""),
-            audience=data.get("audience", "public"),
-            cartographic_method=data.get("cartographic_method", "basic"),
-            symbol_style=data.get("symbol_style", "geometric"),
+            spatial_scope=_clean(data.get("spatial_scope")),
+            temporal_range=_clean(data.get("temporal_range"), None) or None,
+            topic=_clean(data.get("topic")),
+            audience=audience,
+            cartographic_method=method,
+            symbol_style=symbol,
         )
 
     def _fallback_parse(self, user_input: str) -> CartographyTask:

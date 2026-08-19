@@ -20,6 +20,21 @@
       >叠加分析</button>
       <button
         class="analysis-tab"
+        :class="{ active: mode === 'clip' }"
+        @click="setMode('clip')"
+      >裁剪</button>
+      <button
+        class="analysis-tab"
+        :class="{ active: mode === 'intersect' }"
+        @click="setMode('intersect')"
+      >相交</button>
+      <button
+        class="analysis-tab"
+        :class="{ active: mode === 'union' }"
+        @click="setMode('union')"
+      >并集</button>
+      <button
+        class="analysis-tab"
         :class="{ active: mode === 'nearest' }"
         @click="setMode('nearest')"
       >最近邻</button>
@@ -73,19 +88,22 @@ import { ref, computed, watch } from 'vue'
 import { useAppStore } from '@/stores/appStore'
 import { useMapStore } from '@/stores/mapStore'
 import {
-  bufferCoordinates,
   intersectPointPolygon,
   nearestPairs,
-  layerPoints,
-  layerRings,
+  bufferPoint,
+  bufferPolygon,
+  extractLayerGeometries,
+  clipPolylineToRing,
+  intersectRings,
 } from '@/utils/analysis'
-import type { MapLayer } from '@/types'
+import api from '@/services/api'
+import type { MapLayer, MapFeature } from '@/types'
 import type { LatLng } from '@/utils/analysis'
 
 const appStore = useAppStore()
 const mapStore = useMapStore()
 
-const mode = ref<'buffer' | 'overlay' | 'nearest'>('buffer')
+const mode = ref<'buffer' | 'overlay' | 'clip' | 'intersect' | 'union' | 'nearest'>('buffer')
 const sourceId = ref('')
 const targetId = ref('')
 const bufferKm = ref(1)
@@ -101,7 +119,7 @@ const targetLayer = computed(() =>
   targetId.value ? mapStore.layerGroups[targetId.value]?.data : null
 )
 
-function setMode(m: 'buffer' | 'overlay' | 'nearest') {
+function setMode(m: 'buffer' | 'overlay' | 'clip' | 'intersect' | 'union' | 'nearest') {
   mode.value = m
   message.value = ''
   summary.value = []
@@ -124,19 +142,66 @@ function typeLabel(type: string): string {
   return labels[type] || type
 }
 
-function addResultLayer(name: string, type: string, coordinates: any, style: Record<string, any>) {
+/** 将分析结果坐标集合拆分为 features 型要素，保证多要素结果在地图上正确渲染 */
+function toResultFeatures(type: string, coordinates: any): MapFeature[] {
+  const t = (type || '').toLowerCase()
+  if (['polygon', 'area'].includes(t)) {
+    return (Array.isArray(coordinates) ? coordinates : []).map((ring: any) => ({
+      type: 'polygon',
+      coordinates: ring,
+      properties: {},
+    }))
+  }
+  if (['polyline', 'line', 'linestring'].includes(t)) {
+    return (Array.isArray(coordinates) ? coordinates : []).map((line: any) => ({
+      type: 'polyline',
+      coordinates: line,
+      properties: {},
+    }))
+  }
+  return (Array.isArray(coordinates) ? coordinates : []).map((p: any) => ({
+    type: 'point',
+    coordinates: p,
+    properties: {},
+  }))
+}
+
+async function addResultLayer(name: string, type: string, coordinates: any, style: Record<string, any>): Promise<string> {
   const id = 'analysis_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7)
   const layer: MapLayer = {
     id,
     type: type as any,
     name,
+    features: toResultFeatures(type, coordinates),
     coordinates,
-    properties: coordinates.map(() => ({})),
     style,
     group: '分析结果',
   }
   const maxOrder = Math.max(0, ...mapStore.sortedLayers.map((l) => l.order))
   mapStore.layerGroups[id] = { visible: true, data: layer, order: maxOrder + 1 }
+  // 有地图时持久化到后端（刷新后仍保留）
+  if (mapStore.currentMapId) {
+    try {
+      const resp = await api.addLayer(mapStore.currentMapId, {
+        layer_type: type,
+        name,
+        coordinates,
+        properties: (layer.features || []).map((f) => f.properties || {}),
+        style,
+        group: '分析结果',
+      })
+      const data = resp.data || resp
+      const serverLayer = (data.layers || [])[(data.layers || []).length - 1]
+      if (serverLayer && serverLayer.id) {
+        mapStore.setMapData(data)
+        const el = document.getElementById('map-container')
+        el?.dispatchEvent(new CustomEvent('map-apply-data', { detail: { data } }))
+        return serverLayer.id
+      }
+    } catch (e) {
+      console.warn('分析结果持久化失败，仅保留本地图层:', e)
+    }
+  }
   return id
 }
 
@@ -149,14 +214,20 @@ function run() {
     return
   }
   running.value = true
-  setTimeout(() => {
+  setTimeout(async () => {
     try {
       if (mode.value === 'buffer') {
-        runBuffer()
+        await runBuffer()
       } else if (mode.value === 'overlay') {
-        runOverlay()
+        await runOverlay()
+      } else if (mode.value === 'clip') {
+        await runClip()
+      } else if (mode.value === 'intersect') {
+        await runIntersect()
+      } else if (mode.value === 'union') {
+        await runUnion()
       } else {
-        runNearest()
+        await runNearest()
       }
     } catch (e: any) {
       message.value = '分析失败: ' + e.message
@@ -166,14 +237,18 @@ function run() {
   }, 30)
 }
 
-function runBuffer() {
+async function runBuffer() {
   const layer = sourceLayer.value!
-  const rings = bufferCoordinates(layer.coordinates, layer.type || '', bufferKm.value || 1)
+  const geo = extractLayerGeometries(layer)
+  const km = bufferKm.value || 1
+  const rings: LatLng[][] = []
+  geo.rings.forEach((ring) => { if (ring.length >= 3) rings.push(bufferPolygon(ring, km)) })
+  geo.points.forEach((p) => rings.push(bufferPoint(p, km)))
   if (rings.length === 0) {
-    message.value = '源图层没有可缓冲的几何'
+    message.value = '源图层没有可缓冲的几何（点或面）'
     return
   }
-  const id = addResultLayer(`缓冲区（${bufferKm.value}km）`, 'polygon', rings, {
+  const id = await addResultLayer(`缓冲区（${km}km）`, 'polygon', rings, {
     color: '#7c3aed',
     fillColor: '#a78bfa',
     fillOpacity: 0.35,
@@ -182,24 +257,24 @@ function runBuffer() {
   resultLayerId.value = id
   summary.value = [
     `生成 ${rings.length} 个缓冲面`,
-    `缓冲距离 ${bufferKm.value} km`,
+    `缓冲距离 ${km} km`,
     '结果已加入“分析结果”图层组',
   ]
 }
 
-function runOverlay() {
+async function runOverlay() {
   const layer = sourceLayer.value!
   if (!targetLayer.value) {
     message.value = '请选择目标图层'
     return
   }
   const t = targetLayer.value
-  const rings = layerRings(t.coordinates, t.type || '')
+  const rings = extractLayerGeometries(t).rings
   if (rings.length === 0) {
     message.value = '目标图层没有面状几何，叠加分析需要目标为面图层'
     return
   }
-  const pts = layerPoints(layer.coordinates, layer.type || '')
+  const pts = extractLayerGeometries(layer).points
   if (pts.length === 0) {
     message.value = '源图层没有点状几何，暂支持“点 ∩ 面”叠加'
     return
@@ -209,7 +284,7 @@ function runOverlay() {
     message.value = '没有点落在目标面内'
     return
   }
-  const id = addResultLayer(`叠加结果（${layer.name} ∩ ${t.name}）`, 'circleMarker', kept, {
+  const id = await addResultLayer(`叠加结果（${layer.name} ∩ ${t.name}）`, 'circleMarker', kept, {
     color: '#ef4444',
     radius: 7,
     fillOpacity: 0.9,
@@ -223,22 +298,146 @@ function runOverlay() {
   ]
 }
 
-function runNearest() {
+async function runClip() {
+  const layer = sourceLayer.value!
+  if (!targetLayer.value) {
+    message.value = '请选择裁剪面图层'
+    return
+  }
+  const t = targetLayer.value
+  const clipRings = extractLayerGeometries(t).rings
+  if (clipRings.length === 0) {
+    message.value = '裁剪图层没有面状几何'
+    return
+  }
+  const src = extractLayerGeometries(layer)
+  const srcType = (layer.type || '').toLowerCase()
+  const isArea = ['polygon', 'area'].includes(srcType)
+  const isLine = ['polyline', 'line', 'linestring'].includes(srcType)
+
+  if (isArea) {
+    // 面裁剪：源面 ∩ 裁剪面
+    const outRings: LatLng[][] = []
+    src.rings.forEach((r) => {
+      clipRings.forEach((cr) => {
+        const inter = intersectRings(r, cr)
+        if (inter.length >= 3) outRings.push(inter)
+      })
+    })
+    if (outRings.length === 0) { message.value = '裁剪后没有交集面'; return }
+    const id = await addResultLayer(`裁剪结果（${layer.name}）`, 'polygon', outRings, {
+      color: '#f59e0b',
+      fillColor: '#fbbf24',
+      fillOpacity: 0.4,
+      weight: 1.5,
+    })
+    resultLayerId.value = id
+    summary.value = [`生成 ${outRings.length} 个裁剪面`, '结果已加入“分析结果”图层组']
+  } else if (isLine) {
+    // 线裁剪：保留面内线段
+    const outLines: LatLng[][] = []
+    src.lines.forEach((line) => {
+      clipRings.forEach((cr) => {
+        clipPolylineToRing(line, cr).forEach((seg) => { if (seg.length >= 2) outLines.push(seg) })
+      })
+    })
+    if (outLines.length === 0) { message.value = '裁剪后没有落在面内的线段'; return }
+    const id = await addResultLayer(`裁剪结果（${layer.name}）`, 'polyline', outLines, {
+      color: '#f59e0b',
+      weight: 2.5,
+      opacity: 1,
+    })
+    resultLayerId.value = id
+    summary.value = [`保留 ${outLines.length} 条线段`, '结果已加入“分析结果”图层组']
+  } else {
+    // 点裁剪：保留面内点
+    const kept = intersectPointPolygon(src.points, clipRings)
+    if (kept.length === 0) { message.value = '没有点落在裁剪面内'; return }
+    const id = await addResultLayer(`裁剪结果（${layer.name}）`, 'circleMarker', kept, {
+      color: '#f59e0b',
+      radius: 6,
+      fillOpacity: 0.9,
+      weight: 2,
+    })
+    resultLayerId.value = id
+    summary.value = [`源点 ${src.points.length} 个`, `保留 ${kept.length} 个`, '结果已加入“分析结果”图层组']
+  }
+}
+
+async function runIntersect() {
+  const layer = sourceLayer.value!
+  if (!targetLayer.value) {
+    message.value = '请选择目标面图层'
+    return
+  }
+  const t = targetLayer.value
+  const aRings = extractLayerGeometries(layer).rings
+  const bRings = extractLayerGeometries(t).rings
+  if (aRings.length === 0 || bRings.length === 0) {
+    message.value = '相交分析需要源与目标均为面图层'
+    return
+  }
+  const outRings: LatLng[][] = []
+  aRings.forEach((ra) => {
+    bRings.forEach((rb) => {
+      const inter = intersectRings(ra, rb)
+      if (inter.length >= 3) outRings.push(inter)
+    })
+  })
+  if (outRings.length === 0) { message.value = '两个面图层没有交集'; return }
+  const id = await addResultLayer(`相交结果（${layer.name} ∩ ${t.name}）`, 'polygon', outRings, {
+    color: '#0ea5e9',
+    fillColor: '#38bdf8',
+    fillOpacity: 0.4,
+    weight: 1.5,
+  })
+  resultLayerId.value = id
+  summary.value = [`生成 ${outRings.length} 个交集面`, '结果已加入“分析结果”图层组']
+}
+
+async function runUnion() {
+  const layer = sourceLayer.value!
+  if (!targetLayer.value) {
+    message.value = '请选择目标面图层'
+    return
+  }
+  const t = targetLayer.value
+  const aRings = extractLayerGeometries(layer).rings
+  const bRings = extractLayerGeometries(t).rings
+  if (aRings.length === 0 || bRings.length === 0) {
+    message.value = '并集分析需要源与目标均为面图层'
+    return
+  }
+  const outRings: LatLng[][] = [...aRings, ...bRings]
+  const id = await addResultLayer(`并集结果（${layer.name} ∪ ${t.name}）`, 'polygon', outRings, {
+    color: '#10b981',
+    fillColor: '#34d399',
+    fillOpacity: 0.35,
+    weight: 1.5,
+  })
+  resultLayerId.value = id
+  summary.value = [
+    `合并 ${outRings.length} 个面（源 ${aRings.length} + 目标 ${bRings.length}）`,
+    '结果已加入“分析结果”图层组',
+  ]
+}
+
+async function runNearest() {
   const layer = sourceLayer.value!
   if (!targetLayer.value) {
     message.value = '请选择目标图层'
     return
   }
   const t = targetLayer.value
-  const sources = layerPoints(layer.coordinates, layer.type || '')
-  const targets = layerPoints(t.coordinates, t.type || '')
+  const sources = extractLayerGeometries(layer).points
+  const targets = extractLayerGeometries(t).points
   if (sources.length === 0 || targets.length === 0) {
     message.value = '源/目标图层缺少点状几何'
     return
   }
   const pairs = nearestPairs(sources, targets)
   const segments = pairs.map((p) => p.segment)
-  const id = addResultLayer(`最近邻连线（${layer.name} → ${t.name}）`, 'polyline', segments, {
+  const id = await addResultLayer(`最近邻连线（${layer.name} → ${t.name}）`, 'polyline', segments, {
     color: '#0ea5e9',
     weight: 2,
     opacity: 0.85,
@@ -273,12 +472,22 @@ watch(
   { immediate: true }
 )
 
+function ensureSelection() {
+  const ids = mapStore.sortedLayers.map((l) => l.id)
+  if (!ids.includes(sourceId.value)) sourceId.value = ids[0] || ''
+  if (!ids.includes(targetId.value)) targetId.value = ids[1] || ids[0] || ''
+}
+
 watch(
   () => mapStore.currentMapId,
-  () => {
-    sourceId.value = mapStore.sortedLayers[0]?.id || ''
-    targetId.value = mapStore.sortedLayers[1]?.id || mapStore.sortedLayers[0]?.id || ''
-  }
+  ensureSelection,
+  { immediate: true }
+)
+
+watch(
+  () => mapStore.sortedLayers.map((l) => l.id).join(','),
+  ensureSelection,
+  { immediate: true }
 )
 </script>
 
@@ -293,7 +502,7 @@ watch(
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
-  z-index: 26;
+  z-index: 850;
   overflow: hidden;
 }
 

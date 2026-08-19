@@ -19,6 +19,23 @@
         <span class="layer-type-badge">{{ getLayerTypeLabel(selectedLayer.data.type) }}</span>
       </div>
 
+      <!-- 地图风格包（计划 3.5） -->
+      <div class="style-section">
+        <div class="section-title">地图风格</div>
+        <div class="package-grid">
+          <button
+            v-for="pkg in stylePackages"
+            :key="pkg.key"
+            class="package-btn"
+            @click="applyStylePackage(pkg.key)"
+            :title="pkg.description"
+          >
+            <span class="package-swatch" :style="{ background: pkg.color }"></span>
+            <span class="package-name">{{ pkg.name }}</span>
+          </button>
+        </div>
+      </div>
+
       <!-- 渲染模式选择 -->
       <div class="style-section">
         <div class="section-title">渲染模式</div>
@@ -271,9 +288,19 @@ import { ref, computed, watch, reactive } from 'vue'
 import { useAppStore } from '@/stores/appStore'
 import { useMapStore } from '@/stores/mapStore'
 import type { MapLayer, LayerType, LayerStyle } from '@/types'
+import api from '@/services/api'
 
 const appStore = useAppStore()
 const mapStore = useMapStore()
+
+const stylePackages = [
+  { key: 'classic', name: '经典', color: '#f3ead9', description: '暖色纸张底图 + 标准配色' },
+  { key: 'minimal', name: '简约', color: '#f5f5f4', description: '浅灰底图 + 低饱和单色系' },
+  { key: 'vintage', name: '复古', color: '#efe6d5', description: '米黄旧纸 + 棕色复古符号' },
+  { key: 'dark', name: '暗黑', color: '#1f2937', description: '深色底图 + 高对比符号' },
+  { key: 'academic', name: '学术', color: '#ffffff', description: '白底 + 严谨蓝灰符号' },
+  { key: 'handdrawn', name: '手绘', color: '#fffdf7', description: '暖白底 + 手绘感棕灰线条' },
+]
 
 // 渲染模式
 const currentRenderMode = ref<string>('single')
@@ -675,6 +702,22 @@ function refreshMap() {
   const mapEl = document.getElementById('map-container')
   if (mapEl) {
     mapEl.dispatchEvent(new CustomEvent('map-refresh-layers'))
+  }
+}
+
+async function applyStylePackage(pkg: string) {
+  if (!mapStore.currentMapId) {
+    styleMessage.value = '请先生成地图'
+    return
+  }
+  try {
+    const resp = await api.applyStylePackage(mapStore.currentMapId, pkg)
+    const data = resp.data || resp
+    mapStore.setMapData(data)
+    refreshMap()
+    styleMessage.value = '地图风格包已应用：' + pkg
+  } catch (e: any) {
+    styleMessage.value = '应用风格包失败: ' + e.message
   }
 }
 </script>
@@ -1179,5 +1222,41 @@ function refreshMap() {
 
 .save-btn:hover {
   opacity: 0.9;
+}
+
+.package-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.package-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 4px;
+  border: 1px solid var(--color-border);
+  background: #fff;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.package-btn:hover {
+  border-color: var(--color-primary);
+  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.15);
+}
+
+.package-swatch {
+  width: 40px;
+  height: 20px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+}
+
+.package-name {
+  font-size: 11px;
+  color: var(--color-text);
 }
 </style>

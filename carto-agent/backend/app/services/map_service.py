@@ -7,12 +7,15 @@ MapService负责地图的完整生命周期管理：
 - 多源数据融合：通过DataSourceRegistry统一接入OSM/高德/天地图等数据源
 - 所有修改方法返回更新后的完整地图数据，便于前端实时更新
 """
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 import json
 import os
 import re
 import time
 import threading
 import shutil
+from collections import OrderedDict
 from typing import List, Dict, Any, Optional
 
 from app.core.config import settings
@@ -23,6 +26,7 @@ from app.core.constants import (
     MAP_STYLES,
     MAP_THEMES,
     WUHAN_LANDMARKS,
+    CITY_LANDMARKS,
     WUHAN_DISTRICTS,
     BUILDING_STYLES,
     ROAD_CLASSIFICATION,
@@ -76,10 +80,15 @@ class MapService:
             persist_path: 地图数据持久化文件路径，默认 data/maps.json
         """
         self.osm_service = osm_service
-        # 内存字典存储所有地图 {map_id: map_data}
+        # 索引：{map_id: 摘要}（轻量，启动即载入）
         self.maps: Dict[str, dict] = {}
+        # LRU 缓存：仅保留最近使用的完整地图数据
+        self._map_cache: "OrderedDict[str, dict]" = OrderedDict()
+        self._map_cache_max = 3
         # 持久化：重启后自动恢复已生成的地图
         self.persist_path = persist_path or os.path.join(settings.data_dir, "maps.json")
+        # 按地图独立存储目录（data/maps/{map_id}.json）
+        self.maps_dir = os.path.join(os.path.dirname(self.persist_path), "maps")
         # 历史地图归档目录（迁移后的旧地图按 map_id 独立存放，按需加载）
         self.archive_dir = os.path.join(os.path.dirname(self.persist_path), "archive", "maps")
         # 防抖写入相关
@@ -96,23 +105,24 @@ class MapService:
         if os.getenv("AMAP_KEY") or os.getenv("AMAP_API_KEY"):
             self.data_registry.register(AmapPOIAdapter())
         else:
-            print("[MapService] 未配置 AMAP_KEY，高德 POI 适配器未注册"
+            logger.info("[MapService] 未配置 AMAP_KEY，高德 POI 适配器未注册"
                   "（在 .env 中设置 AMAP_KEY 后启用）")
         # 天地图瓦片适配器（仅在有 API Key 时注册）
         if os.getenv("TIANDITU_KEY"):
             self.data_registry.register(TiandituTileAdapter())
         else:
-            print("[MapService] 未配置 TIANDITU_KEY，天地图适配器未注册"
+            logger.info("[MapService] 未配置 TIANDITU_KEY，天地图适配器未注册"
                   "（在 .env 中设置 TIANDITU_KEY 后启用）")
 
         self._load()
-        print(f"[MapService] 初始化完成，已注册数据源:"
+        logger.info(f"[MapService] 初始化完成，已注册数据源:"
               f" {self.data_registry.get_available_sources()}")
 
     def _load(self):
         """从磁盘加载地图数据（重启恢复）——带容错
         
-        优先从主文件加载，主文件损坏时尝试从备份恢复。
+        新版存储：maps.json 为轻量索引，完整地图按 map_id 独立存放；
+        检测到旧版全量数据（含 layers）时自动迁移。
         """
         backup_path = self.persist_path + ".bak"
         for source_path, source_label in [(self.persist_path, "主文件"), (backup_path, "备份文件")]:
@@ -122,21 +132,240 @@ class MapService:
                 with open(source_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 if isinstance(data, dict):
-                    self.maps = data
-                    print(f"[MapService] 已从{source_label} {source_path} 恢复 {len(self.maps)} 张地图")
+                    first = next(iter(data.values()), {})
+                    if isinstance(first, dict) and "layers" in first:
+                        self._migrate_to_lazy(data)
+                    else:
+                        self.maps = data
+                    logger.info(f"[MapService] 已从{source_label} {source_path} 恢复 {len(self.maps)} 张地图")
                     return
             except (json.JSONDecodeError, OSError) as e:
-                print(f"[MapService] {source_label}加载失败: {e}")
+                logger.info(f"[MapService] {source_label}加载失败: {e}")
                 # 记录损坏文件以便排查
                 corrupted = self.persist_path + f".corrupted.{int(time.time())}"
                 try:
                     os.rename(source_path, corrupted)
-                    print(f"[MapService] 损坏文件已重命名: {corrupted}")
+                    logger.info(f"[MapService] 损坏文件已重命名: {corrupted}")
                 except OSError:
                     pass
         # 全部恢复失败，从空开始（下次保存自动修复）
-        print("[MapService] 所有持久化文件加载失败，使用空内存（下次保存会自动重建）")
+        logger.info("[MapService] 所有持久化文件加载失败，使用空内存（下次保存会自动重建）")
         self.maps = {}
+
+    @staticmethod
+    def _build_summary(map_data: dict) -> dict:
+        """从完整地图数据提取轻量摘要（索引用）"""
+        return {
+            "map_id": map_data.get("map_id", ""),
+            "name": map_data.get("name", ""),
+            "map_type": map_data.get("map_type", ""),
+            "region": map_data.get("region", ""),
+            "center": map_data.get("center"),
+            "zoom": map_data.get("zoom"),
+            "theme": map_data.get("theme"),
+            "created_at": map_data.get("created_at"),
+            "layer_count": len(map_data.get("layers", []) or []),
+        }
+
+    def _migrate_to_lazy(self, full_maps: dict):
+        """将旧版全量 maps.json 迁移为“索引 + 每图独立文件”"""
+        ensure_dir(self.maps_dir)
+        migrated = 0
+        for map_id, map_data in full_maps.items():
+            if not isinstance(map_data, dict) or not map_data.get("map_id"):
+                continue
+            with open(os.path.join(self.maps_dir, f"{map_id}.json"), "w", encoding="utf-8") as f:
+                json.dump(map_data, f, ensure_ascii=False)
+            self.maps[map_id] = self._build_summary(map_data)
+            migrated += 1
+        # 迁移后立即落盘索引
+        self._write_index()
+        # 保留一次性备份（不覆盖已有备份）
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        backup_dir = os.path.join(
+            os.path.dirname(self.persist_path), "archive", f"backup_{stamp}_pre_lazy"
+        )
+        backup_path = os.path.join(backup_dir, "maps.json")
+        if not os.path.exists(backup_path):
+            try:
+                ensure_dir(backup_dir)
+                shutil.copy2(self.persist_path, backup_path)
+                logger.info(f"[MapService] 迁移前备份已保存: {backup_path}")
+            except OSError as e:
+                logger.info(f"[MapService] 迁移前备份失败: {e}")
+        logger.info(f"[MapService] 旧版全量数据已迁移为按图存储: {migrated} 张")
+
+    def _write_index(self):
+        """原子写入索引文件（maps.json）"""
+        tmp_path = self.persist_path + ".tmp"
+        backup_path = self.persist_path + ".bak"
+        try:
+            ensure_dir(os.path.dirname(self.persist_path) or ".")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(self.maps, f, ensure_ascii=False)
+            if os.path.exists(self.persist_path):
+                try:
+                    os.replace(self.persist_path, backup_path)
+                except OSError:
+                    pass
+            os.replace(tmp_path, self.persist_path)
+        except Exception as e:
+            logger.info(f"[MapService] 索引写入失败: {e}")
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
+    def _load_map(self, map_id: str) -> Optional[dict]:
+        """按需加载单张地图完整数据（LRU 缓存）"""
+        if map_id in self._map_cache:
+            self._map_cache.move_to_end(map_id)
+            return self._map_cache[map_id]
+        path = os.path.join(self.maps_dir, f"{map_id}.json")
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.info(f"[MapService] 地图文件加载失败 {map_id}: {e}")
+            return None
+        self._map_cache[map_id] = data
+        while len(self._map_cache) > self._map_cache_max:
+            self._map_cache.popitem(last=False)
+        return data
+
+    def _get_map(self, map_id: str) -> Optional[dict]:
+        """获取完整地图数据：缓存 → 按图文件 → 历史归档"""
+        data = self._load_map(map_id)
+        if data is not None:
+            return data
+        archived = self._load_archived_map(map_id)
+        if archived is not None:
+            # 归档地图编辑后也能落盘（写入按图文件，不进入索引）
+            self._map_cache[map_id] = archived
+            return archived
+        return None
+
+    def put_map(self, map_id: str, map_data: dict):
+        """写入/替换一张完整地图（索引摘要 + LRU 缓存），供测试与程序内复用。"""
+        self.maps[map_id] = self._build_summary(map_data)
+        self._map_cache[map_id] = map_data
+
+    def import_geojson_layer(
+        self,
+        map_id: str,
+        name: str,
+        geojson: dict,
+        layer_type: str = "auto",
+    ) -> dict:
+        """导入用户上传的 GeoJSON 为地图图层（计划 2.2 用户数据上传）
+
+        Args:
+            map_id: 目标地图
+            name: 图层名称
+            geojson: GeoJSON（FeatureCollection 或 Feature）
+            layer_type: auto / point / line / polygon
+        """
+        map_data = self._get_map(map_id)
+        if not map_data:
+            raise MapGenerationError(f"地图不存在: {map_id}")
+        if geojson.get("type") == "FeatureCollection":
+            features = geojson.get("features", []) or []
+        elif geojson.get("type") == "Feature":
+            features = [geojson]
+        else:
+            raise MapGenerationError("仅支持 GeoJSON Feature / FeatureCollection")
+        if not features:
+            raise MapGenerationError("GeoJSON 中没有要素")
+
+        coords: List[Any] = []
+        props: List[dict] = []
+        detected = None
+        for feat in features:
+            geom = feat.get("geometry") or {}
+            gtype = geom.get("type", "")
+            c = geom.get("coordinates") or []
+            if gtype == "Point" and len(c) >= 2:
+                coords.append([float(c[1]), float(c[0])])
+                detected = detected or "circleMarker"
+            elif gtype in ("LineString", "MultiLineString"):
+                line = c if gtype == "LineString" else (c[0] if c else [])
+                pts = [[float(p[1]), float(p[0])] for p in line if isinstance(p, list) and len(p) >= 2]
+                if len(pts) >= 2:
+                    coords.append(pts)
+                    detected = detected or "polyline"
+            elif gtype in ("Polygon", "MultiPolygon"):
+                ring = c[0] if c else []
+                pts = [[float(p[1]), float(p[0])] for p in ring if isinstance(p, list) and len(p) >= 2]
+                if len(pts) >= 3:
+                    coords.append(pts)
+                    detected = detected or "polygon"
+            props.append(feat.get("properties") or {})
+
+        if not coords:
+            raise MapGenerationError("未能从 GeoJSON 中提取有效坐标")
+        if layer_type == "point":
+            detected = "circleMarker"
+        elif layer_type == "line":
+            detected = "polyline"
+        elif layer_type == "polygon":
+            detected = "polygon"
+        detected = detected or "polyline"
+
+        layer = {
+            "id": generate_id("layer"),
+            "type": detected,
+            "name": name,
+            "coordinates": coords,
+            "properties": props,
+            "style": self._get_default_style(detected),
+            "metadata": {"source": "user_upload", "format": "geojson"},
+        }
+        map_data["layers"].append(layer)
+        self._schedule_save()
+        logger.info(f"[MapService] GeoJSON 图层已导入: {name} ({len(coords)} 个要素)")
+        return map_data
+
+    def apply_style_package(self, map_id: str, package_key: str) -> dict:
+        """应用地图风格包（计划 3.5）：按图层语义统一调整配色"""
+        from app.core.constants import STYLE_PACKAGES
+        pkg = STYLE_PACKAGES.get(package_key)
+        if not pkg:
+            raise MapGenerationError(f"未知风格包: {package_key}")
+        map_data = self._get_map(map_id)
+        if not map_data:
+            raise MapGenerationError(f"地图不存在: {map_id}")
+        for layer in map_data.get("layers", []) or []:
+            name = layer.get("name", "") or ""
+            st = layer.get("style") or {}
+            ltype = layer.get("type", "") or ""
+            if "道路-" in name or name in (
+                "高速公路", "国道/主干道", "省道/主要道路", "次干道",
+                "支路", "社区道路", "其他道路", "高速铁路", "普通铁路", "地铁",
+            ):
+                high = any(k in name for k in ("高速", "国道", "干线", "主干道", "省道", "主要道路", "铁路", "地铁"))
+                st["color"] = pkg["road_primary"] if high else pkg["road_minor"]
+            elif any(k in name for k in ("水系", "河流", "溪流", "运河")):
+                st["color"] = pkg["water"]
+            elif any(k in name for k in ("湖泊", "水库")):
+                st["fillColor"] = pkg["water_fill"]
+                st["color"] = pkg["water"]
+            elif any(k in name for k in ("绿地", "公园", "森林", "草地", "草甸")):
+                st["fillColor"] = pkg["green"]
+                st["color"] = pkg["green"]
+            elif name == "陆地底图":
+                st["fillColor"] = pkg["land_fill"]
+                st["color"] = pkg["land_fill"]
+            elif ltype in ("textLabel", "label") or name in ("地标名称", "水系注记"):
+                st["color"] = pkg["label"]
+            elif ltype in ("circleMarker", "marker", "point") and st.get("icon"):
+                st["color"] = pkg["poi"]
+            layer["style"] = st
+        self._schedule_save()
+        logger.info(f"[MapService] 风格包已应用: {package_key} ({pkg.get('name')})")
+        return map_data
 
     def _schedule_save(self):
         """防抖调度持久化：延迟 _SAVE_DEBOUNCE_SECONDS 后写入，期间的新调用会重置计时器"""
@@ -158,42 +387,17 @@ class MapService:
         self._save()
 
     def _save(self):
-        """原子写入：先写临时文件，成功后替换原文件 + 备份旧文件
-        
-        原子写入三步法：
-        1. 写入 .tmp 临时文件
-        2. 将旧主文件重命名为 .bak 备份
-        3. 将临时文件重命名为主文件
-        
-        任何一步失败都不会丢失已有数据（原始主文件或备份文件仍存在）。
-        """
-        import shutil, time as _time
+        """落盘：索引原子写入 + 缓存中的完整地图按图写入独立文件"""
         # 先归档超限的最旧地图，避免主文件再次膨胀
         self._archive_old_maps()
-        tmp_path = self.persist_path + ".tmp"
-        backup_path = self.persist_path + ".bak"
         try:
-            ensure_dir(os.path.dirname(self.persist_path) or ".")
-            # 步骤1: 写入临时文件
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                # 紧凑写入（不带缩进）：文件体积减小约 2/3，仅机器读写无需人类阅读
-                json.dump(self.maps, f, ensure_ascii=False)
-            # 步骤2: 备份旧主文件（如果存在）
-            if os.path.exists(self.persist_path):
-                try:
-                    os.replace(self.persist_path, backup_path)
-                except OSError:
-                    pass  # 备份失败不阻塞
-            # 步骤3: 原子替换为主文件
-            os.replace(tmp_path, self.persist_path)
+            ensure_dir(self.maps_dir)
+            for map_id, map_data in list(self._map_cache.items()):
+                with open(os.path.join(self.maps_dir, f"{map_id}.json"), "w", encoding="utf-8") as f:
+                    json.dump(map_data, f, ensure_ascii=False)
+            self._write_index()
         except Exception as e:
-            print(f"[MapService] 地图数据持久化失败: {e}")
-            # 清理临时文件
-            if os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
+            logger.info(f"[MapService] 地图数据持久化失败: {e}")
 
     def _archive_old_maps(self):
         """主文件超过 MAPS_MAIN_LIMIT 时，将最旧的地图移入归档目录"""
@@ -204,10 +408,17 @@ class MapService:
             key=lambda kv: kv[1].get("created_at", 0) if isinstance(kv[1], dict) else 0,
         )
         overflow = items[: len(self.maps) - self.MAPS_MAIN_LIMIT]
-        for map_id, map_data in overflow:
-            if self._write_archived_map(map_id, map_data):
+        for map_id, _summary in overflow:
+            map_data = self._get_map(map_id)
+            if map_data and self._write_archived_map(map_id, map_data):
                 del self.maps[map_id]
-                print(f"[MapService] 旧地图已归档: {map_id}")
+                self._map_cache.pop(map_id, None)
+                # 移除按图文件（已写入归档）
+                try:
+                    os.remove(os.path.join(self.maps_dir, f"{map_id}.json"))
+                except OSError:
+                    pass
+                logger.info(f"[MapService] 旧地图已归档: {map_id}")
 
     def _write_archived_map(self, map_id: str, map_data: dict) -> bool:
         """将单张地图写入归档目录，并更新归档清单"""
@@ -239,7 +450,7 @@ class MapService:
                 json.dump(manifest, f, ensure_ascii=False, indent=1)
             return True
         except OSError as e:
-            print(f"[MapService] 地图归档失败 {map_id}: {e}")
+            logger.info(f"[MapService] 地图归档失败 {map_id}: {e}")
             return False
 
     # ==================== 地图基础操作 ====================
@@ -312,10 +523,20 @@ class MapService:
                 if zoom >= 13:
                     element_types.append("place_suburb")
 
+            # 行政区划图：边界线使用 DataV 标准境界线（本地 wuhan_districts/hubei_* 数据），
+            # 无需抓取 OSM boundary（Overpass 行政边界查询重且易超时，且后续会被 DataV 境界线替换）
+            if map_type == "administrative":
+                _dist_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                    "data", "geo", "wuhan_districts.geojson",
+                )
+                if os.path.exists(_dist_path):
+                    element_types = [t for t in element_types if not t.startswith("boundary")]
+
             # 专题地图特殊处理
             if map_type in THEMATIC_MAP_CONFIG:
                 map_layers = self._generate_thematic_layers(map_type, region, center)
-                print(f"[MapService] 专题地图生成完成: {map_type}, {len(map_layers)} 个图层")
+                logger.info(f"[MapService] 专题地图生成完成: {map_type}, {len(map_layers)} 个图层")
             else:
                 map_layers = []
 
@@ -332,30 +553,37 @@ class MapService:
                 if self._local_geo_service is None:
                     self._local_geo_service = LocalGeoService()
                 _lgs = self._local_geo_service
-                _local_water = _lgs.get_water_layers(region)
-                _local_roads = _lgs.get_roads_layers(region)
-                _local_builtup = []
-                try:
-                    # 居民地街区（制图综合：合并/化简/分级），仅大比例尺显示
-                    _local_builtup = _lgs.get_builtup_layers(region)
-                except Exception as _be:
-                    print(f"[MapService] 居民地街区图层加载失败: {_be}")
-                if map_type == "tourism":
-                    _local_tourism = _lgs.get_tourism_layers(region)
-                elif map_type == "traffic":
-                    _local_transit = _lgs.get_transit_layers(region)
+                # 本地精确数据仅武汉市具备；其他城市一律走 OSM + 高德，避免数据错配
+                if region == "武汉市":
+                    _local_water = _lgs.get_water_layers(region)
+                    _local_roads = _lgs.get_roads_layers(region)
+                    try:
+                        # 居民地街区（制图综合：合并/化简/分级），仅大比例尺显示
+                        _local_builtup = _lgs.get_builtup_layers(region)
+                    except Exception as _be:
+                        logger.info(f"[MapService] 居民地街区图层加载失败: {_be}")
+                    if map_type == "tourism":
+                        _local_tourism = _lgs.get_tourism_layers(region)
+                    elif map_type == "traffic":
+                        _local_transit = _lgs.get_transit_layers(region)
                 if _local_water:
                     element_types = [t for t in element_types
                                      if not t.startswith("waterway") and t != "natural"]
                 if _local_roads:
                     element_types = [t for t in element_types if not t.startswith("highway")]
+                # 本地轨道交通/旅游POI存在时，跳过OSM对应抓取，避免重复叠加破坏协调性
+                if _local_transit:
+                    element_types = [t for t in element_types if t != "railway"]
+                if _local_tourism:
+                    element_types = [t for t in element_types
+                                     if t not in ("tourism", "historic", "leisure")]
             except Exception as e:
-                print(f"[MapService] 本地地理数据加载失败: {e}")
+                logger.info(f"[MapService] 本地地理数据加载失败: {e}")
 
             # 获取OSM数据（非专题地图才获取）
             osm_data = {}
             if not map_layers and self.osm_service:
-                print(f"[MapService] 正在获取{region}的OSM数据，类型: {element_types}")
+                logger.info(f"[MapService] 正在获取{region}的OSM数据，类型: {element_types}")
                 osm_data = self.osm_service.fetch_by_region(region, element_types)
                 # 高德POI数据补充（配置AMAP_API_KEY后自动启用，无key时自动跳过）
                 try:
@@ -366,11 +594,11 @@ class MapService:
                         if pois:
                             osm_data.setdefault("amenity", []).extend(pois)
                 except Exception as e:
-                    print(f"[MapService] 高德数据补充失败: {e}")
+                    logger.info(f"[MapService] 高德数据补充失败: {e}")
 
             # 将OSM元素转换为图层（仅当没有专题图层时）
             if not map_layers:
-                map_layers = self._elements_to_layers(osm_data, element_types)
+                map_layers = self._elements_to_layers(osm_data, element_types, map_type)
             # 叠加本地精确数据图层（水系在底层、路网在上；GIS叠加顺序由前端layerZ控制）
             if _local_water:
                 map_layers = _local_water + map_layers
@@ -382,6 +610,52 @@ class MapService:
                 map_layers = map_layers + _local_tourism
             if _local_builtup:
                 map_layers = map_layers + _local_builtup
+
+            # 地势图（DEM 山体阴影底图）：水系/道路作为辅助要素淡化，突出等高线与山体阴影
+            if map_type == "terrain":
+                for _l in map_layers:
+                    _ln = _l.get("name") or ""
+                    _st = dict(_l.get("style") or {})
+                    if _l.get("type") == "polyline" and re.search(
+                        r"河流|水系|溪流|运河|道路|高速|公路|主干道|次干道|支路|铁路|轨道|轻轨|地铁|等高线",
+                        _ln,
+                    ):
+                        # 等高线保持原有醒目度，仅淡化河流与道路
+                        if "等高线" not in _ln:
+                            _st["opacity"] = min(float(_st.get("opacity", 1.0) or 1.0), 0.55)
+                            _l["style"] = _st
+                    elif _l.get("type") == "polygon" and re.search(r"湖泊|河流水面|水库", _ln):
+                        _st["opacity"] = min(float(_st.get("opacity", 1.0) or 1.0), 0.55)
+                        _st["fillOpacity"] = min(float(_st.get("fillOpacity", 0.35) or 0.35), 0.3)
+                        _l["style"] = _st
+
+            # 交通图（GIS 叠加风格）：以线/面要素为主（道路/轨道/河流/湖泊/边界），
+            # 去除点状符号（POI/公交站/轨道站点/湖泊点符号等），避免图面堆叠
+            if map_type == "traffic":
+                map_layers = [
+                    l for l in map_layers
+                    if l.get("type") not in ("circleMarker", "marker", "point", "circle")
+                ]
+                # 交通图：行政边界加粗突出（省界/市界/县界为骨架要素）
+                for _l in map_layers:
+                    _ln = _l.get("name") or ""
+                    _st = dict(_l.get("style") or {})
+                    if "边界" in _ln or "境界" in _ln or "省界" in _ln or "市界" in _ln or "县界" in _ln:
+                        _st["weight"] = max(float(_st.get("weight", 1.5) or 1.5), 2.5)
+                        _st["opacity"] = max(float(_st.get("opacity", 0.9) or 0.9), 0.95)
+                        _l["style"] = _st
+                    # 交通图道路保留到次干道（motorway/trunk/primary/secondary）
+                    # 剔除支路/社区道路/步行道等低等级道路
+                _TRAFFIC_ROAD_DROP = ("支路", "三级", "社区道路", "服务道路", "居民区街区",
+                                      "生活性街道", "未分级", "步行", "自行车", "阶梯", "匝道", "连接线")
+                map_layers = [
+                    l for l in map_layers
+                    if not (
+                        l.get("type") == "polyline"
+                        and ("道路" in (l.get("name") or "") or re.search(r"高速|公路|国道|省道|干线|主干道|次干道", l.get("name") or ""))
+                        and any(k in (l.get("name") or "") for k in _TRAFFIC_ROAD_DROP)
+                    )
+                ]
 
             # 标准行政区划图：叠加官方区划面底图（DataV GeoAtlas，含区县政区面/注记/行政中心）
             if map_type == "administrative":
@@ -419,7 +693,8 @@ class MapService:
                             for l in map_layers
                         ]
                         # 周边地市底图(极浅米黄) + 标准境界线（省界/地级市界）
-                        surrounding = gs.build_surrounding_layers(region)
+                        # 周边地市上下文仅武汉市具备本地数据（其他城市不叠加错误的省域底图）
+                        surrounding = gs.build_surrounding_layers(region) if region == "武汉市" else []
                         map_layers = surrounding + geo_layers + map_layers
                         # 市级行政中心（红色五角星★，正红#D82828，规范三-1）
                         # 坐标按用户要求标注于武昌区（官方驻地实际在江岸区沿江大道188号）
@@ -438,7 +713,7 @@ class MapService:
                                           "iconClass": cc.get("iconClass"), "kind": cc.get("kind")},
                             })
                     # 水系：本地精确数据优先；本地缺失时走 OSM → 兜底近似
-                    if not _local_water:
+                    if not _local_water and region == "武汉市":
                         has_water = any(
                             any(k in (l.get("name") or "") for k in ("河", "湖", "水库", "水系"))
                             for l in map_layers
@@ -462,11 +737,11 @@ class MapService:
                                       "group": "兴趣点(POI)"},
                         })
                 except Exception as e:
-                    print(f"[MapService] 区划面底图获取失败: {e}")
+                    logger.info(f"[MapService] 区划面底图获取失败: {e}")
 
             # 非行政区划图：叠加"上一级行政边界"上下文（湖北省市级边界 + 武汉市域）
             # 生成的地图仅含用户所需区域 + 行政规划上一级，两个模块颜色区分
-            if map_type != "administrative" and region in CITY_ADCODES:
+            if map_type != "administrative" and region == "武汉市":
                 try:
                     from app.services.geo_service import GeoService
                     _gs = GeoService()
@@ -474,11 +749,11 @@ class MapService:
                     if _ctx:
                         map_layers = _ctx + map_layers
                 except Exception as e:
-                    print(f"[MapService] 上一级行政边界叠加失败: {e}")
+                    logger.info(f"[MapService] 上一级行政边界叠加失败: {e}")
 
             # 如果图层为空（OSM数据为空或API不可用），使用本地地标数据作为回退
             if not map_layers:
-                print(f"[MapService] OSM数据为空，使用本地地标数据作为回退: {region}")
+                logger.info(f"[MapService] OSM数据为空，使用本地地标数据作为回退: {region}")
                 map_layers = self._generate_fallback_layers(map_type, region, center, zoom)
 
             # 陆地/水系底图：所有地图插入"陆地底图"米色面（水系蓝色面由OSM数据生成）；
@@ -502,8 +777,70 @@ class MapService:
             if map_type == "administrative":
                 map_layers = [
                     l for l in map_layers
-                    if l.get("name") not in ("乡镇边界", "城市名称标注")
+                    # 乡镇边界、城市名称标注、湖泊点符号（概览）均不显示：面状湖泊已承载水系信息，
+                    # 点状湖泊符号会干扰区划范围观感
+                    if l.get("name") not in ("乡镇边界", "城市名称标注", "湖泊点符号（概览）")
                 ]
+
+                # 边界为主、水系/道路为辅：行政区划图仅保留主要道路并淡化（突出省/市/县界）
+                # 保留三级主要道路：高速公路(motorway)、国道/干线(trunk)、城市主干道(primary)
+                # 剔除次干道及以下，避免道路干扰行政区划范围观感
+                _ADMIN_ROAD_KEEP = ("高速公路", "国道", "干线", "城市主干道", "省道")
+                _ADMIN_ROAD_DROP = ("匝道", "连接线", "衔接", "次干道", "支路", "三级",
+                                    "社区道路", "服务道路", "居民区街区", "其他道路",
+                                    "生活性街道", "未分级", "步行", "自行车", "阶梯")
+                map_layers = [
+                    l for l in map_layers
+                    if not (
+                        l.get("type") == "polyline"
+                        and ("道路" in (l.get("name") or "") or re.search(r"高速|公路|国道|省道|干线|主干道", l.get("name") or ""))
+                        and (any(k in (l.get("name") or "") for k in _ADMIN_ROAD_DROP)
+                             or not any(k in (l.get("name") or "") for k in _ADMIN_ROAD_KEEP))
+                    )
+                ]
+                for _l in map_layers:
+                    _ln = _l.get("name") or ""
+                    _st = dict(_l.get("style") or {})
+                    if _l.get("type") == "polyline" and re.search(r"河流|水系|溪流|运河|水库|道路|高速|公路|主干道|次干道|支路|铁路|轨道|轻轨|地铁", _ln):
+                        # 主要道路进一步弱化（细线、更半透明），不干扰区划范围观感
+                        _st["opacity"] = min(float(_st.get("opacity", 1.0) or 1.0), 0.38)
+                        _st["weight"] = max(0.5, float(_st.get("weight", 1.0) or 1.0) * 0.55)
+                        _l["style"] = _st
+                    elif _l.get("type") == "polygon" and re.search(r"河流水面|湖泊|水库", _ln):
+                        _st["opacity"] = min(float(_st.get("opacity", 1.0) or 1.0), 0.55)
+                        _st["fillOpacity"] = min(float(_st.get("fillOpacity", 0.35) or 0.35), 0.3)
+                        _l["style"] = _st
+
+                # 市级名称标注（依据比例尺标注对应等级行政单位）：大字号、置于市域中心附近
+                if region == "武汉市":
+                    _city_label_pt = [30.5928, 114.3055]
+                    _gov = WUHAN_GOV_COORD
+                    # 从区县政区面的主面内寻找合适注记点：优先市区几何中心附近
+                    _dist_poly = next((l for l in map_layers if l.get("name") == "区县政区"), None)
+                    if _dist_poly and _dist_poly.get("features"):
+                        _main = max(
+                            _dist_poly["features"],
+                            key=lambda f: len(f.get("coordinates") or []),
+                        )
+                        _coords = _main.get("coordinates") or []
+                        if len(_coords) >= 3:
+                            _pts = [p for p in _coords if isinstance(p, list) and len(p) >= 2]
+                            if _pts:
+                                _city_label_pt = [
+                                    sum(p[0] for p in _pts) / len(_pts),
+                                    sum(p[1] for p in _pts) / len(_pts),
+                                ]
+                    elif _gov:
+                        _city_label_pt = _gov
+                    map_layers.append({
+                        "id": generate_id("layer"),
+                        "type": "textLabel",
+                        "name": "市级名称标注",
+                        "coordinates": [_city_label_pt],
+                        "properties": [{"name": "武汉市", "admin_level": 4}],
+                        "style": {"color": "#1f2937", "fontSize": 22, "weight": 4,
+                                  "font": "song", "center": True},
+                    })
 
             # 行政区划图兜底：place数据缺失(Overpass限流)时补充武汉区县标注
             if map_type == "administrative" and region == "武汉市":
@@ -518,15 +855,16 @@ class MapService:
                         "style": {"color": "#000000", "fontSize": 15, "weight": 3, "font": "song"},
                     })
 
-            # 重要地标名称常驻注记（直接附着在地图上，直观可见）
-            if region == "武汉市" and map_type in ("tourism", "basic", "traffic"):
+            # 重要地标名称常驻注记（全国主要城市通用，直接附着在地图上）
+            _landmarks = CITY_LANDMARKS.get(region, [])
+            if _landmarks and map_type in ("tourism", "basic", "traffic"):
                 if not any(l.get("name") == "地标名称" for l in map_layers):
                     map_layers.append({
                         "id": generate_id("layer"),
                         "type": "textLabel",
                         "name": "地标名称",
-                        "coordinates": [[lm["lat"], lm["lng"]] for lm in WUHAN_LANDMARKS],
-                        "properties": [{"name": lm["name"]} for lm in WUHAN_LANDMARKS],
+                        "coordinates": [[lm["lat"], lm["lng"]] for lm in _landmarks],
+                        "properties": [{"name": lm["name"]} for lm in _landmarks],
                         "style": {"color": LABEL_STYLES["landmark"]["color"],
                                   "fontSize": LABEL_STYLES["landmark"]["fontSize"],
                                   "weight": LABEL_STYLES["landmark"]["weight"],
@@ -535,6 +873,8 @@ class MapService:
 
             # 按制图规范调整图层叠置顺序（面状底图→建筑→水系→铁路→道路→点状符号）
             map_layers = self._sort_layers(map_layers)
+            # 线状要素按名称连通：同一条道路/边界/铁路的离散线段合并为完整折线（制图综合连通性）
+            map_layers = self._connect_polylines_by_name(map_layers)
 
             # 生成图例数据
             legend = self._generate_legend(map_type, map_layers)
@@ -545,12 +885,26 @@ class MapService:
             type_names = {
                 "traffic": "交通图", "tourism": "旅游图", "campus": "校园图",
                 "basic": "基础地图", "food": "美食图", "administrative": "行政区划图",
+                "terrain": "地势图",
             }
             map_name = f"{region}{type_names.get(map_type, '地图')}"
 
             # 数据质量校验：行政区划图不再自动输出面积统计（坐标投影换算易失真，
             # 需求8：关闭错误的自动面积统计），只保留其他通用告警
             quality = {"warnings": []}
+
+            # 底图主题：地势图使用 DEM 山体阴影作为地势底图；行政区划图保持矢量制图底图
+            default_theme = "hillshade" if map_type == "terrain" else "plain"
+            # 编制说明中的地图类型描述（按地图类型动态生成）
+            meta_type = {
+                "administrative": "行政区划图（政区版）· 普通参考地图",
+                "traffic": "交通图（GIS叠加版）",
+                "terrain": "地势图（DEM山体阴影 + 等高线）",
+                "tourism": "旅游图",
+                "campus": "校园图",
+                "basic": "基础地图",
+                "food": "美食图",
+            }.get(map_type, "专题地图")
 
             map_data = {
                 "map_id": map_id,
@@ -559,7 +913,7 @@ class MapService:
                 "region": region,
                 "center": center,
                 "zoom": zoom,
-                "theme": "plain",   # 默认无瓦片制图底图（矢量制图）
+                "theme": default_theme,
                 "layers": map_layers,
                 "legend": legend,
                 "quality": quality,
@@ -568,7 +922,7 @@ class MapService:
                     "坐标系": "CGCS2000 国家大地坐标系",
                     "投影": "高斯-克吕格投影 3°分带（标准地图）/ Web墨卡托（网页显示）",
                     "数据来源": "DataV GeoAtlas 官方行政区划数据 / OpenStreetMap",
-                    "地图类型": "行政区划图（政区版）· 普通参考地图",
+                    "地图类型": meta_type,
                     "图幅范围": "武汉市及周边相邻地市（区位关系）",
                     "幅面版式": "竖版",
                     "审图号": "鄂S(2022)100号",
@@ -580,16 +934,17 @@ class MapService:
                 "created_at": get_timestamp(),
             }
 
-            # 存储到内存
-            self.maps[map_id] = map_data
+            # 存储：索引写入摘要，完整数据写入 LRU 缓存（随 _save 落盘独立文件）
+            self.maps[map_id] = self._build_summary(map_data)
+            self._map_cache[map_id] = map_data
             self._schedule_save()
-            print(f"[MapService] 地图生成成功: {map_name} (ID: {map_id})，"
+            logger.info(f"[MapService] 地图生成成功: {map_name} (ID: {map_id})，"
                   f"共{len(map_layers)}个图层")
 
             return map_data
 
         except Exception as e:
-            print(f"[MapService] 地图生成失败: {e}")
+            logger.info(f"[MapService] 地图生成失败: {e}")
             raise MapGenerationError(f"地图生成失败: {e}")
 
     def get_map(self, map_id: str) -> Optional[dict]:
@@ -601,12 +956,11 @@ class MapService:
         Returns:
             地图数据字典，不存在时返回None
         """
-        map_data = self.maps.get(map_id)
+        map_data = self._get_map(map_id)
         if map_data is not None:
             self._classify_layers(map_data)
             return map_data
-        # 主存储未命中时，尝试从归档目录按需加载（不写回主文件，避免再次膨胀）
-        return self._load_archived_map(map_id)
+        return None
 
     def _load_archived_map(self, map_id: str) -> Optional[dict]:
         """从归档目录加载历史地图（data/archive/maps/{map_id}.json）"""
@@ -617,13 +971,10 @@ class MapService:
             return None
         try:
             with open(archive_path, "r", encoding="utf-8") as f:
-                map_data = json.load(f)
-            if isinstance(map_data, dict) and map_data.get("map_id"):
-                self._classify_layers(map_data)
-                return map_data
+                return json.load(f)
         except (json.JSONDecodeError, OSError) as e:
-            print(f"[MapService] 归档地图加载失败 {map_id}: {e}")
-        return None
+            logger.info(f"[MapService] 归档地图加载失败 {map_id}: {e}")
+            return None
 
     def _classify_layers(self, map_data: dict) -> None:
         """图层分类综合（QGIS/ArcGIS 图层管理）：
@@ -745,17 +1096,17 @@ class MapService:
             地图摘要列表（不含完整图层数据，减少传输量）
         """
         result = []
-        for map_data in self.maps.values():
+        for summary in self.maps.values():
             result.append({
-                "map_id": map_data["map_id"],
-                "name": map_data["name"],
-                "map_type": map_data.get("map_type", ""),
-                "region": map_data.get("region", ""),
-                "center": map_data["center"],
-                "zoom": map_data["zoom"],
-                "theme": map_data["theme"],
-                "layer_count": len(map_data["layers"]),
-                "created_at": map_data["created_at"],
+                "map_id": summary.get("map_id", ""),
+                "name": summary.get("name", ""),
+                "map_type": summary.get("map_type", ""),
+                "region": summary.get("region", ""),
+                "center": summary.get("center"),
+                "zoom": summary.get("zoom"),
+                "theme": summary.get("theme"),
+                "layer_count": summary.get("layer_count", 0),
+                "created_at": summary.get("created_at"),
             })
         return result
 
@@ -770,20 +1121,25 @@ class MapService:
         """
         if map_id in self.maps:
             del self.maps[map_id]
+            self._map_cache.pop(map_id, None)
+            try:
+                os.remove(os.path.join(self.maps_dir, f"{map_id}.json"))
+            except OSError:
+                pass
             self._schedule_save()
-            print(f"[MapService] 地图已删除: {map_id}")
+            logger.info(f"[MapService] 地图已删除: {map_id}")
             return True
         # 归档地图也可删除（同步清理归档文件）
         archive_path = os.path.join(self.archive_dir, f"{map_id}.json")
         if os.path.exists(archive_path):
             try:
                 os.remove(archive_path)
-                print(f"[MapService] 归档地图已删除: {map_id}")
+                logger.info(f"[MapService] 归档地图已删除: {map_id}")
                 return True
             except OSError as e:
-                print(f"[MapService] 归档地图删除失败 {map_id}: {e}")
+                logger.info(f"[MapService] 归档地图删除失败 {map_id}: {e}")
                 return False
-        print(f"[MapService] 地图不存在: {map_id}")
+        logger.info(f"[MapService] 地图不存在: {map_id}")
         return False
 
     # ==================== 多源数据融合 ====================
@@ -845,7 +1201,7 @@ class MapService:
         else:
             return DataResult.empty("map_service", "no bbox or region specified")
 
-        print(f"[MapService] 多源数据获取: type={data_type},"
+        logger.info(f"[MapService] 多源数据获取: type={data_type},"
               f" region={region}, merge={merge}, preferred={preferred_source}")
 
         if merge:
@@ -858,7 +1214,7 @@ class MapService:
             # 自动选择第一个支持的源
             result = self.data_registry.fetch(query)
 
-        print(f"[MapService] 多源数据获取完成: {result.count} 个要素,"
+        logger.info(f"[MapService] 多源数据获取完成: {result.count} 个要素,"
               f" source={result.source}, quality={result.quality_score}")
         return result
 
@@ -874,16 +1230,28 @@ class MapService:
         layer_type: str,
         name: str,
         query: Optional[str] = None,
+        coordinates: Optional[Any] = None,
+        properties: Optional[Any] = None,
+        style: Optional[dict] = None,
+        features: Optional[Any] = None,
+        group: Optional[str] = None,
     ) -> dict:
         """向地图添加新图层
 
         如果提供了query参数（OSM标签类型），会自动查询OSM数据填充图层。
+        若提供了 coordinates/features 等直接数据，则优先使用（用于
+        前端空间分析结果、图层复制等自定义图层回写）。
 
         Args:
             map_id: 地图ID
             layer_type: 图层类型（polyline/marker/polygon）
             name: 图层名称
             query: OSM查询标签（如"highway"、"railway"），可选
+            coordinates: 直接写入的坐标数组（可选）
+            properties: 与坐标对应的属性数组（可选）
+            style: 图层样式（可选）
+            features: features 型图层数据（可选）
+            group: 图层分组名（可选）
 
         Returns:
             更新后的完整地图数据
@@ -891,14 +1259,19 @@ class MapService:
         Raises:
             MapGenerationError: 地图不存在或添加失败
         """
-        map_data = self.maps.get(map_id)
+        map_data = self._get_map(map_id)
         if not map_data:
             raise MapGenerationError(f"地图不存在: {map_id}")
 
-        coordinates = []
+        # 调用方是否直接提供了完整数据（自定义图层/分析结果/复制图层）
+        provided_direct_data = coordinates is not None or bool(features)
+        if coordinates is None:
+            coordinates = []
+        properties = properties or []
+        features = features or []
 
-        # 如果提供了OSM查询标签，获取真实数据
-        if query and self.osm_service:
+        # 未提供直接数据且带 OSM 查询标签时，拉取真实数据填充
+        if not provided_direct_data and query and self.osm_service:
             region = map_data.get("region", "武汉市")
             osm_data = self.osm_service.fetch_by_region(region, [query])
             elements = osm_data.get(query, [])
@@ -909,7 +1282,7 @@ class MapService:
                     coordinates.append(coords)
 
         # 获取默认样式
-        style = self._get_default_style(query or layer_type)
+        layer_style = style or self._get_default_style(query or layer_type)
 
         # 创建新图层
         layer = {
@@ -917,13 +1290,82 @@ class MapService:
             "type": layer_type,
             "name": name,
             "coordinates": coordinates,
-            "style": style,
+            "style": layer_style,
         }
+        if properties:
+            layer["properties"] = properties
+        if features:
+            layer["features"] = features
+        if group:
+            layer["group"] = group
 
         map_data["layers"].append(layer)
         self._schedule_save()
-        print(f"[MapService] 图层已添加: {name} (ID: {layer['id']})，"
-              f"包含{len(coordinates)}个要素")
+        logger.info(f"[MapService] 图层已添加: {name} (ID: {layer['id']})，"
+              f"包含{len(coordinates) or len(features)}个要素")
+        return map_data
+
+    def duplicate_layer(self, map_id: str, layer_id: str) -> dict:
+        """复制图层（含几何/属性/样式），插入到原图层之后"""
+        map_data = self._get_map(map_id)
+        if not map_data:
+            raise MapGenerationError(f"地图不存在: {map_id}")
+        for index, layer in enumerate(map_data["layers"]):
+            if layer["id"] == layer_id:
+                copy = json.loads(json.dumps(layer))
+                copy["id"] = generate_id("layer")
+                copy["name"] = (copy.get("name") or "未命名图层") + " 副本"
+                copy["visible"] = True
+                map_data["layers"].insert(index + 1, copy)
+                self._schedule_save()
+                logger.info(f"[MapService] 图层已复制: {layer_id} -> {copy['id']}")
+                return map_data
+        raise MapGenerationError(f"图层不存在: {layer_id}")
+
+    def reorder_layers(self, map_id: str, layer_ids: List[str]) -> dict:
+        """按给定 ID 顺序重排图层（未列出的图层保持相对顺序追加在末尾）"""
+        map_data = self._get_map(map_id)
+        if not map_data:
+            raise MapGenerationError(f"地图不存在: {map_id}")
+        by_id = {layer["id"]: layer for layer in map_data["layers"]}
+        ordered = []
+        for lid in layer_ids:
+            layer = by_id.pop(lid, None)
+            if layer is not None:
+                ordered.append(layer)
+        ordered.extend(by_id.values())
+        map_data["layers"] = ordered
+        self._schedule_save()
+        logger.info(f"[MapService] 图层顺序已更新: {len(ordered)} 个图层")
+        return map_data
+
+    def set_layer_group(self, map_id: str, layer_id: str, group: Optional[str]) -> dict:
+        """设置/移除图层所属分组"""
+        map_data = self._get_map(map_id)
+        if not map_data:
+            raise MapGenerationError(f"地图不存在: {map_id}")
+        for layer in map_data["layers"]:
+            if layer["id"] == layer_id:
+                if group:
+                    layer["group"] = group
+                else:
+                    layer.pop("group", None)
+                self._schedule_save()
+                logger.info(f"[MapService] 图层分组已更新: {layer_id} -> {group or '无'}")
+                return map_data
+        raise MapGenerationError(f"图层不存在: {layer_id}")
+
+    def accept_quality(self, map_id: str) -> dict:
+        """接受当前质量报告：在地图编制信息中记录质检结论"""
+        map_data = self._get_map(map_id)
+        if not map_data:
+            raise MapGenerationError(f"地图不存在: {map_id}")
+        metadata = map_data.setdefault("metadata", {})
+        now = time.strftime("%Y-%m-%d %H:%M", time.localtime())
+        metadata["质检结论"] = "已接受（人工确认）"
+        metadata["质检时间"] = now
+        self._schedule_save()
+        logger.info(f"[MapService] 质量报告已接受: {map_id}")
         return map_data
 
     def remove_layer(self, map_id: str, layer_id: str) -> dict:
@@ -939,7 +1381,7 @@ class MapService:
         Raises:
             MapGenerationError: 地图或图层不存在
         """
-        map_data = self.maps.get(map_id)
+        map_data = self._get_map(map_id)
         if not map_data:
             raise MapGenerationError(f"地图不存在: {map_id}")
 
@@ -952,7 +1394,7 @@ class MapService:
             raise MapGenerationError(f"图层不存在: {layer_id}")
 
         self._schedule_save()
-        print(f"[MapService] 图层已移除: {layer_id}")
+        logger.info(f"[MapService] 图层已移除: {layer_id}")
         return map_data
 
     def update_layer_style(self, map_id: str, layer_id: str, style: dict) -> dict:
@@ -969,7 +1411,7 @@ class MapService:
         Raises:
             MapGenerationError: 地图或图层不存在
         """
-        map_data = self.maps.get(map_id)
+        map_data = self._get_map(map_id)
         if not map_data:
             raise MapGenerationError(f"地图不存在: {map_id}")
 
@@ -978,34 +1420,34 @@ class MapService:
                 # 合并样式，保留未更新的字段
                 layer["style"].update(style)
                 self._schedule_save()
-                print(f"[MapService] 图层样式已更新: {layer_id}，新样式: {layer['style']}")
+                logger.info(f"[MapService] 图层样式已更新: {layer_id}，新样式: {layer['style']}")
                 return map_data
 
         raise MapGenerationError(f"图层不存在: {layer_id}")
 
     def set_layer_visible(self, map_id: str, layer_id: str, visible: bool) -> dict:
         """设置图层可见性（QGIS/ArcGIS 图层管理：隐藏/显示并持久化）"""
-        map_data = self.maps.get(map_id)
+        map_data = self._get_map(map_id)
         if not map_data:
             raise MapGenerationError(f"地图不存在: {map_id}")
         for layer in map_data["layers"]:
             if layer["id"] == layer_id:
                 layer["visible"] = bool(visible)
                 self._schedule_save()
-                print(f"[MapService] 图层可见性已更新: {layer_id} -> {visible}")
+                logger.info(f"[MapService] 图层可见性已更新: {layer_id} -> {visible}")
                 return map_data
         raise MapGenerationError(f"图层不存在: {layer_id}")
 
     def rename_layer(self, map_id: str, layer_id: str, name: str) -> dict:
         """重命名图层（QGIS/ArcGIS 图层管理）"""
-        map_data = self.maps.get(map_id)
+        map_data = self._get_map(map_id)
         if not map_data:
             raise MapGenerationError(f"地图不存在: {map_id}")
         for layer in map_data["layers"]:
             if layer["id"] == layer_id:
                 layer["name"] = name
                 self._schedule_save()
-                print(f"[MapService] 图层已重命名: {layer_id} -> {name}")
+                logger.info(f"[MapService] 图层已重命名: {layer_id} -> {name}")
                 return map_data
         raise MapGenerationError(f"图层不存在: {layer_id}")
 
@@ -1028,7 +1470,7 @@ class MapService:
             style: 新的样式字典
             features: 新的 features 数组（features 型图层）
         """
-        map_data = self.maps.get(map_id)
+        map_data = self._get_map(map_id)
         if not map_data:
             raise MapGenerationError(f"地图不存在: {map_id}")
         for layer in map_data["layers"]:
@@ -1042,7 +1484,7 @@ class MapService:
                 if features is not None:
                     layer["features"] = features
                 self._schedule_save()
-                print(f"[MapService] 图层几何已更新: {layer_id} "
+                logger.info(f"[MapService] 图层几何已更新: {layer_id} "
                       f"(coords={len(coordinates or []) if coordinates is not None else '-'}, "
                       f"features={len(features or []) if features is not None else '-'})")
                 return map_data
@@ -1067,7 +1509,7 @@ class MapService:
         Raises:
             MapGenerationError: 地图不存在
         """
-        map_data = self.maps.get(map_id)
+        map_data = self._get_map(map_id)
         if not map_data:
             raise MapGenerationError(f"地图不存在: {map_id}")
 
@@ -1077,7 +1519,7 @@ class MapService:
             map_data["zoom"] = zoom
 
         self._schedule_save()
-        print(f"[MapService] 视图已更新: center={map_data['center']}, zoom={map_data['zoom']}")
+        logger.info(f"[MapService] 视图已更新: center={map_data['center']}, zoom={map_data['zoom']}")
         return map_data
 
     def update_theme(self, map_id: str, theme: str) -> dict:
@@ -1093,7 +1535,7 @@ class MapService:
         Raises:
             MapGenerationError: 地图不存在或主题不支持
         """
-        map_data = self.maps.get(map_id)
+        map_data = self._get_map(map_id)
         if not map_data:
             raise MapGenerationError(f"地图不存在: {map_id}")
 
@@ -1104,7 +1546,7 @@ class MapService:
 
         map_data["theme"] = theme
         self._schedule_save()
-        print(f"[MapService] 主题已更新: {theme} ({MAP_THEMES[theme]['name']})")
+        logger.info(f"[MapService] 主题已更新: {theme} ({MAP_THEMES[theme]['name']})")
         return map_data
 
     def add_feature(
@@ -1132,7 +1574,7 @@ class MapService:
         Raises:
             MapGenerationError: 地图或图层不存在
         """
-        map_data = self.maps.get(map_id)
+        map_data = self._get_map(map_id)
         if not map_data:
             raise MapGenerationError(f"地图不存在: {map_id}")
 
@@ -1143,7 +1585,7 @@ class MapService:
                 if feature_type and layer["type"] != feature_type:
                     layer["type"] = feature_type
                 self._schedule_save()
-                print(f"[MapService] 要素已添加到图层: {layer_id}")
+                logger.info(f"[MapService] 要素已添加到图层: {layer_id}")
                 return map_data
 
         raise MapGenerationError(f"图层不存在: {layer_id}")
@@ -1164,7 +1606,7 @@ class MapService:
         Raises:
             MapGenerationError: 地图、图层或要素不存在
         """
-        map_data = self.maps.get(map_id)
+        map_data = self._get_map(map_id)
         if not map_data:
             raise MapGenerationError(f"地图不存在: {map_id}")
 
@@ -1182,7 +1624,7 @@ class MapService:
                 if 0 <= index < len(layer["coordinates"]):
                     layer["coordinates"].pop(index)
                     self._schedule_save()
-                    print(f"[MapService] 要素已移除: {feature_id}")
+                    logger.info(f"[MapService] 要素已移除: {feature_id}")
                     return map_data
                 else:
                     raise MapGenerationError(f"要素索引超出范围: {index}")
@@ -1260,11 +1702,13 @@ class MapService:
         return layers
 
     def _generate_terrain_layers(self, region: str = "武汉市", center: Optional[List[float]] = None) -> List[dict]:
-        """地形图（等高线）：陆地底图 + 计曲线/首曲线 + （水系/道路由通用流程叠加）。
+        """地势图（DEM 山体阴影 + 等高线）：陆地底图 + 计曲线/首曲线 + 山峰注记。
 
         等高线数据来自 SRTM 30m DEM（tools/generate_contours.py 已做制图综合：
         舍谷-微小谷地锯齿化简、扩谷-典型弯曲保护、鞍部保持-鞍部邻域顶点保护，
         以及遇河/湖断开处理）。
+        水系/道路/行政边界由通用流程叠加（generate_map 统一处理），避免重复。
+        前端配合「山体阴影」底图瓦片（hillshade）作为地势底图。
         """
         from app.core.constants import CITY_BBOX
         from app.services.contour_service import ContourService
@@ -1290,7 +1734,15 @@ class MapService:
             contour_layers = ContourService().get_contour_layers()
             layers.extend(contour_layers)
         except Exception as e:
-            print(f"[MapService] 等高线图层加载失败: {e}")
+            logger.info(f"[MapService] 等高线图层加载失败: {e}")
+
+        # 山峰注记（名称 + 高程，SRTM DEM 山峰点）
+        try:
+            from app.services.local_geo_service import LocalGeoService
+            peak_layers = LocalGeoService().get_peaks_layers(region)
+            layers.extend(peak_layers)
+        except Exception as e:
+            logger.info(f"[MapService] 地势图山峰注记加载失败: {e}")
 
         return layers
 
@@ -1700,7 +2152,7 @@ class MapService:
 
         自动创建/复用"自定义标注"circleMarker图层。
         """
-        map_data = self.maps.get(map_id)
+        map_data = self._get_map(map_id)
         if not map_data:
             raise MapGenerationError(f"地图不存在: {map_id}")
         layer = None
@@ -1723,7 +2175,7 @@ class MapService:
         layer["properties"].append({"name": name})
         map_data["layers"] = self._sort_layers(map_data["layers"])
         self._schedule_save()
-        print(f"[MapService] 已添加自定义标注: {name} ({lat},{lng})")
+        logger.info(f"[MapService] 已添加自定义标注: {name} ({lat},{lng})")
         return map_data
 
     def _sort_layers(self, layers: List[dict]) -> List[dict]:
@@ -1770,6 +2222,66 @@ class MapService:
 
         return sorted(layers, key=zkey)
 
+    def _connect_polylines_by_name(self, map_layers: List[dict]) -> List[dict]:
+        """线状要素按名称连通：把同一条道路/边界/铁路的离散线段合并为完整折线。
+
+        制图综合要求不同比例尺下主要道路保持连通，不出现“一段一段”的割裂。
+        方法：按要素名称分组 → 坐标吸附到 1m 网格 → unary_union + linemerge。
+        """
+        from shapely.geometry import LineString
+        from shapely.ops import linemerge, unary_union
+
+        for layer in map_layers:
+            if layer.get("type") not in ("polyline", "line"):
+                continue
+            coords = layer.get("coordinates") or []
+            props = layer.get("properties") or []
+            if len(coords) < 2:
+                continue
+            groups: Dict[str, List[Any]] = {}
+            for i, c in enumerate(coords):
+                if not isinstance(c, list) or len(c) < 2:
+                    continue
+                name = (props[i] if i < len(props) else {}).get("name") or ""
+                groups.setdefault(name, []).append((c, props[i] if i < len(props) else {}))
+
+            merged_coords: List[Any] = []
+            merged_props: List[dict] = []
+            for name, segs in groups.items():
+                lines = []
+                for c, _p in segs:
+                    try:
+                        rounded = [[round(p[0], 5), round(p[1], 5)]
+                                   for p in c if isinstance(p, list) and len(p) >= 2]
+                        if len(rounded) >= 2:
+                            lines.append(LineString([(p[1], p[0]) for p in rounded]))
+                    except Exception:
+                        pass
+                if not lines:
+                    continue
+                try:
+                    union = unary_union(lines)
+                    merged = linemerge(union)
+                    geoms = list(merged.geoms) if merged.geom_type == "MultiLineString" else [merged]
+                    for g in geoms:
+                        if g.geom_type != "LineString" or len(g.coords) < 2:
+                            continue
+                        merged_coords.append([[y, x] for x, y in g.coords])
+                        merged_props.append({
+                            "name": name,
+                            "merged": True,
+                            "length_km": round(g.length * 111.0, 2),
+                        })
+                except Exception:
+                    # 合并失败时保留原线段
+                    for c, p in segs:
+                        merged_coords.append(c)
+                        merged_props.append(p)
+            if merged_coords:
+                layer["coordinates"] = merged_coords
+                layer["properties"] = merged_props
+        return map_layers
+
     def _generate_legend(self, map_type: str, map_layers: List[dict]) -> dict:
         """根据地图类型和图层生成图例数据
 
@@ -1783,6 +2295,14 @@ class MapService:
         Returns:
             图例字典 {title, items: [{label, type, color, ...}]}
         """
+        # 背景/上下文图层不进入主题图例，减少视觉噪声（只保留主题要素）
+        _base_layers = {"陆地底图", "湖北省域", "武汉市域底图", "周边地市"}
+        map_layers = [
+            layer for layer in map_layers
+            if (layer.get("name") or "") not in _base_layers
+            and not (layer.get("name") or "").startswith("集中居民地")
+        ]
+
         # 收集实际存在的图层名称（去除"(外层)""(内层)"后缀）
         actual_names = set()
         actual_styles = {}
@@ -1807,9 +2327,10 @@ class MapService:
                     # 其他类型保留全部图例项
                     filtered_items.append(item)
 
-            # 如果过滤后为空（可能名称不完全匹配），回退到全部模板项
+            # 如果过滤后为空（模板名称与真实图层不匹配），改为按真实图层动态生成，
+            # 保证图例配色与实际渲染一致（避免“协调性”错位）
             if not filtered_items:
-                filtered_items = template["items"]
+                filtered_items = []
 
             # 补充实际存在但模板未覆盖的图层项（POI象形符号/线/面），保证整套图例完整
             covered = {it.get("label") for it in filtered_items}
@@ -1896,6 +2417,7 @@ class MapService:
         self,
         elements_by_type: Dict[str, List[dict]],
         element_types: List[str],
+        map_type: str = "basic",
     ) -> List[dict]:
         """将OSM元素按类型转换为图层列表（增强版）
 
@@ -1910,6 +2432,7 @@ class MapService:
         Args:
             elements_by_type: 按类型分组的OSM元素字典
             element_types: 要素类型列表
+            map_type: 地图类型（用于按地图类型配置过滤道路等级等）
 
         Returns:
             图层列表
@@ -1943,7 +2466,7 @@ class MapService:
             if base_tag == "building":
                 layers.extend(self._process_buildings(way_elements))
             elif base_tag.startswith("highway"):
-                layers.extend(self._process_roads(way_elements))
+                layers.extend(self._process_roads(way_elements, map_type))
             elif base_tag == "railway":
                 layers.extend(self._process_railways(way_elements))
             elif base_tag.startswith("waterway"):
@@ -2042,8 +2565,20 @@ class MapService:
             return "industrial"
         return "default"
 
-    def _process_roads(self, way_elements: List[dict]) -> List[dict]:
-        """处理道路要素 - 按等级分级渲染，主要道路双层渲染"""
+    def _process_roads(self, way_elements: List[dict], map_type: str = "basic") -> List[dict]:
+        """处理道路要素 - 按等级分级渲染，主要道路双层渲染
+
+        根据地图类型配置(MAP_TYPE_PROFILES)过滤道路等级：
+        - 行政区划图：仅保留 motorway/trunk/primary
+        - 交通图：保留 motorway/trunk/primary/secondary
+        - 地势图：仅保留 motorway/trunk
+        - 基础地图：保留全部等级
+        """
+        # 按地图类型获取允许的道路等级
+        from app.core.constants import MAP_TYPE_PROFILES
+        profile = MAP_TYPE_PROFILES.get(map_type, {})
+        allowed_levels = profile.get("road_levels")  # None 表示不限制
+
         by_class = {}
         for elem in way_elements:
             coords = self._extract_coordinates(elem, "polyline")
@@ -2053,6 +2588,9 @@ class MapService:
             highway_type = tags.get("highway", "default")
             if highway_type not in ROAD_CLASSIFICATION:
                 highway_type = "default"
+            # 按地图类型过滤道路等级
+            if allowed_levels is not None and highway_type not in allowed_levels:
+                continue
             name = tags.get("name", tags.get("ref", ""))
             by_class.setdefault(highway_type, []).append({"coords": coords, "name": name})
 

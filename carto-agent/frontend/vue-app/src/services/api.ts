@@ -102,11 +102,15 @@ class ApiService {
     return this.request('DELETE', `/api/chat/sessions/${sessionId}`)
   }
 
+  async renameSession(sessionId: string, title: string) {
+    return this.request('PUT', `/api/chat/sessions/${sessionId}`, { title })
+  }
+
   async sendMessage(sessionId: string, message: string) {
     return this.request('POST', `/api/chat/sessions/${sessionId}/messages`, { message })
   }
 
-  async streamMessage(sessionId: string, message: string, callbacks: StreamCallbacks) {
+  async streamMessage(sessionId: string, message: string, callbacks: StreamCallbacks, signal?: AbortSignal) {
     const fullUrl = this.baseUrl + `/api/chat/sessions/${sessionId}/stream`
     const response = await fetch(fullUrl, {
       method: 'POST',
@@ -115,6 +119,7 @@ class ApiService {
         Accept: 'text/event-stream',
       },
       body: JSON.stringify({ message }),
+      signal,
     })
 
     if (!response.ok) {
@@ -161,6 +166,9 @@ class ApiService {
               case 'graphrag':
                 callbacks.onGraphrag?.(data.content || {})
                 break
+              case 'graphrag_chain':
+                callbacks.onGraphragChain?.(data.content || [])
+                break
               case 'geotoken':
                 callbacks.onGeotoken?.(data.content || {})
                 break
@@ -205,6 +213,28 @@ class ApiService {
     return this.request('POST', `/api/maps/${mapId}/layers`, params)
   }
 
+  async importGeoJSON(mapId: string, file: File, name: string, layerType = 'auto') {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('name', name)
+    form.append('layer_type', layerType)
+    const fullUrl = this.baseUrl + `/api/maps/${mapId}/layers/import`
+    const response = await fetch(fullUrl, { method: 'POST', body: form })
+    const body = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      throw new Error(body.message || body.detail || `导入失败 (${response.status})`)
+    }
+    return body
+  }
+
+  async duplicateLayer(mapId: string, layerId: string) {
+    return this.request('POST', `/api/maps/${mapId}/layers/${layerId}/duplicate`)
+  }
+
+  async reorderLayers(mapId: string, layerIds: string[]) {
+    return this.request('POST', `/api/maps/${mapId}/layers/reorder`, { layer_ids: layerIds })
+  }
+
   async removeLayer(mapId: string, layerId: string) {
     return this.request('DELETE', `/api/maps/${mapId}/layers/${layerId}`)
   }
@@ -233,16 +263,26 @@ class ApiService {
     return this.request('PUT', `/api/maps/${mapId}/theme`, { theme })
   }
 
+  async applyStylePackage(mapId: string, packageKey: string) {
+    return this.request('POST', `/api/maps/${mapId}/style-package`, { package: packageKey })
+  }
+
   async modifyMap(mapId: string, instruction: string) {
     return this.request('POST', `/api/maps/${mapId}/modify`, { instruction })
   }
 
-  async exportMap(mapId: string, format: string) {
-    return this.request('POST', `/api/maps/${mapId}/export`, { format })
+  async exportMap(mapId: string, format: string, layout?: Record<string, any>) {
+    const params: Record<string, any> = { format }
+    if (layout) params.layout = layout
+    return this.request('POST', `/api/maps/${mapId}/export`, params)
   }
 
   async getMapQuality(mapId: string) {
     return this.request('GET', `/api/maps/${mapId}/quality`)
+  }
+
+  async acceptQuality(mapId: string) {
+    return this.request('POST', `/api/maps/${mapId}/quality/accept`)
   }
 
   async addMarker(mapId: string, params: Record<string, any>) {

@@ -12,6 +12,123 @@
  */
 
 /**
+ * 点要素重要性档位（0 最重要 ~ 3 次要，未知归 2）：
+ * 用于多比例尺分级显示（_lodVisible）与全局抽稀保留（_rebuildPoiKeep）。
+ * 依据制图综合“选取”原则：先保留重要地标/交通枢纽/公共设施，后保留一般/次要 POI。
+ */
+MapPanel.prototype._pointTier = function(name, cat) {
+    const s = (name || "") + "|" + (cat || "");
+    if (/行政中心|火车站|高铁站|机场|地铁站|轨道交通站点|交通枢纽|重点地标|医院|大学|博物馆/.test(s)) return 0;
+    if (/历史遗迹|纪念馆|风景名胜|自然景观|景区|景点|地标|古迹|公园|广场|公交站|图书馆|学校|中学|小学|码头|渡口|教堂|寺庙|体育馆/.test(s)) return 1;
+    if (/银行|警察|派出所|影院|餐厅|酒店|宾馆|商场|购物|运动|文化馆|邮局|加油站|诊所|药店|政府|政务/.test(s)) return 2;
+    if (/ATM|便利店|超市|快餐|咖啡|停车场|卫生间|厕所|药房|美容|理发|洗衣|维修|其他|unknown|default/.test(s)) return 3;
+    return 2;
+};
+
+/**
+ * 点要素重要性评分：自带 importance/rank/level 字段优先，其次名称、类别档位。
+ * 供全局 POI 预算按分数降序保留。
+ */
+MapPanel.prototype._pointImportance = function(layerData, prop) {
+    const lname = layerData.name || "";
+    const pname = (prop && (prop.name || "")) || "";
+    const cat = (prop && (prop.category || prop.subtype || prop.kind || "")) || "";
+    let score = 0;
+    if (prop && prop.importance != null) score += Number(prop.importance) * 100;
+    if (prop && prop.rank != null) score += (10 - Number(prop.rank)) * 300;
+    if (prop && prop.level != null) score += (10 - Number(prop.level)) * 150;
+    if (pname) score += 1200;                                   // 命名要素优先
+    const tier = this._pointTier(lname, cat);
+    score += tier === 0 ? 4000 : tier === 1 ? 3000 : tier === 2 ? 1500 : -2500;
+    if (/行政中心|火车站|机场|地铁|轨道/.test(lname)) score += 800;
+    return score;
+};
+
+/** 全局点要素预算：随缩放与载负量档位变化（z>=15 全量） */
+MapPanel.prototype._computePoiBudget = function(zoom) {
+    const LOAD_FACTOR = { lite: 0.6, standard: 1.0, detail: 1.5 };
+    const f = LOAD_FACTOR[window.CARTO_LOAD_MODE] || 1.0;
+    if (zoom >= 15) return Infinity;
+    const base = zoom < 9 ? 120 : zoom < 11 ? 350 : zoom < 13 ? 900 : 2500;
+    return Math.round(base * f);
+};
+
+/**
+ * 重建全局 POI 保留集：跨图层按重要性排序，保留预算内的点要素。
+ * 关键点图层（湖泊点符号/行政中心/居民点）不参与抽稀，按自身 LOD 档位显示。
+ * @param {Array} [layers] 待渲染的图层数组（renderMap 时 layerGroups 尚未填充，需显式传入）
+ */
+MapPanel.prototype._rebuildPoiKeep = function(layers) {
+    const zoom = this.map ? this.map.getZoom() : 12;
+    const budget = this._computePoiBudget(zoom);
+    this._poiKeepSet = null;
+    if (!isFinite(budget)) return;
+    const source = Array.isArray(layers) && layers.length
+        ? layers
+        : Object.values(this.layerGroups || {}).map((x) => x && x.data);
+    if (!source.length) return;
+    const byLayer = new Map();
+    source.forEach((d) => {
+        if (!d) return;
+        const t = d.type;
+        if (t !== "circleMarker" && t !== "marker" && t !== "point") return;
+        const lname = d.name || "";
+        if (/湖泊点符号|行政中心|居民点|乡镇/.test(lname)) return;
+        // 分析结果/派生图层不参与预算（数量受源图层影响，避免二次占额）
+        if (/叠加结果|分析结果|密度|缓冲区|相交|裁剪|差集|并集|交集|插值/.test(lname)) return;
+        const coords = d.coordinates || [];
+        const props = d.properties || [];
+        const feats = d.features || [];
+        const n = coords.length || feats.length;
+        if (!byLayer.has(d.id)) byLayer.set(d.id, []);
+        const arr = byLayer.get(d.id);
+        for (let i = 0; i < n; i++) {
+            const prop = coords.length ? props[i] : (feats[i] && feats[i].properties);
+            arr.push({ idx: i, score: this._pointImportance(d, prop) });
+        }
+    });
+    if (!byLayer.size) return;
+    const totalCount = [...byLayer.values()].reduce((s, a) => s + a.length, 0);
+    const limit = Math.min(budget, totalCount);
+    const keep = new Map();
+    const used = new Set();
+    // 第一轮：每层保底名额（预算/(2×图层数)，最少 3 个），保证各图层都有代表性要素，
+    // 避免“轨道交通站点 751 个”这类大图层独占预算
+    const base = Math.max(3, Math.round(limit / Math.max(1, byLayer.size) / 2));
+    byLayer.forEach((arr, id) => {
+        arr.sort((a, b) => b.score - a.score);
+        const take = Math.min(arr.length, base);
+        for (let i = 0; i < take; i++) {
+            const key = id + ":" + arr[i].idx;
+            if (used.has(key)) continue;
+            if (!keep.has(id)) keep.set(id, new Set());
+            keep.get(id).add(arr[i].idx);
+            used.add(key);
+        }
+    });
+    // 第二轮：剩余名额按全局重要性补足；单层最多占总预算 35%，防止大图层垄断
+    const maxPerLayer = Math.max(base, Math.round(limit * 0.35));
+    const rest = [];
+    byLayer.forEach((arr, id) => {
+        for (const it of arr) {
+            const key = id + ":" + it.idx;
+            if (!used.has(key)) rest.push({ id, idx: it.idx, score: it.score });
+        }
+    });
+    rest.sort((a, b) => b.score - a.score);
+    let left = limit - used.size;
+    for (const e of rest) {
+        if (left <= 0) break;
+        const cur = (keep.get(e.id) || new Set()).size;
+        if (cur >= maxPerLayer) continue;
+        if (!keep.has(e.id)) keep.set(e.id, new Set());
+        keep.get(e.id).add(e.idx);
+        left--;
+    }
+    this._poiKeepSet = keep;
+};
+
+/**
  * 载负量控制：按“重要性”保留前 N 个完整要素
  *
  * 重要性打分（依据制图综合理论）：
@@ -28,7 +145,38 @@ MapPanel.prototype._applyLoadControl = function(layerData, zoom) {
     if (t !== "polyline" && t !== "polygon" && t !== "circleMarker") return layerData;
     // 关键图层不抽稀：边界/政区/底图/行政中心/注记/湖泊档位（已按比例尺选取并设载负量上限）
     if (/边界|界$|政区|底图|行政中心|注记|标注|省域|周边地市|湖泊（|湖泊点符号/.test(name)) return layerData;
-    const budget = zoom < 9 ? 300 : zoom < 11 ? 800 : zoom < 13 ? 2500 : zoom < 15 ? 7000 : Infinity;
+    // ---- 点要素：应用全局 POI 预算（先保留重要地标/建筑，其次次要）----
+    if (t === "circleMarker" || t === "marker" || t === "point") {
+        if (this._poiKeepSet && this._poiKeepSet.has(layerData.id)) {
+            const keepIdx = this._poiKeepSet.get(layerData.id);
+            const _coords = layerData.coordinates || [];
+            const _feats = layerData.features || [];
+            const _props = layerData.properties || [];
+            const _items = _coords.length ? _coords : _feats;
+            if (keepIdx && keepIdx.size > 0 && keepIdx.size < _items.length) {
+                const copy = Object.assign({}, layerData);
+                if (_coords.length) {
+                    copy.coordinates = _coords.filter((_, i) => keepIdx.has(i));
+                    if (_props.length === _coords.length) {
+                        copy.properties = _props.filter((_, i) => keepIdx.has(i));
+                    }
+                } else if (_feats.length) {
+                    copy.features = _feats.filter((_, i) => keepIdx.has(i));
+                }
+                return copy;
+            }
+        }
+        return layerData;
+    }
+    // 载负量等级系数（计划 3.3：简洁 0.6 / 标准 1.0 / 详细 1.5）
+    const LOAD_FACTOR = {
+        lite: 0.6,
+        standard: 1.0,
+        detail: 1.5,
+    };
+    const _factor = LOAD_FACTOR[window.CARTO_LOAD_MODE] || 1.0;
+    const _base = zoom < 9 ? 300 : zoom < 11 ? 800 : zoom < 13 ? 2500 : zoom < 15 ? 7000 : Infinity;
+    const budget = _base === Infinity ? Infinity : Math.round(_base * _factor);
     const coords = layerData.coordinates;
     const feats = layerData.features;
     const props = layerData.properties;
@@ -97,14 +245,22 @@ MapPanel.prototype._applyLoadControl = function(layerData, zoom) {
             continue;
         }
         let score = 0;
-        const prop = props ? props[i] : null;
+        const prop = coords ? (props ? props[i] : null) : (feats ? feats[i].properties : null);
         if (prop && prop.name) score += 1000;                    // 命名要素优先
         if (Array.isArray(c)) {
             if (Array.isArray(c[0])) {                           // 线/面要素
                 score += c.length;                               // 点数（≈ 长度/面积）
                 score += Math.round(lengths[i] * 2000);          // 几何长度/周长
+                // 重要建筑优先保留（地标/公共建筑 vs 普通住宅/车库）
+                if (/建筑/.test(name)) {
+                    const bp = (prop && (prop.name || "")) || "";
+                    if (/博物馆|政府|医院|学校|大学|车站|机场|寺|塔|纪念馆|图书馆|体育|剧院|地标|商场/.test(bp)) score += 3500;
+                    else if (/住宅|公寓|车库|仓库|温室|停车/.test(bp) || !bp) score -= 1200;
+                }
             } else {
                 score += 5;                                      // 点要素
+                // 点要素统一按重要性档位评分（兜底；正常由全局 POI 预算处理）
+                score += this._pointImportance(layerData, prop) * 0.1;
             }
         }
         // 断头路惩罚：孤立端点越多越优先舍去（无贯通作用的死路）
@@ -227,20 +383,27 @@ MapPanel.prototype._lodVisible = function(layerData, zoom) {
     }
     // ---- 轨道交通 ----
     if (t === "polyline" && _nm === "轨道交通线路") return _z >= 9;
-    if (t === "circleMarker" && _nm === "轨道交通站点") return _z >= 12;
     // ---- 注记 ----
     if (t === "textLabel") {
         if (_nm === "水系注记") return _z >= 12;
+        if (_nm === "市级名称标注") return _z >= 9;
         if (_nm === "区县名称标注") return _z >= 9;
+        if (_nm === "山峰注记") return _z >= 10;
         if (_nm === "地标名称" || _nm === "重点地标") return _z >= 11;
         return true;
     }
-    // ---- POI/符号 ----
-    if (t === "circleMarker") {
+    // ---- POI/符号（按重要性档位分级：先保留重要地标/建筑，其次次要）----
+    if (t === "circleMarker" || t === "marker" || t === "point") {
         if (_nm === "湖泊点符号（概览）") return _z >= 6 && _z < 9;
-        if (_nm === "市级行政中心" || _nm === "区县行政中心" || _nm === "乡镇居民点") return _z >= 8;
-        if (_nm === "重点地标") return _z >= 11;
-        return _z >= 12;   // 普通POI 城区级才显示
+        if (/市级行政中心|区县行政中心|乡镇居民点/.test(_nm)) return _z >= 8;
+        if (_nm === "山峰") return _z >= 10;   // 地势图山峰点（DEM）
+        // 分析/派生图层属于细节数据，小比例尺下冗余，城区级以上才显示
+        if (/叠加结果|分析结果|密度|缓冲区/.test(_nm)) return _z >= 13;
+        const tier = this._pointTier(_nm, "");
+        if (tier === 0) return _z >= 8;      // 行政中心/交通枢纽/重点地标/医院/大学
+        if (tier === 1) return _z >= 10;     // 景点/公园/公交站/学校/古迹
+        if (tier === 3) return _z >= 14;     // ATM/快餐/卫生间等次要设施
+        return _z >= 12;                     // 一般 POI
     }
     return true;
 };
@@ -250,6 +413,8 @@ MapPanel.prototype._lodVisible = function(layerData, zoom) {
  */
 MapPanel.prototype.refreshLabels = function() {
     if (!this.layerGroups) return;
+    // 缩放变化后重算全局 POI 预算保留集（先保留重要点，其次次要）
+    this._rebuildPoiKeep();
     // 重置注记去重与避让状态，避免重渲染后标签被跳过
     this._labelPlaced = [];
     this._labelNames = new Set();
@@ -258,8 +423,13 @@ MapPanel.prototype.refreshLabels = function() {
         const t = item.data.type;
         // 点符号/注记随比例尺改变大小，缩放时重渲染
         if (t === "textLabel" || t === "circleMarker" || t === "marker" || t === "point") {
-            this.map.removeLayer(item.layer);
-            this.renderLayer(item.data);
+            const show = this._lodVisible(item.data, this.map.getZoom());
+            const next = this._applyLoadControl(item.data, this.map.getZoom());
+            const nextCount = (next.coordinates || next.features || []).length;
+            if (show !== item.data._lodVisible || nextCount !== item.data._lodCount) {
+                this.map.removeLayer(item.layer);
+                this.renderLayer(item.data);
+            }
         } else if (t === "polyline" || t === "polygon") {
             // 路网/水系/建筑/绿地LOD：可见性或保留数量变化时重建
             const show = this._lodVisible(item.data, this.map.getZoom());

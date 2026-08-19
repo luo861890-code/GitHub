@@ -14,6 +14,8 @@
 所有实现使用纯NumPy，不依赖PyTorch/TensorFlow。
 """
 
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 from typing import List, Tuple, Dict, Optional, Any
 import hashlib
 import math
@@ -27,7 +29,7 @@ try:
 except ImportError:
     _NUMPY_AVAILABLE = False
     np = None  # type: ignore
-    print("[GeoToken] numpy不可用，启用纯Python降级模式")
+    logger.info("[GeoToken] numpy不可用，启用纯Python降级模式")
 
 # 纯Python向量/矩阵运算工具（numpy不可用时的降级实现）
 def _zeros(size: int) -> list:
@@ -657,7 +659,7 @@ class GeoTokenService:
         self.contour_tokenizer = ContourTokenizer(grid_resolution=grid_resolution)
         self.landuse_tokenizer = LandUseTokenizer()
         self.embedder = TokenEmbedder(vocab_size=10000, embed_dim=embed_dim)
-        print(f"[GeoTokenService] 初始化完成 (grid={grid_resolution}, embed_dim={embed_dim})")
+        logger.info(f"[GeoTokenService] 初始化完成 (grid={grid_resolution}, embed_dim={embed_dim})")
     
     def tokenize_contours(
         self, contours: List[List[Tuple[float, float]]]
@@ -694,6 +696,42 @@ class GeoTokenService:
     def compare_sequences(self, seq1: List[str], seq2: List[str]) -> float:
         """比较两个Token序列的相似度"""
         return self.embedder.sequence_similarity(seq1, seq2)
+
+    def tokenize_features(self, features: List[Dict], limit: int = 200) -> Dict[str, Any]:
+        """矢量要素集合 → 网格空间分形 Token（计划 4.1）
+
+        将要素质心投影到网格，输出统一 GeoToken 序列。
+
+        Args:
+            features: 要素列表（含 coordinates 或 geometry.coordinates）
+            limit: 最大 Token 数
+
+        Returns:
+            {"tokens": [...], "count": n, "vocab_size": m}
+        """
+        points = []
+        for feat in (features or [])[:limit]:
+            coords = feat.get("coordinates")
+            if coords is None:
+                coords = (feat.get("geometry") or {}).get("coordinates")
+            if not coords:
+                continue
+            if isinstance(coords[0], (int, float)) and len(coords) >= 2:
+                points.append((float(coords[1]), float(coords[0])))  # (lng, lat)
+            elif isinstance(coords[0], list):
+                pts = [p for p in coords if isinstance(p, list) and len(p) >= 2]
+                if pts:
+                    lat = sum(p[0] for p in pts) / len(pts)
+                    lng = sum(p[1] for p in pts) / len(pts)
+                    points.append((lng, lat))
+        if not points:
+            return {"tokens": [], "count": 0, "vocab_size": self.tile_tokenizer.vocab_size}
+        tokens = self.tile_tokenizer.tokenize_points(points)
+        return {
+            "tokens": tokens,
+            "count": len(tokens),
+            "vocab_size": self.tile_tokenizer.vocab_size,
+        }
 
     def extract_geo_features(self, map_data: dict) -> Dict[str, Any]:
         """从地图数据中提取并Token化地理要素（agent_service兼容接口）

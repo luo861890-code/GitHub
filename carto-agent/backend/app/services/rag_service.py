@@ -3,6 +3,8 @@
 从本地知识库文件加载制图领域知识，提供关键词匹配检索。
 用于在智能体制图过程中增强上下文信息，提供制图规范、配色方案等参考。
 """
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 import os
 from typing import List, Dict, Any, Optional
 
@@ -88,7 +90,7 @@ class RAGService:
         self._doc_bigrams: List[set] = []
         self._load_knowledge_base()
         self._precompute_bigrams()
-        print(f"[RAGService] 初始化完成，知识库共{len(self.knowledge_base)}条")
+        logger.info(f"[RAGService] 初始化完成，知识库共{len(self.knowledge_base)}条")
 
     def _precompute_bigrams(self):
         """预计算所有知识条目的 2-gram 集合，缓存到 _doc_bigrams"""
@@ -120,14 +122,14 @@ class RAGService:
                 data = safe_json_loads(content, [])
                 if isinstance(data, list) and len(data) > 0:
                     self.knowledge_base = data
-                    print(f"[RAGService] 从 {kb_path} 加载知识库成功")
+                    logger.info(f"[RAGService] 从 {kb_path} 加载知识库成功")
                     return
                 else:
-                    print(f"[RAGService] 知识库文件格式无效，使用默认知识库")
+                    logger.info(f"[RAGService] 知识库文件格式无效，使用默认知识库")
             else:
-                print(f"[RAGService] 知识库文件不存在: {kb_path}，使用默认知识库")
+                logger.info(f"[RAGService] 知识库文件不存在: {kb_path}，使用默认知识库")
         except Exception as e:
-            print(f"[RAGService] 加载知识库失败: {e}，使用默认知识库")
+            logger.info(f"[RAGService] 加载知识库失败: {e}，使用默认知识库")
 
         # 使用内置默认知识库
         self.knowledge_base = list(self._DEFAULT_KB)
@@ -216,4 +218,4 @@ class RAGService:
     def close(self):
         """清理资源"""
         self.knowledge_base = []
-        print("[RAGService] 资源已清理")
+        logger.info("[RAGService] 资源已清理")

@@ -3,6 +3,8 @@
 支持多服务器轮询重试机制，确保在服务器不可用时自动切换。
 使用OVERPASS_QUERY_MAP构建查询语句，按要素类型分组返回结果。
 """
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -58,6 +60,9 @@ class OSMService:
         self._session.trust_env = False
         self._probe_cache = {"ts": 0.0, "ok": True}
         self._disk_cache: Dict[tuple, dict] = {}
+        # 服务器健康度：最近成功时间 / 连续失败次数（用于把稳定镜像排到前面）
+        self._server_health: Dict[str, float] = {}
+        self._server_failures: Dict[str, int] = {}
         try:
             if os.path.exists(self._DISK_CACHE_PATH):
                 with open(self._DISK_CACHE_PATH, "r", encoding="utf-8") as f:
@@ -65,23 +70,23 @@ class OSMService:
                 for k, v in raw.items():
                     parts = k.split("||")
                     if len(parts) == 2:
-                        self._disk_cache[(parts[0], tuple(sorted(parts[1].split(","))))] = v
-                print(f"[OSMService] 磁盘缓存加载: {len(self._disk_cache)} 条")
+                        self._disk_cache[(parts[0], parts[1])] = v
+                logger.info(f"[OSMService] 磁盘缓存加载: {len(self._disk_cache)} 条")
         except Exception as e:
-            print(f"[OSMService] 磁盘缓存加载失败: {e}")
-        print(f"[OSMService] 初始化完成，可用服务器: {len(self.servers)}个")
+            logger.info(f"[OSMService] 磁盘缓存加载失败: {e}")
+        logger.info(f"[OSMService] 初始化完成，可用服务器: {len(self.servers)}个")
 
     def _save_disk_cache(self):
         """将内存缓存落盘（跨重启复用，避免每次制图重复抓取 OSM）"""
         try:
             os.makedirs(os.path.dirname(self._DISK_CACHE_PATH), exist_ok=True)
             raw = {}
-            for (region, types), data in self._disk_cache.items():
-                raw[region + "||" + ",".join(sorted(types))] = data
+            for (region, typ), data in self._disk_cache.items():
+                raw[region + "||" + typ] = data
             with open(self._DISK_CACHE_PATH, "w", encoding="utf-8") as f:
                 json.dump(raw, f, ensure_ascii=False)
         except Exception as e:
-            print(f"[OSMService] 磁盘缓存保存失败: {e}")
+            logger.info(f"[OSMService] 磁盘缓存保存失败: {e}")
 
     def _probe_ok(self, ttl: float = 60.0) -> bool:
         """快速探测 Overpass 是否可达（任一服务器返回 HTTP 状态即视为可用）。
@@ -93,7 +98,7 @@ class OSMService:
         if now - self._probe_cache["ts"] < ttl:
             return self._probe_cache["ok"]
         ok = False
-        for server in self.servers[:4]:
+        for server in self._ordered_servers()[:4]:
             try:
                 r = subprocess.run(
                     ["curl.exe", "-s", "-o", os.devnull, "-w", "%{http_code}",
@@ -108,8 +113,21 @@ class OSMService:
             except Exception:
                 continue
         self._probe_cache = {"ts": now, "ok": ok}
-        print(f"[OSMService] 连通性探测: {'可达' if ok else '全部镜像不可达，跳过OSM抓取'}")
+        logger.info(f"[OSMService] 连通性探测: {'可达' if ok else '全部镜像不可达，跳过OSM抓取'}")
         return ok
+
+    def _ordered_servers(self, servers: Optional[List[str]] = None) -> List[str]:
+        """按健康度排序服务器：最近成功过的排最前，失败次数少的优先"""
+        servers = servers or self.servers
+        now = time.time()
+
+        def key(s: str) -> tuple:
+            recent_ok = self._server_health.get(s, 0)
+            # 5 分钟内成功过的服务器权重最高
+            ok_bucket = 0 if now - recent_ok < 300 else 1
+            return (ok_bucket, self._server_failures.get(s, 0), servers.index(s))
+
+        return sorted(servers, key=key)
 
     def fetch_elements(
         self,
@@ -137,36 +155,39 @@ class OSMService:
             "https://lz4.overpass-api.de/api/interpreter",
         ]
 
-        # 为每个类型构建独立查询
+        # 为每个类型构建独立查询；重型线/面要素按子格网拆分，避免公共 Overpass 超时
+        SPLIT_TYPES = {"highway", "highway_major", "railway", "building"}
         tasks = []
         for typ in element_types:
             query_part = OVERPASS_QUERY_MAP.get(typ)
             if not query_part:
-                print(f"[OSMService] 未知要素类型: {typ}，已跳过")
+                logger.info(f"[OSMService] 未知要素类型: {typ}，已跳过")
                 continue
-            sub_queries = []
-            for sub_query in query_part.split(";"):
-                sub_query = sub_query.strip()
-                if sub_query:
-                    sub_queries.append(
-                        f"{sub_query}"
-                        f"({bbox['min_lat']},{bbox['min_lon']},"
-                        f"{bbox['max_lat']},{bbox['max_lon']});"
-                        f"out geom;"
-                    )
-            tasks.append((typ, "[out:json];" + "".join(sub_queries)))
+            cells = self._split_bbox(bbox, 2, 2) if typ in SPLIT_TYPES else [bbox]
+            for cell in cells:
+                sub_queries = []
+                for sub_query in query_part.split(";"):
+                    sub_query = sub_query.strip()
+                    if sub_query:
+                        sub_queries.append(
+                            f"{sub_query}"
+                            f"({cell['min_lat']},{cell['min_lon']},"
+                            f"{cell['max_lat']},{cell['max_lon']});"
+                            f"out geom;"
+                        )
+                tasks.append((typ, "[out:json][timeout:60];" + "".join(sub_queries)))
 
         if not tasks:
-            print("[OSMService] 没有有效的查询语句")
+            logger.info("[OSMService] 没有有效的查询语句")
             return {}
 
         # 总抓取时限（秒）：超时后停止等待，用已获取部分 + 本地数据兜底
-        self._fetch_deadline = time.time() + 180
-        # 并行请求各类型（并发2-3，避免触发Overpass并发限流）
+        self._fetch_deadline = time.time() + 300
+        # 并行请求各类型（并发 2-4；子格网拆分后单请求体积小、速度快）
         results: Dict[str, List[dict]] = {}
-        with ThreadPoolExecutor(max_workers=min(2, len(tasks))) as executor:
-            # 每类型优先尝试前2台服务器，避免限流时逐台超时拖慢整体
-            active_servers = servers[:2] if len(servers) > 2 else servers
+        with ThreadPoolExecutor(max_workers=min(4, len(tasks))) as executor:
+            # 每类型优先尝试最近成功/失败最少的2台服务器，避免限流时逐台超时拖慢整体
+            active_servers = self._ordered_servers(servers)[:2] if len(servers) > 2 else servers
             futures = {
                 executor.submit(self._fetch_type, typ, query, active_servers, max_retries): typ
                 for typ, query in tasks
@@ -176,9 +197,9 @@ class OSMService:
                 try:
                     elems = future.result()
                     if elems:
-                        results[typ] = elems
+                        results.setdefault(typ, []).extend(elems)
                 except Exception as e:
-                    print(f"[OSMService] 类型[{typ}]获取失败: {e}")
+                    logger.info(f"[OSMService] 类型[{typ}]获取失败: {e}")
 
         # 按标签分组汇总
         elements_by_type: Dict[str, List[dict]] = {}
@@ -202,7 +223,7 @@ class OSMService:
         # 地理数据预处理：坐标校验、要素去重、名称清洗
         elements_by_type = self._preprocess(elements_by_type)
         total = sum(len(v) for v in elements_by_type.values())
-        print(f"[OSMService] 汇总完成: {total}个要素，{len(elements_by_type)}类")
+        logger.info(f"[OSMService] 汇总完成: {total}个要素，{len(elements_by_type)}类")
         return elements_by_type
 
     @staticmethod
@@ -215,6 +236,24 @@ class OSMService:
         except (TypeError, ValueError):
             return False
         return -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0
+
+    @staticmethod
+    def _split_bbox(bbox: Dict[str, float], nx: int = 2, ny: int = 2) -> List[Dict[str, float]]:
+        """将大范围 bbox 拆分为子格网，避免重型查询在公共 Overpass 上超时"""
+        min_lat, max_lat = bbox["min_lat"], bbox["max_lat"]
+        min_lon, max_lon = bbox["min_lon"], bbox["max_lon"]
+        lat_step = (max_lat - min_lat) / ny
+        lon_step = (max_lon - min_lon) / nx
+        cells = []
+        for iy in range(ny):
+            for ix in range(nx):
+                cells.append({
+                    "min_lat": min_lat + iy * lat_step,
+                    "max_lat": min_lat + (iy + 1) * lat_step,
+                    "min_lon": min_lon + ix * lon_step,
+                    "max_lon": min_lon + (ix + 1) * lon_step,
+                })
+        return cells
 
     def _preprocess(self, elements_by_type: Dict[str, List[dict]], bbox: dict = None) -> Dict[str, List[dict]]:
         """地理数据预处理：过滤非法坐标/极小几何、清洗名称、去除重复要素
@@ -281,20 +320,26 @@ class OSMService:
             for server in servers:
                 # 总抓取时限：超过后放弃该类型（本地数据兜底，避免长时间空等）
                 if getattr(self, "_fetch_deadline", 0) and time.time() > self._fetch_deadline:
-                    print(f"[OSMService] 类型[{typ}] 超过抓取时限，放弃")
+                    logger.info(f"[OSMService] 类型[{typ}] 超过抓取时限，放弃")
                     return []
                 try:
-                    print(f"[OSMService] 尝试从 {server} 获取[{typ}] (轮次 {attempt + 1}/{max_retries})")
-                    data = self._post_overpass(server, query, timeout=240)
+                    logger.info(f"[OSMService] 尝试从 {server} 获取[{typ}] (轮次 {attempt + 1}/{max_retries})")
+                    data = self._post_overpass(server, query, timeout=90)
                     elems = data.get("elements", [])
-                    print(f"[OSMService] 类型[{typ}] 成功获取 {len(elems)} 个要素")
+                    logger.info(f"[OSMService] 类型[{typ}] 成功获取 {len(elems)} 个要素")
+                    self._server_health[server] = time.time()
+                    self._server_failures[server] = 0
                     return elems
                 except Exception as e:
-                    print(f"[OSMService] 类型[{typ}] 请求失败 ({server}): {e}")
+                    self._server_failures[server] = self._server_failures.get(server, 0) + 1
+                    logger.info(f"[OSMService] 类型[{typ}] 请求失败 ({server}): {e}")
+                    # 失败服务器挪到队尾，下一轮优先尝试其他镜像
+                    if len(servers) > 1:
+                        servers = [s for s in servers if s != server] + [server]
                 finally:
                     time.sleep(0.5)
             if attempt < max_retries - 1:
-                print(f"[OSMService] 类型[{typ}] 所有服务器失败，等待后重试...")
+                logger.info(f"[OSMService] 类型[{typ}] 所有服务器失败，等待后重试...")
                 time.sleep(1)
         return []
 
@@ -360,7 +405,7 @@ class OSMService:
             return {}
         bbox = CITY_BBOX.get(region)
         if not bbox:
-            print(
+            logger.info(
                 f"[OSMService] 未知区域: {region}，"
                 f"支持的城市: {list(CITY_BBOX.keys())}"
             )
@@ -377,41 +422,53 @@ class OSMService:
             "center_lon": bbox["center_lon"],
         }
 
-        # 内存缓存：同一区域+同一要素组合30分钟内直接命中，避免重复请求Overpass
-        cache_key = (region, tuple(sorted(set(element_types))))
+        # 缓存改为“按单类型”存储：任一类型抓取成功后，可在任意组合中复用
         now = time.time()
-        cached = self._cache.get(cache_key)
-        if cached and now - cached[0] < self._CACHE_TTL:
-            # LRU：命中时移到末尾（最近使用）
-            self._cache.move_to_end(cache_key)
-            print(f"[OSMService] 命中缓存: {region} {len(cached[1])}类要素")
-            return cached[1]
-        # 磁盘缓存（跨重启）：24小时内同区域同类型直接复用
-        disk = self._disk_cache.get(cache_key)
-        if disk and now - disk.get("ts", 0) < self._DISK_CACHE_TTL and disk.get("data"):
-            self._cache[cache_key] = (now, disk["data"])
-            print(f"[OSMService] 命中磁盘缓存: {region} {len(disk['data'])}类要素")
-            return disk["data"]
+        requested = list(dict.fromkeys(element_types))
+        result: Dict[str, List[dict]] = {}
+        missing: List[str] = []
+        for typ in requested:
+            hit = None
+            mem = self._cache.get((region, typ))
+            # 空结果只短暂缓存（5 分钟），避免瞬时失败长期污染缓存
+            mem_ttl = 300 if (mem and not mem[1]) else self._CACHE_TTL
+            if mem and now - mem[0] < mem_ttl:
+                self._cache.move_to_end((region, typ))
+                hit = mem[1]
+            else:
+                disk = self._disk_cache.get((region, typ))
+                if disk and now - disk.get("ts", 0) < self._DISK_CACHE_TTL and disk.get("data"):
+                    hit = disk["data"]
+                    self._cache[(region, typ)] = (now, hit)
+            if hit is not None:
+                result[typ] = hit
+            else:
+                missing.append(typ)
 
-        result = self.fetch_elements(bbox_buffered, element_types, max_retries=2)
-
-        # 越界裁剪 + 数据预处理：修剪异常顶点、清洗名称、去重
-        if result:
-            result = self._crop_to_bbox(result, bbox)
-            result = self._preprocess(result, bbox)
-
-        # 仅缓存非空结果，防止临时故障被缓存；
-        # 若新结果类型数少于旧缓存（部分类型限流失败），保留更完整的旧缓存
-        if result:
-            old = self._cache.get(cache_key)
-            if not (old and len(result) < len(old[1])):
-                self._cache[cache_key] = (now, result)
-                self._cache.move_to_end(cache_key)
-                self._disk_cache[cache_key] = {"ts": now, "data": result}
-                self._save_disk_cache()
-            # LRU 淘汰：超过容量时移除最旧条目（OrderedDict 首项）
+        if missing:
+            logger.info(f"[OSMService] 缓存未命中类型: {missing}，开始抓取")
+            fresh = self.fetch_elements(bbox_buffered, missing, max_retries=3)
+            if fresh:
+                fresh = self._crop_to_bbox(fresh, bbox)
+                fresh = self._preprocess(fresh, bbox)
+            for typ, elems in (fresh or {}).items():
+                if elems:
+                    result[typ] = elems
+                    self._cache[(region, typ)] = (now, elems)
+                    self._cache.move_to_end((region, typ))
+                    self._disk_cache[(region, typ)] = {"ts": now, "data": elems}
+            # 缺失且本次仍未获取到的类型：写入空缓存，避免每次重复抓取
+            for typ in missing:
+                if typ not in result:
+                    result[typ] = []
+                    self._cache[(region, typ)] = (now, [])
+                    # 空结果不落盘（下次进程重启后会重新尝试）
+            self._save_disk_cache()
             while len(self._cache) > self._CACHE_MAX_SIZE:
                 self._cache.popitem(last=False)
+            return result
+
+        logger.info(f"[OSMService] 命中缓存: {region} {len(result)}类要素")
         return result
 
     def _crop_to_bbox(self, elements_by_type: Dict[str, List[dict]], bbox: dict) -> Dict[str, List[dict]]:

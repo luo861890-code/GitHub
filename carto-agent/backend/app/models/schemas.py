@@ -8,6 +8,10 @@ class CreateSessionRequest(BaseModel):
     title: Optional[str] = "新会话"
 
 
+class RenameSessionRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=50, description="会话新标题")
+
+
 class SendMessageRequest(BaseModel):
     message: str = Field(..., min_length=1)
 
@@ -35,6 +39,11 @@ class AddLayerRequest(BaseModel):
     layer_type: str
     name: str
     query: Optional[str] = None  # OSM查询标签
+    coordinates: Optional[Any] = None  # 直接写入的坐标数组（自定义/分析结果图层）
+    properties: Optional[Any] = None  # 与坐标对应的属性数组
+    style: Optional[dict] = None  # 图层样式
+    features: Optional[Any] = None  # features 型图层数据
+    group: Optional[str] = None  # 图层分组名
 
 
 class UpdateLayerStyleRequest(BaseModel):
@@ -72,6 +81,7 @@ class ModifyMapRequest(BaseModel):
 
 class ExportMapRequest(BaseModel):
     format: str = "geojson"  # geojson / png / svg
+    layout: Optional[dict] = None  # PNG布局导出参数（页面/方向/整饰开关等）
 
 
 class PlanRouteRequest(BaseModel):

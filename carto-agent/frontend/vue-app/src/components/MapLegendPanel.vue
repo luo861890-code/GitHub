@@ -1,5 +1,5 @@
 <template>
-  <div class="map-legend-panel">
+  <div class="map-legend-panel" :class="{ pinned }">
     <div class="legend-panel-header">
       <span><i class="fa-solid fa-book-open"></i> 地图图例</span>
       <span class="legend-header-actions">
@@ -25,19 +25,22 @@
 
       <div v-if="legendData && legendData.items && legendData.items.length" class="legend-ai-section">
         <div class="legend-section-title">AI 图例</div>
-        <div class="legend-items">
-          <div
-            v-for="item in filteredLegendItems"
-            :key="item.label"
-            class="legend-item"
-            @click="zoomToLegendLayer(item.label)"
-          >
-            <span
-              class="legend-symbol"
-              :class="{ 'legend-line': item.type === 'line', 'legend-polygon': item.type === 'polygon' }"
-              :style="{ background: item.fillColor || item.color || '#999', borderColor: item.color || '#999' }"
-            ></span>
-            <span class="legend-label">{{ item.label }}</span>
+        <div v-for="[group, items] in groupedLegend" :key="group" class="legend-group">
+          <div class="legend-group-title">{{ group }}</div>
+          <div class="legend-items">
+            <div
+              v-for="item in items"
+              :key="item.label"
+              class="legend-item"
+              @click="zoomToLegendLayer(item.label)"
+            >
+              <span
+                class="legend-symbol"
+                :class="{ 'legend-line': item.type === 'line', 'legend-polygon': item.type === 'polygon' }"
+                :style="{ background: item.fillColor || item.color || '#999', borderColor: item.color || '#999' }"
+              ></span>
+              <span class="legend-label">{{ item.label }}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -96,6 +99,17 @@ const filteredLegendItems = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
   if (!q) return items
   return items.filter((i: LegendItem) => (i.label || '').toLowerCase().includes(q))
+})
+
+/** 按 group 分组图例项（道路分级/铁路/旅游景点/兴趣点…） */
+const groupedLegend = computed(() => {
+  const groups: Record<string, LegendItem[]> = {}
+  filteredLegendItems.value.forEach((item) => {
+    const key = item.group || '其他'
+    if (!groups[key]) groups[key] = []
+    groups[key].push(item)
+  })
+  return Object.entries(groups)
 })
 
 function dispatch(name: string, detail?: any) {
@@ -170,10 +184,20 @@ function symbologyHtml(layer: MapLayer) {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
-  z-index: 20;
+  z-index: 840;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.map-legend-panel.pinned {
+  position: fixed;
+  top: 72px;
+  right: 12px;
+  bottom: auto;
+  max-height: 62vh;
+  z-index: 950;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
 }
 
 .legend-panel-header {
@@ -265,6 +289,19 @@ function symbologyHtml(layer: MapLayer) {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.legend-group {
+  margin-bottom: 8px;
+}
+
+.legend-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  margin: 6px 0 4px;
+  padding-bottom: 3px;
+  border-bottom: 1px dashed var(--color-border);
 }
 
 .legend-item {

@@ -9,6 +9,8 @@
 GraphRAG区别于传统RAG：不仅检索单一文本块，而是通过图谱的多跳关系
 获取结构化的关联知识，支持复杂推理任务如制图规则推导、样式冲突检测等。
 """
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 from typing import List, Dict, Any, Optional
 import re
 
@@ -28,7 +30,7 @@ class GraphRAGService:
         """
         self.kg_service = kg_service
         self.llm_service = llm_service
-        print("[GraphRAGService] 初始化完成")
+        logger.info("[GraphRAGService] 初始化完成")
     
     def search(self, query: str, depth: int = 2, top_k: int = 3) -> Dict[str, Any]:
         """GraphRAG搜索 - 完整4步管道
@@ -48,7 +50,7 @@ class GraphRAGService:
         """
         # 步骤1：实体识别
         entities = self._extract_entities(query)
-        print(f"[GraphRAGService] 实体识别: {entities}")
+        logger.info(f"[GraphRAGService] 实体识别: {entities}")
         
         if not entities:
             return {
@@ -67,9 +69,9 @@ class GraphRAGService:
                     if subgraph.get("nodes"):
                         subgraphs.append(subgraph)
                 except Exception as e:
-                    print(f"[GraphRAGService] 子图检索失败({entity}): {e}")
+                    logger.info(f"[GraphRAGService] 子图检索失败({entity}): {e}")
         
-        print(f"[GraphRAGService] 检索到{len(subgraphs)}个子图")
+        logger.info(f"[GraphRAGService] 检索到{len(subgraphs)}个子图")
         
         # 步骤3：知识聚合
         aggregated = self._aggregate_knowledge(subgraphs)
@@ -213,7 +215,7 @@ class GraphRAGService:
                 if isinstance(entities, list):
                     return [str(e) for e in entities]
         except Exception as e:
-            print(f"[GraphRAGService] LLM实体识别失败: {e}")
+            logger.info(f"[GraphRAGService] LLM实体识别失败: {e}")
         
         return []
     
@@ -353,7 +355,7 @@ class GraphRAGService:
         """
         # 步骤1：实体识别
         entities = self._extract_entities(query)
-        print(f"[GraphRAGService] search_with_depth 实体识别: {entities}")
+        logger.info(f"[GraphRAGService] search_with_depth 实体识别: {entities}")
         
         if not entities:
             return {
@@ -408,7 +410,7 @@ class GraphRAGService:
                                     "type": rel_type,
                                 })
                     except Exception as e:
-                        print(f"[GraphRAGService] 深度检索失败({entity}, hop={hop}): {e}")
+                        logger.info(f"[GraphRAGService] 深度检索失败({entity}, hop={hop}): {e}")
             
             # 计算此跳的置信度
             confidence = "high" if len(hop_subgraphs) > 0 else "none"
@@ -456,7 +458,7 @@ class GraphRAGService:
             entities, reasoning_chain, accumulated_knowledge, missing_links
         )
         
-        print(f"[GraphRAGService] search_with_depth完成: "
+        logger.info(f"[GraphRAGService] search_with_depth完成: "
               f"{len(reasoning_chain)}跳, {len(accumulated_knowledge)}条累积知识, "
               f"{len(missing_links)}个缺失环节")
         
@@ -577,10 +579,10 @@ class GraphRAGService:
             多条推理路径，每条路径是 [{source, relation, target}, ...] 序列
             按路径长度排序（短路径优先）
         """
-        print(f"[GraphRAGService] 查找推理路径: {entity_a} -> {entity_b}, max_depth={max_depth}")
+        logger.info(f"[GraphRAGService] 查找推理路径: {entity_a} -> {entity_b}, max_depth={max_depth}")
         
         if not self.kg_service:
-            print("[GraphRAGService] KG服务不可用，无法查找推理路径")
+            logger.info("[GraphRAGService] KG服务不可用，无法查找推理路径")
             return []
         
         # 使用BFS查找所有路径
@@ -604,7 +606,7 @@ class GraphRAGService:
                 try:
                     subgraph = self.kg_service.get_subgraph(current, depth=1, limit=30)
                 except Exception as e:
-                    print(f"[GraphRAGService] BFS子图检索失败({current}): {e}")
+                    logger.info(f"[GraphRAGService] BFS子图检索失败({current}): {e}")
                     continue
                 
                 for link in subgraph.get("links", []):
@@ -660,7 +662,7 @@ class GraphRAGService:
         # 按路径长度排序
         unique_paths.sort(key=len)
         
-        print(f"[GraphRAGService] 找到{len(unique_paths)}条推理路径")
+        logger.info(f"[GraphRAGService] 找到{len(unique_paths)}条推理路径")
         return unique_paths
     
     # ==================== 增强方法3：知识冲突检测 ====================
@@ -685,7 +687,7 @@ class GraphRAGService:
                 "resolution_suggestion": str, # 解决建议
             }
         """
-        print(f"[GraphRAGService] 检测实体冲突: {entity_name}")
+        logger.info(f"[GraphRAGService] 检测实体冲突: {entity_name}")
         conflicts = []
         
         if not self.kg_service:
@@ -695,7 +697,7 @@ class GraphRAGService:
         try:
             subgraph = self.kg_service.get_subgraph(entity_name, depth=1, limit=50)
         except Exception as e:
-            print(f"[GraphRAGService] 冲突检测子图检索失败: {e}")
+            logger.info(f"[GraphRAGService] 冲突检测子图检索失败: {e}")
             return conflicts
         
         nodes = subgraph.get("nodes", [])
@@ -801,7 +803,7 @@ class GraphRAGService:
                                     ),
                                 })
         
-        print(f"[GraphRAGService] 检测到{len(conflicts)}个冲突")
+        logger.info(f"[GraphRAGService] 检测到{len(conflicts)}个冲突")
         return conflicts
     
     def get_ontology_info(self) -> Dict[str, Any]:

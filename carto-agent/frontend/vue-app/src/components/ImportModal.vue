@@ -3,58 +3,165 @@
     <div class="import-overlay" @click.self="appStore.toggleImportModal()">
       <div class="import-dialog">
         <div class="import-header">
-          <span><i class="fa-solid fa-file-import"></i> 导入文档到知识图谱</span>
+          <span><i class="fa-solid fa-file-import"></i> 数据导入</span>
           <button class="import-close" @click="appStore.toggleImportModal()">
             <i class="fa-solid fa-xmark"></i>
           </button>
         </div>
+        <div class="import-tabs">
+          <button class="import-tab" :class="{ active: importMode === 'doc' }" @click="importMode = 'doc'">
+            <i class="fa-solid fa-file-lines"></i> 文档 → 知识图谱
+          </button>
+          <button class="import-tab" :class="{ active: importMode === 'geo' }" @click="importMode = 'geo'">
+            <i class="fa-solid fa-map"></i> GeoJSON/SHP → 地图图层
+          </button>
+          <button class="import-tab" :class="{ active: importMode === 'raster' }" @click="importMode = 'raster'">
+            <i class="fa-solid fa-image"></i> 栅格/影像
+          </button>
+        </div>
         <div class="import-body">
-          <div class="import-hint">
-            <i class="fa-solid fa-circle-info"></i>
-            <span>粘贴文档内容，系统将自动抽取实体与关系并添加到知识图谱中。</span>
-          </div>
-          <div class="import-field">
-            <label>文档内容</label>
-            <textarea
-              v-model="content"
-              class="import-textarea"
-              placeholder="在此粘贴文档内容..."
-              rows="10"
-            ></textarea>
-          </div>
-          <div class="import-field">
-            <label>实体标签（可选，逗号分隔）</label>
-            <input v-model="labels" type="text" class="import-input" placeholder="如 City, Landmark, MapType" />
-          </div>
-          <div v-if="result" class="import-result" :class="{ error: result.error }">
-            <template v-if="!result.error">
-              <div class="import-result-title">
-                <i class="fa-solid fa-circle-check"></i> 导入成功
-              </div>
-              <div class="import-stats">
-                <div class="import-stat">
-                  <span class="import-stat-num">{{ result.entities || 0 }}</span>
-                  <span class="import-stat-label">实体</span>
+          <template v-if="importMode === 'doc'">
+            <div class="import-hint">
+              <i class="fa-solid fa-circle-info"></i>
+              <span>粘贴文档内容，系统将自动抽取实体与关系并添加到知识图谱中。</span>
+            </div>
+            <div class="import-field">
+              <label>文档内容</label>
+              <textarea
+                v-model="content"
+                class="import-textarea"
+                placeholder="在此粘贴文档内容..."
+                rows="10"
+              ></textarea>
+            </div>
+            <div class="import-field">
+              <label>实体标签（可选，逗号分隔）</label>
+              <input v-model="labels" type="text" class="import-input" placeholder="如 City, Landmark, MapType" />
+            </div>
+            <div v-if="result" class="import-result" :class="{ error: result.error }">
+              <template v-if="!result.error">
+                <div class="import-result-title">
+                  <i class="fa-solid fa-circle-check"></i> 导入成功
                 </div>
-                <div class="import-stat">
-                  <span class="import-stat-num">{{ result.relations || 0 }}</span>
-                  <span class="import-stat-label">关系</span>
+                <div class="import-stats">
+                  <div class="import-stat">
+                    <span class="import-stat-num">{{ result.entities || 0 }}</span>
+                    <span class="import-stat-label">实体</span>
+                  </div>
+                  <div class="import-stat">
+                    <span class="import-stat-num">{{ result.relations || 0 }}</span>
+                    <span class="import-stat-label">关系</span>
+                  </div>
                 </div>
-              </div>
-            </template>
-            <template v-else>
-              <div class="import-result-title error">
-                <i class="fa-solid fa-circle-xmark"></i> 导入失败
-              </div>
-              <div class="import-error-msg">{{ result.error }}</div>
-            </template>
-          </div>
+              </template>
+              <template v-else>
+                <div class="import-result-title error">
+                  <i class="fa-solid fa-circle-xmark"></i> 导入失败
+                </div>
+                <div class="import-error-msg">{{ result.error }}</div>
+              </template>
+            </div>
+          </template>
+
+          <template v-else-if="importMode === 'raster'">
+            <div class="import-hint">
+              <i class="fa-solid fa-circle-info"></i>
+              <span>导入栅格数据（GeoTIFF/PNG/JPG）作为底图或分析图层。支持DEM高程数据生成山体阴影。</span>
+            </div>
+            <div class="import-field">
+              <label>栅格文件</label>
+              <input type="file" accept=".tif,.tiff,.png,.jpg,.jpeg,.img" class="import-input" @change="onRasterFile" />
+            </div>
+            <div class="import-field">
+              <label>图层名称</label>
+              <input v-model="rasterName" type="text" class="import-input" placeholder="如：DEM高程数据" />
+            </div>
+            <div class="import-field">
+              <label>渲染方式</label>
+              <select v-model="rasterRender" class="import-input">
+                <option value="hillshade">山体阴影（Hillshade）</option>
+                <option value="stretch">灰度拉伸</option>
+                <option value="pseudo">伪彩色</option>
+                <option value="overlay">底图叠加</option>
+              </select>
+            </div>
+            <div v-if="rasterResult" class="import-result" :class="{ error: rasterResult.error }">
+              <template v-if="!rasterResult.error">
+                <div class="import-result-title">
+                  <i class="fa-solid fa-circle-check"></i> 栅格已导入
+                </div>
+                <div class="import-stats">
+                  <div class="import-stat">
+                    <span class="import-stat-num">{{ rasterResult.size }}</span>
+                    <span class="import-stat-label">文件大小</span>
+                  </div>
+                </div>
+              </template>
+              <template v-else>
+                <div class="import-result-title error">
+                  <i class="fa-solid fa-circle-xmark"></i> 导入失败
+                </div>
+                <div class="import-error-msg">{{ rasterResult.error }}</div>
+              </template>
+            </div>
+          </template>
+
+          <template v-else>
+            <div class="import-hint">
+              <i class="fa-solid fa-circle-info"></i>
+              <span>选择本地 GeoJSON/SHP 文件（点/线/面），导入为当前地图的新图层。SHP文件需同时上传.shp和.dbf。</span>
+            </div>
+            <div class="import-field">
+              <label>地理数据文件</label>
+              <input type="file" accept=".geojson,.json,.shp,.dbf,.shx,.prj,application/geo+json" class="import-input" @change="onGeoFile" />
+            </div>
+            <div class="import-field">
+              <label>图层名称</label>
+              <input v-model="geoName" type="text" class="import-input" placeholder="如：自定义水系" />
+            </div>
+            <div class="import-field">
+              <label>要素类型</label>
+              <select v-model="geoType" class="import-input">
+                <option value="auto">自动识别</option>
+                <option value="point">点要素</option>
+                <option value="line">线要素</option>
+                <option value="polygon">面要素</option>
+              </select>
+            </div>
+            <div v-if="geoResult" class="import-result" :class="{ error: geoResult.error }">
+              <template v-if="!geoResult.error">
+                <div class="import-result-title">
+                  <i class="fa-solid fa-circle-check"></i> 图层已导入
+                </div>
+                <div class="import-stats">
+                  <div class="import-stat">
+                    <span class="import-stat-num">{{ geoResult.count }}</span>
+                    <span class="import-stat-label">要素</span>
+                  </div>
+                </div>
+              </template>
+              <template v-else>
+                <div class="import-result-title error">
+                  <i class="fa-solid fa-circle-xmark"></i> 导入失败
+                </div>
+                <div class="import-error-msg">{{ geoResult.error }}</div>
+              </template>
+            </div>
+          </template>
         </div>
         <div class="import-footer">
           <button class="btn secondary" @click="appStore.toggleImportModal()">取消</button>
-          <button class="btn primary" :disabled="importing" @click="submit">
+          <button v-if="importMode === 'doc'" class="btn primary" :disabled="importing" @click="submit">
             <div v-if="importing" class="btn-spinner"></div>
-            <i v-else class="fa-solid fa-upload"></i> 导入
+            <i v-else class="fa-solid fa-upload"></i> 导入文档
+          </button>
+          <button v-else-if="importMode === 'raster'" class="btn primary" :disabled="rasterImporting || !mapStore.currentMapId" @click="submitRaster">
+            <div v-if="rasterImporting" class="btn-spinner"></div>
+            <i v-else class="fa-solid fa-upload"></i> 导入栅格
+          </button>
+          <button v-else class="btn primary" :disabled="geoImporting || !mapStore.currentMapId" @click="submitGeo">
+            <div v-if="geoImporting" class="btn-spinner"></div>
+            <i v-else class="fa-solid fa-upload"></i> 导入图层
           </button>
         </div>
       </div>
@@ -66,15 +173,28 @@
 import { ref } from 'vue'
 import { useAppStore } from '@/stores/appStore'
 import { useKGStore } from '@/stores/kgStore'
+import { useMapStore } from '@/stores/mapStore'
 import api from '@/services/api'
 
 const appStore = useAppStore()
 const kgStore = useKGStore()
+const mapStore = useMapStore()
 
+const importMode = ref<'doc' | 'geo' | 'raster'>('doc')
 const content = ref('')
 const labels = ref('')
 const importing = ref(false)
 const result = ref<{ entities?: number; relations?: number; error?: string } | null>(null)
+const geoFile = ref<File | null>(null)
+const geoName = ref('')
+const geoType = ref('auto')
+const geoImporting = ref(false)
+const geoResult = ref<{ count?: number; error?: string } | null>(null)
+const rasterFile = ref<File | null>(null)
+const rasterName = ref('')
+const rasterRender = ref('hillshade')
+const rasterImporting = ref(false)
+const rasterResult = ref<{ size?: string; error?: string } | null>(null)
 
 async function submit() {
   const text = content.value.trim()
@@ -101,6 +221,90 @@ async function submit() {
     result.value = { error: e.message || '导入失败' }
   } finally {
     importing.value = false
+  }
+}
+
+function onGeoFile(e: Event) {
+  const input = e.target as HTMLInputElement
+  geoFile.value = input.files?.[0] || null
+}
+
+function onRasterFile(e: Event) {
+  const input = e.target as HTMLInputElement
+  rasterFile.value = input.files?.[0] || null
+}
+
+async function submitRaster() {
+  if (!rasterFile.value) {
+    alert('请选择栅格文件')
+    return
+  }
+  const mapId = mapStore.currentMapId
+  if (!mapId) {
+    alert('当前没有地图，请先生成地图')
+    return
+  }
+  const name = rasterName.value.trim() || rasterFile.value.name
+  rasterImporting.value = true
+  rasterResult.value = null
+  try {
+    // 栅格图层作为imageOverlay添加到地图
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      const dataUrl = ev.target?.result as string
+      const rasterLayer: any = {
+        id: 'raster_' + Date.now(),
+        type: 'imageOverlay',
+        name: name,
+        imageUrl: dataUrl,
+        renderMode: rasterRender.value,
+        style: { opacity: 0.8 },
+      }
+      // 添加到mapStore
+      const maxOrder = Math.max(0, ...mapStore.sortedLayers.map((l: any) => l.order))
+      mapStore.layerGroups[rasterLayer.id] = { visible: true, data: rasterLayer, order: maxOrder + 1 }
+      rasterResult.value = { size: (rasterFile.value!.size / 1024).toFixed(1) + ' KB' }
+      const el = document.getElementById('map-container')
+      el?.dispatchEvent(new CustomEvent('map-refresh-layers'))
+      setTimeout(() => appStore.toggleImportModal(), 1800)
+    }
+    reader.readAsDataURL(rasterFile.value)
+  } catch (e: any) {
+    rasterResult.value = { error: e.message || '导入失败' }
+  } finally {
+    rasterImporting.value = false
+  }
+}
+
+async function submitGeo() {
+  if (!geoFile.value) {
+    alert('请选择 GeoJSON 文件')
+    return
+  }
+  const mapId = mapStore.currentMapId
+  if (!mapId) {
+    alert('当前没有地图，请先生成地图')
+    return
+  }
+  const name = geoName.value.trim() || geoFile.value.name.replace(/\.(geojson|json)$/i, '')
+  geoImporting.value = true
+  geoResult.value = null
+  try {
+    const resp = await api.importGeoJSON(mapId, geoFile.value, name, geoType.value)
+    const data = resp.data || resp
+    const last = (data.layers || []).slice(-1)[0]
+    geoResult.value = {
+      count: last ? (last.coordinates || []).length : 0,
+    }
+    const refreshed = await api.getMap(mapId)
+    mapStore.setMapData(refreshed.data || refreshed)
+    const el = document.getElementById('map-container')
+    el?.dispatchEvent(new CustomEvent('map-refresh-layers'))
+    setTimeout(() => appStore.toggleImportModal(), 1800)
+  } catch (e: any) {
+    geoResult.value = { error: e.message || '导入失败' }
+  } finally {
+    geoImporting.value = false
   }
 }
 </script>
@@ -136,6 +340,35 @@ async function submit() {
   font-size: 15px;
   font-weight: 600;
   color: var(--color-primary);
+}
+
+.import-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 10px 18px 0;
+}
+
+.import-tab {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  background: #fff;
+  color: var(--color-text-secondary);
+  border-radius: 8px 8px 0 0;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-bottom: none;
+}
+
+.import-tab.active {
+  color: var(--color-primary);
+  border-color: var(--color-primary-light);
+  background: rgba(124, 58, 237, 0.05);
+  font-weight: 600;
 }
 
 .import-close {

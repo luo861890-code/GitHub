@@ -12,6 +12,8 @@ AgentService是整个系统的核心，采用ReAct（Reasoning + Acting）模式
 v2.0: 新增 ToolRegistry 标准化工具注册体系和 GraphRAG 深度推理增强，
 实现"知识-数据-工具"三元贯通的关键环节。
 """
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 import json
 import re
 from typing import List, Dict, Any, Optional
@@ -36,6 +38,14 @@ from app.services.tool_registry import (
     MapRenderTool,
     QualityCheckTool,
     ExportTool,
+    OSMTypeFetchTool,
+    SimplifyGeometryTool,
+    GenerateLegendTool,
+    DecorationTool,
+    BufferAnalysisTool,
+    OverlayAnalysisTool,
+    ValidateCartographyTool,
+    ExportFormatTool,
 )
 
 
@@ -49,6 +59,16 @@ class AgentService:
     # 制图相关关键词
     MAP_KEYWORDS = ["画", "制图", "地图", "生成", "绘制", "做个", "制作", "创建"]
     MODIFY_KEYWORDS = ["修改", "改", "换", "调整", "变", "设置", "更新", "添加", "删除", "移除"]
+    QUESTION_MARKERS = [
+        "是什么", "什么是", "啥是", "有哪些", "有什么", "为什么", "为何",
+        "如何", "怎么", "怎样", "区别", "差异", "解释", "定义", "含义",
+        "介绍一下", "介绍", "说明一下", "告诉我", "了解", "原则",
+        "几个", "多少", "哪些",
+    ]
+    STRONG_GENERATION_KEYWORDS = [
+        "生成", "画", "绘制", "制作", "创建", "做个", "做一张", "做一份",
+        "出一张", "出一份", "帮我画", "帮我做", "给我画", "给我做",
+    ]
 
     # 颜色名称到十六进制的映射
     COLOR_MAP = {
@@ -103,7 +123,7 @@ class AgentService:
         self._register_tools()
         # 注意：AgentService 是全局单例，请求级数据（上下文/RAG/GraphRAG结果）
         # 必须作为局部变量在方法间传递，禁止存为实例属性，否则并发请求会互相污染。
-        print("[AgentService] 初始化完成")
+        logger.info("[AgentService] 初始化完成")
 
     def _register_tools(self):
         """注册所有标准化工具到 ToolRegistry
@@ -114,6 +134,11 @@ class AgentService:
         # 数据层工具：OSM数据获取
         if self.osm_service:
             self.tool_registry.register(OSMFetchTool(self.osm_service))
+            for _typ in ("boundary~administrative", "highway", "waterway", "amenity"):
+                self.tool_registry.register(OSMTypeFetchTool(self.osm_service, _typ))
+
+        # 数据处理工具：几何简化
+        self.tool_registry.register(SimplifyGeometryTool())
 
         # 渲染层工具：样式配置
         if self.kg_service:
@@ -128,20 +153,37 @@ class AgentService:
         self.tool_registry.register(
             QualityCheckTool(CartographyValidator(), kg_service=self.kg_service)
         )
+        # 制图规范校验（7维评分）
+        self.tool_registry.register(
+            ValidateCartographyTool(CartographyValidator(), kg_service=self.kg_service)
+        )
+
+        # 渲染层工具：图例与整饰
+        if self.map_service:
+            self.tool_registry.register(GenerateLegendTool(self.map_service))
+        for _kind in ("add_title", "add_scalebar", "add_north_arrow", "add_inset"):
+            self.tool_registry.register(DecorationTool(_kind))
+
+        # 分析层工具：缓冲区/叠加
+        self.tool_registry.register(BufferAnalysisTool())
+        self.tool_registry.register(OverlayAnalysisTool())
 
         # 输出层工具：地图导出（GeoJSON/PNG/SVG）
         try:
             from app.services.export_service import ExportService
-            self.tool_registry.register(ExportTool(ExportService()))
+            _es = ExportService()
+            self.tool_registry.register(ExportTool(_es))
+            for _fmt in ("geojson", "svg", "png"):
+                self.tool_registry.register(ExportFormatTool(_es, _fmt))
         except Exception as e:
-            print(f"[AgentService] 导出工具注册失败: {e}")
+            logger.info(f"[AgentService] 导出工具注册失败: {e}")
 
-        print(f"[AgentService] ToolRegistry 初始化完成: "
+        logger.info(f"[AgentService] ToolRegistry 初始化完成: "
               f"已注册{self.tool_registry.tool_count}个工具: {self.tool_registry.list_tools()}")
 
     # ==================== 核心方法：处理用户请求 ====================
 
-    def process_request(self, message: str, session_id: str = None) -> dict:
+    def process_request(self, message: str, session_id: str = None, progress_cb=None) -> dict:
         """处理用户请求 - 实现ReAct流程
 
         自动识别请求类型（制图/问答/修改），执行对应流程。
@@ -161,7 +203,7 @@ class AgentService:
             - provider: 使用的LLM提供者
             - model: 使用的模型名
         """
-        print(f"[AgentService] 处理请求: {message[:100]}...")
+        logger.info(f"[AgentService] 处理请求: {message[:100]}...")
 
         # 获取当前LLM信息
         provider = self.llm_service.get_current_provider() if self.llm_service else "none"
@@ -170,21 +212,26 @@ class AgentService:
         # ===== 快速路径：明显的地图请求直接跳过RAG/GraphRAG/六维解析 =====
         is_map = self._is_map_request(message)
         is_modify = self._is_modify_request(message)
+        is_question = self._is_question_request(message)
 
-        if is_map and not is_modify:
+        if is_question:
+            # 问句（如"什么是专题地图？"）不进入快速路径，走完整知识问答
+            logger.info(f"[AgentService] 识别为知识问答，跳过制图快速路径")
+        elif is_map and not is_modify:
             # 明显的地图生成请求，直接进入制图流程，跳过RAG和GraphRAG
-            print(f"[AgentService] 快速路径：识别为地图生成请求，跳过RAG/GraphRAG")
+            logger.info(f"[AgentService] 快速路径：识别为地图生成请求，跳过RAG/GraphRAG")
             return self._handle_map_generation(
                 message, provider, model,
                 rag_results=[],
                 graphrag_context="",
                 graphrag_result={"entities": [], "subgraph_count": 0, "aggregated_knowledge": []},
                 cartography_task=None,
+                progress_cb=progress_cb,
             )
 
-        if is_modify and not is_map:
+        elif is_modify and not is_map:
             # 明显的地图修改请求，直接进入修改流程
-            print(f"[AgentService] 快速路径：识别为地图修改请求，跳过RAG/GraphRAG")
+            logger.info(f"[AgentService] 快速路径：识别为地图修改请求，跳过RAG/GraphRAG")
             return self._handle_modify_request(message, provider, model)
 
         # ===== 构建多轮上下文 =====
@@ -200,15 +247,15 @@ class AgentService:
         # ===== LLM意图检测（带关键词降级） =====
         intent = self._detect_intent(message, context_messages)
 
-        # ===== 六维任务理解（DoMapAI框架核心） =====
+        # ===== 六维任务理解（DoMapAI框架核心，仅制图/修改请求需要） =====
         cartography_task = None
-        if intent in ("map_generation", "map_modification", "question"):
+        if intent in ("map_generation", "map_modification"):
             try:
                 cartography_task = self.task_parser.parse(message, context_messages)
-                print(f"[AgentService] 六维解析: audience={cartography_task.audience}, "
+                logger.info(f"[AgentService] 六维解析: audience={cartography_task.audience}, "
                       f"topic={cartography_task.topic}, method={cartography_task.cartographic_method}")
             except Exception as e:
-                print(f"[AgentService] 六维解析失败（降级）: {e}")
+                logger.info(f"[AgentService] 六维解析失败（降级）: {e}")
                 cartography_task = CartographyTask()
 
         if intent == "map_generation":
@@ -219,6 +266,7 @@ class AgentService:
                 graphrag_context=graphrag_context,
                 graphrag_result=graphrag_result,
                 cartography_task=cartography_task,
+                progress_cb=progress_cb,
             )
         elif intent == "map_modification":
             # 地图修改请求
@@ -231,6 +279,7 @@ class AgentService:
                 rag_results=rag_results,
                 graphrag_context=graphrag_context,
                 graphrag_result=graphrag_result,
+                progress_cb=progress_cb,
             )
 
     # ==================== 请求级上下文构建（线程安全） ====================
@@ -244,9 +293,9 @@ class AgentService:
                     session_id, max_messages=6
                 )
                 if context_messages:
-                    print(f"[AgentService] 构建上下文: {len(context_messages)}条历史消息")
+                    logger.info(f"[AgentService] 构建上下文: {len(context_messages)}条历史消息")
             except Exception as e:
-                print(f"[AgentService] 构建上下文失败: {e}")
+                logger.info(f"[AgentService] 构建上下文失败: {e}")
         return context_messages
 
     def _search_rag(self, message: str) -> List[Dict[str, Any]]:
@@ -256,9 +305,9 @@ class AgentService:
             try:
                 rag_results = self.rag_service.search(message, top_k=3)
                 if rag_results:
-                    print(f"[AgentService] RAG检索到{len(rag_results)}条相关知识")
+                    logger.info(f"[AgentService] RAG检索到{len(rag_results)}条相关知识")
             except Exception as e:
-                print(f"[AgentService] RAG检索失败: {e}")
+                logger.info(f"[AgentService] RAG检索失败: {e}")
         return rag_results
 
     def _search_graphrag(self, message: str) -> Dict[str, Any]:
@@ -283,7 +332,7 @@ class AgentService:
                 if context:
                     entity_count = len(graphrag_result.get("entities", []))
                     subgraph_count = len(graphrag_result.get("subgraphs", []))
-                    print(f"[AgentService] GraphRAG检索: {entity_count}个实体, {subgraph_count}个子图")
+                    logger.info(f"[AgentService] GraphRAG检索: {entity_count}个实体, {subgraph_count}个子图")
 
                 # 增强：深度多跳推理（4跳，逐跳构建推理链）
                 deep_result = self.graphrag_service.search_with_depth(
@@ -292,7 +341,7 @@ class AgentService:
                 if deep_result.get("reasoning_chain"):
                     chain_len = len(deep_result["reasoning_chain"])
                     missing_count = len(deep_result.get("missing_links", []))
-                    print(f"[AgentService] GraphRAG深度推理: {chain_len}跳推理链, "
+                    logger.info(f"[AgentService] GraphRAG深度推理: {chain_len}跳推理链, "
                           f"{missing_count}个缺失环节")
                     # 合并深度推理结果
                     graphrag_result["reasoning_chain"] = deep_result.get("reasoning_chain", [])
@@ -303,7 +352,7 @@ class AgentService:
                     if deep_context:
                         graphrag_result["reasoning_context"] = deep_context
             except Exception as e:
-                print(f"[AgentService] GraphRAG检索失败: {e}")
+                logger.info(f"[AgentService] GraphRAG检索失败: {e}")
         return graphrag_result
 
     def _detect_intent(self, message: str, context: list) -> str:
@@ -319,6 +368,10 @@ class AgentService:
         Returns:
             意图类型: "map_generation" / "map_modification" / "question"
         """
+        # ===== 0. 问句优先（"什么是专题地图？"属于知识问答，而非制图） =====
+        if self._is_question_request(message):
+            return "question"
+
         # ===== 1. 关键词快速匹配（零延迟） =====
         is_map = self._is_map_request(message)
         is_modify = self._is_modify_request(message)
@@ -363,7 +416,7 @@ class AgentService:
                 elif "question" in result:
                     return "question"
         except Exception as e:
-            print(f"[AgentService] LLM意图检测失败: {e}")
+            logger.info(f"[AgentService] LLM意图检测失败: {e}")
 
         # LLM 也无法判断时，按关键词最终结果或默认问答处理
         if is_map:
@@ -388,7 +441,7 @@ class AgentService:
             - map_data: 更新后的地图数据
             - action: 执行的操作类型
         """
-        print(f"[AgentService] 修改地图 {map_id}: {instruction}")
+        logger.info(f"[AgentService] 修改地图 {map_id}: {instruction}")
 
         # 获取地图数据
         map_data = self.map_service.get_map(map_id) if self.map_service else None
@@ -514,7 +567,7 @@ class AgentService:
                 }
 
         except Exception as e:
-            print(f"[AgentService] 修改地图失败: {e}")
+            logger.info(f"[AgentService] 修改地图失败: {e}")
             return {
                 "success": False,
                 "response": f"修改地图失败: {e}",
@@ -526,7 +579,8 @@ class AgentService:
 
     def _handle_map_generation(self, message: str, provider: str, model: str,
                               rag_results=None, graphrag_context="",
-                              graphrag_result=None, cartography_task=None) -> dict:
+                              graphrag_result=None, cartography_task=None,
+                              progress_cb=None) -> dict:
         """处理制图请求 - 完整ReAct流程
 
         Args:
@@ -544,7 +598,7 @@ class AgentService:
         # ===== 六维任务信息注入 =====
         if cartography_task:
             six_dim_context = cartography_task.to_prompt_context()
-            print(f"[AgentService] 六维上下文已注入: {six_dim_context[:100]}...")
+            logger.info(f"[AgentService] 六维上下文已注入: {six_dim_context[:100]}...")
 
         # ===== 步骤1：需求解析 =====
         step1 = self._create_step("需求解析", "解析用户输入，提取城市和地图类型")
@@ -592,7 +646,9 @@ class AgentService:
         step1.result = {"city": city, "map_type": map_type}
         step1.status = "success"
         step1.finished_at = get_timestamp()
+        self._emit_progress(progress_cb, "steps", [s.model_dump() for s in steps])
         thinking_parts.append(f"用户希望制作{city}的{self.MAP_TYPE_NAMES.get(map_type, map_type)}。")
+        self._emit_progress(progress_cb, "thinking", thinking_parts[-1])
         if cartography_task and cartography_task.topic:
             thinking_parts.append(
                 f"六维任务解析: 空间范围={cartography_task.spatial_scope or city}, "
@@ -624,7 +680,7 @@ class AgentService:
                 else:
                     style_recs = self.kg_service.get_style_recommendations(map_type)
             except Exception as e:
-                print(f"[AgentService] 知识检索失败: {e}")
+                logger.info(f"[AgentService] 知识检索失败: {e}")
                 if self.kg_service:
                     try:
                         style_recs = self.kg_service.get_style_recommendations(map_type)
@@ -635,6 +691,16 @@ class AgentService:
         step2.result = {"constraints_count": len(constraints), "style_count": len(style_recs)}
         step2.status = "success"
         step2.finished_at = get_timestamp()
+        self._emit_progress(progress_cb, "steps", [s.model_dump() for s in steps])
+        # 符号推荐引擎（KG 驱动，计划 2.3）
+        try:
+            from app.services.symbol_recommender import SymbolRecommender
+            sym_rec = SymbolRecommender().recommend(map_type, kg_service=self.kg_service)
+            step2.result["symbol_recommendations"] = len(sym_rec.get("recommendations", []))
+            step2.thinking += f"，符号推荐 {len(sym_rec.get('recommendations', []))} 类"
+            thinking_parts.append("符号推荐引擎提供了与主题匹配的标准制图符号方案。")
+        except Exception as _sym_err:
+            logger.info(f"[AgentService] 符号推荐失败: {_sym_err}")
         thinking_parts.append(
             f"知识图谱提供了{len(constraints)}条制图约束和{len(style_recs)}条样式推荐作为参考。"
         )
@@ -713,7 +779,7 @@ class AgentService:
             step2_5.thinking = f"KG决策查询失败: {e}"
             step2_5.result = {"error": str(e)}
             step2_5.status = "success"
-            print(f"[AgentService] KG决策查询异常: {e}")
+            logger.info(f"[AgentService] KG决策查询异常: {e}")
 
         step2_5.finished_at = get_timestamp()
 
@@ -781,7 +847,7 @@ class AgentService:
             step2_6.thinking = f"工具匹配失败: {e}"
             step2_6.result = {"error": str(e)}
             step2_6.status = "success"
-            print(f"[AgentService] ToolRegistry工具匹配异常: {e}")
+            logger.info(f"[AgentService] ToolRegistry工具匹配异常: {e}")
 
         step2_6.finished_at = get_timestamp()
 
@@ -809,6 +875,7 @@ class AgentService:
         steps.append(step4)
         step4.status = "running"
         step4.started_at = get_timestamp()
+        self._emit_progress(progress_cb, "thinking", f"正在获取{city}数据并生成地图...")
 
         map_data = None
         try:
@@ -818,10 +885,10 @@ class AgentService:
             )
             # ReAct容错：生成失败/空图层时自动重试一次，仍失败降级为基础图
             if not map_data or not map_data.get("layers"):
-                print(f"[AgentService] 地图生成结果为空，重试一次 ({map_type})")
+                logger.info(f"[AgentService] 地图生成结果为空，重试一次 ({map_type})")
                 map_data = self.map_service.generate_map(map_type=map_type, region=city)
             if not map_data or not map_data.get("layers"):
-                print(f"[AgentService] 重试仍失败，降级生成基础地图")
+                logger.info(f"[AgentService] 重试仍失败，降级生成基础地图")
                 map_data = self.map_service.generate_map(map_type="basic", region=city)
             layer_count = len(map_data.get("layers", []))
             step4.thinking = f"地图生成成功，共{layer_count}个图层"
@@ -832,6 +899,7 @@ class AgentService:
             step4.result = str(e)
             step4.status = "failed"
         step4.finished_at = get_timestamp()
+        self._emit_progress(progress_cb, "steps", [s.model_dump() for s in steps])
 
         # 如果地图生成失败，提前返回
         if not map_data:
@@ -873,7 +941,7 @@ class AgentService:
                     f"GeoToken已将{geo_features.get('total_elements', 0)}个地理要素Token化处理。"
                 )
             except Exception as e:
-                print(f"[AgentService] GeoToken处理失败: {e}")
+                logger.info(f"[AgentService] GeoToken处理失败: {e}")
 
         # ===== 步骤5：质量校验 =====
         step5 = self._create_step("质量校验", "检查坐标范围、图层数量和制图方案质量")
@@ -904,7 +972,7 @@ class AgentService:
                 f"失败检查项: {len(failed_checks)}"
             )
         except Exception as e:
-            print(f"[AgentService] 制图方案校验失败: {e}")
+            logger.info(f"[AgentService] 制图方案校验失败: {e}")
             carto_validation = {"error": str(e)}
             quality_score = -1
             step5.thinking = f"制图方案校验异常: {e}"
@@ -916,8 +984,9 @@ class AgentService:
         else:
             step5.thinking += "\n质量校验通过"
             step5.result = {"issues": [], "quality_score": quality_score}
-            step5.status = "success"
+        step5.status = "success"
         step5.finished_at = get_timestamp()
+        self._emit_progress(progress_cb, "steps", [s.model_dump() for s in steps])
 
         # ===== 生成回复文本 =====
         response = self._generate_response_text(map_data, city, map_type, quality_issues)
@@ -952,11 +1021,22 @@ class AgentService:
             },
         }
 
+    @staticmethod
+    def _emit_progress(progress_cb, event_type: str, content) -> None:
+        """安全地向流式通道推送进度事件（异常不影响主流程）"""
+        if not progress_cb:
+            return
+        try:
+            progress_cb({"type": event_type, "content": content})
+        except Exception:
+            pass
+
     # ==================== 内部流程：问答请求处理 ====================
 
     def _handle_question(self, message: str, provider: str, model: str,
                         context_messages=None, rag_results=None,
-                        graphrag_context="", graphrag_result=None) -> dict:
+                        graphrag_context="", graphrag_result=None,
+                        progress_cb=None) -> dict:
         """处理问答请求
 
         Args:
@@ -977,6 +1057,7 @@ class AgentService:
         step1.thinking = "用户输入不包含制图关键词，判断为问答请求"
         steps.append(step1)
         thinking_parts.append("用户的问题不涉及制图，作为知识问答处理。")
+        self._emit_progress(progress_cb, "steps", [s.model_dump() for s in steps])
 
         # ===== 闲聊快速回复（零延迟） =====
         chat_response = self._try_chat_reply(message)
@@ -1009,18 +1090,20 @@ class AgentService:
         step2.status = "running"
         step2.started_at = get_timestamp()
         steps.append(step2)
+        self._emit_progress(progress_cb, "thinking", "正在检索知识图谱与制图规范...")
 
         kg_answer = ""
         if self.kg_service:
             try:
                 kg_answer = self.kg_service.query(message)
             except Exception as e:
-                print(f"[AgentService] 知识图谱查询失败: {e}")
+                logger.info(f"[AgentService] 知识图谱查询失败: {e}")
 
         step2.thinking = f"知识图谱返回: {kg_answer[:100] if kg_answer else '无结果'}..."
         step2.result = {"kg_answer": kg_answer[:200] if kg_answer else ""}
         step2.status = "success"
         step2.finished_at = get_timestamp()
+        self._emit_progress(progress_cb, "steps", [s.model_dump() for s in steps])
 
         # 使用LLM生成最终回复
         step3 = self._create_step("生成回复", "结合知识图谱和RAG信息生成自然语言回复")
@@ -1473,12 +1556,29 @@ class AgentService:
     # ==================== 辅助方法 ====================
 
     def _is_map_request(self, message: str) -> bool:
-        """判断是否为制图请求"""
-        return any(kw in message for kw in self.MAP_KEYWORDS)
+        """判断是否为制图请求（关键词 + 地图名后缀兜底，如"武汉交通图"）"""
+        if any(kw in message for kw in self.MAP_KEYWORDS):
+            return True
+        # 常见地图名后缀：武汉交通图 / 武汉行政区划图 / 大学校园分布图 等
+        return bool(re.search(
+            r"[\u4e00-\u9fa5A-Za-z0-9]{2,}"
+            r"(地图|交通图|旅游图|行政区划图|政区图|地形图|分布图|规划图|"
+            r"示意图|路线图|线路图|校园图|美食图|导航图|概览图|范围图|热力图)$",
+            message,
+        ))
 
     def _is_modify_request(self, message: str) -> bool:
         """判断是否为地图修改请求"""
         return any(kw in message for kw in self.MODIFY_KEYWORDS) and not self._is_map_request(message)
+
+    def _is_question_request(self, message: str) -> bool:
+        """判断是否为知识问答请求（问句优先，避免“什么是专题地图”被误判为制图）"""
+        question_hit = any(q in message for q in self.QUESTION_MARKERS)
+        if not question_hit:
+            return False
+        # 明确要求出图/制图时仍视为制图请求
+        strong_gen = any(kw in message for kw in self.STRONG_GENERATION_KEYWORDS)
+        return not strong_gen
 
     def _create_step(self, name: str, description: str) -> AgentStep:
         """创建执行步骤"""
@@ -1729,9 +1829,9 @@ class AgentService:
                     "description": message,
                 }
                 self.kg_service.create_entity("ModificationFeedback", feedback_entity)
-                print(f"[AgentService] KG反馈已记录: {message[:50]}")
+                logger.info(f"[AgentService] KG反馈已记录: {message[:50]}")
             except Exception as e:
-                print(f"[AgentService] KG反馈记录失败: {e}")
+                logger.info(f"[AgentService] KG反馈记录失败: {e}")
 
         return {
             "success": True,

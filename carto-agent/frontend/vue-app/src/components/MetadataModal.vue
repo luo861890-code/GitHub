@@ -25,6 +25,11 @@
           <div class="metadata-line"><b>坐标系：</b>WGS84</div>
           <div class="metadata-line"><b>图层数：</b>{{ mapStore.sortedLayers.length }}</div>
         </div>
+        <div class="metadata-footer">
+          <button class="metadata-delete-btn" @click="handleDelete">
+            <i class="fa-solid fa-trash-can"></i> 删除当前地图
+          </button>
+        </div>
       </div>
     </div>
   </Teleport>
@@ -34,6 +39,7 @@
 import { computed } from 'vue'
 import { useAppStore } from '@/stores/appStore'
 import { useMapStore } from '@/stores/mapStore'
+import api from '@/services/api'
 
 const appStore = useAppStore()
 const mapStore = useMapStore()
@@ -42,6 +48,22 @@ const metaEntries = computed(() => {
   const meta = mapStore.metadata
   return meta ? Object.entries(meta) : []
 })
+
+async function handleDelete() {
+  if (!mapStore.currentMapId) {
+    alert('当前没有地图')
+    return
+  }
+  if (!confirm('确定要删除当前地图吗？此操作不可恢复')) return
+  try {
+    await api.deleteMap(mapStore.currentMapId)
+    mapStore.clearAllLayers()
+    appStore.showMetadataModal = false
+    alert('地图已删除')
+  } catch (e: any) {
+    alert('删除失败: ' + e.message)
+  }
+}
 </script>
 
 <style scoped>
@@ -108,5 +130,30 @@ const metaEntries = computed(() => {
   height: 1px;
   background: var(--color-border);
   margin: 10px 0;
+}
+
+.metadata-footer {
+  padding: 12px 18px;
+  border-top: 1px solid var(--color-border);
+  background: #fafbfc;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.metadata-delete-btn {
+  padding: 7px 14px;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  background: #fff;
+  color: var(--color-error);
+  border-radius: 8px;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.metadata-delete-btn:hover {
+  background: rgba(239, 68, 68, 0.06);
 }
 </style>

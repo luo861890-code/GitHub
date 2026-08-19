@@ -37,6 +37,14 @@
           <option v-for="(t, key) in CONFIG.mapThemes" :key="key" :value="key">{{ t.name }}</option>
         </select>
       </div>
+      <div class="params-field">
+        <label>载负量</label>
+        <select :value="appStore.loadLevel" @change="onLoadLevelChange">
+          <option value="lite">简洁（抽稀更多）</option>
+          <option value="standard">标准</option>
+          <option value="detail">详细（全量要素）</option>
+        </select>
+      </div>
       <div class="params-row">
         <div class="params-field">
           <label>中心纬度</label>
@@ -94,6 +102,11 @@ function dispatchMapData(data: any) {
   }
 }
 
+function onLoadLevelChange(e: Event) {
+  const level = (e.target as HTMLSelectElement).value as 'lite' | 'standard' | 'detail'
+  appStore.setLoadLevel(level)
+}
+
 async function applyParams() {
   if (!mapStore.currentMapId) {
     alert('请先生成地图')
@@ -143,7 +156,7 @@ async function regenerate() {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
-  z-index: 25;
+  z-index: 850;
   overflow: hidden;
 }
 

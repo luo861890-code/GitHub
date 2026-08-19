@@ -4,6 +4,8 @@
 提供省/市/县面状行政区划边界（GeoJSON），用于生成标准行政区划图的
 面状底图、区县名称注记与行政中心符号。数据无需API Key。
 """
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 import json
 import os
 from typing import Dict, List
@@ -64,14 +66,14 @@ class GeoService:
         """获取区域下辖区县面要素（GeoJSON Feature列表）"""
         adcode = CITY_ADCODES.get(region)
         if not adcode:
-            print(f"[GeoService] 未知行政区划代码: {region}")
+            logger.info(f"[GeoService] 未知行政区划代码: {region}")
             return []
         if region in self._cache:
             return self._cache[region]
         features = self._fetch_by_adcode(adcode, full=True)
         if features:
             self._cache[region] = features
-            print(f"[GeoService] 获取{region}区划面: {len(features)}个区县")
+            logger.info(f"[GeoService] 获取{region}区划面: {len(features)}个区县")
         return features
 
     def _fallback_district_features(self, region: str) -> list:
@@ -96,7 +98,7 @@ class GeoService:
                 "properties": {"name": d["name"], "adcode": 420100},
                 "geometry": {"type": "Polygon", "coordinates": [pts]},
             })
-        print(f"[GeoService] 使用本地兜底区划面: {len(feats)}个区县")
+        logger.info(f"[GeoService] 使用本地兜底区划面: {len(feats)}个区县")
         return feats
 
     def _fetch_by_adcode(self, adcode: str, full: bool = False) -> list:
@@ -111,7 +113,7 @@ class GeoService:
             local = self._load_local(key + "_full")
         if local:
             self._cache[key] = local
-            print(f"[GeoService] 使用本地区划数据: {LOCAL_ADCODE_FILES.get(key) or LOCAL_ADCODE_FILES.get(key + '_full')}")
+            logger.info(f"[GeoService] 使用本地区划数据: {LOCAL_ADCODE_FILES.get(key) or LOCAL_ADCODE_FILES.get(key + '_full')}")
             return local
         # 在线 DataV GeoAtlas
         url = f"{self.BASE_URL}/{key}.json"
@@ -128,7 +130,7 @@ class GeoService:
             self._cache[key] = features
             return features
         except Exception as e:
-            print(f"[GeoService] 区划数据获取失败 {key}: {e}")
+            logger.info(f"[GeoService] 区划数据获取失败 {key}: {e}")
             return []
 
     def _load_local(self, key: str) -> list:
@@ -144,7 +146,7 @@ class GeoService:
                 data = json.load(f)
             return data.get("features", []) if isinstance(data, dict) else []
         except Exception as e:
-            print(f"[GeoService] 本地区划数据读取失败 {fname}: {e}")
+            logger.info(f"[GeoService] 本地区划数据读取失败 {fname}: {e}")
             return []
 
     def build_surrounding_layers(self, region: str) -> list:
@@ -340,7 +342,8 @@ class GeoService:
                     "type": "polygon",
                     "coordinates": _ring,
                     "properties": {"name": name, "adcode": props.get("adcode")},
-                    "style": {"fillColor": fill, "fillOpacity": 0.2, "weight": 0},
+                    # 填充透明度提高到 0.72：行政区颜色区分明显，道路/水系不再干扰区划范围观感
+                    "style": {"fillColor": fill, "fillOpacity": 0.72, "weight": 0},
                 })
             # 面内注记点（强制在多边形内部，主面上计算）
             c = _interior_point(main_ring)

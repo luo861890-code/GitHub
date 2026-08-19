@@ -4,6 +4,8 @@
 优先查询在线维基百科，网络不可用时回退到内置知识库，
 保证百科附着功能始终可用。
 """
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 import requests
 from typing import Dict, Optional
 

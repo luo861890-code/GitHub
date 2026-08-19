@@ -5,6 +5,8 @@ CartographyValidator 对已生成的地图方案进行多维度质量校验：
 2. 符号规范性：检查符号样式参数（线宽、点半径、透明度等）是否在合理范围
 3. 配色协调性：检查颜色搭配是否协调、色相对比度、明度层次
 """
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 from typing import Dict, Any, List, Tuple
 import re
 
@@ -42,11 +44,15 @@ class CartographyValidator:
         "administrative": 1,   # 至少行政边界
     }
 
-    # 检查项权重
+    # 检查项权重（7 维制图规范评分，计划 3.1）
     CHECK_WEIGHTS = {
-        "layer_completeness": 0.40,    # 图层完整性权重
-        "symbol_normativity": 0.35,    # 符号规范性权重
-        "color_harmony": 0.25,         # 配色协调性权重
+        "topology": 0.20,          # 拓扑正确性
+        "symbol_normativity": 0.20,  # 符号规范性（含配色）
+        "annotation": 0.15,        # 注记质量
+        "load_density": 0.15,      # 载负量
+        "projection": 0.10,        # 投影合理性
+        "decoration": 0.10,        # 整饰完整性
+        "data_completeness": 0.10, # 数据完整性
     }
 
     # ---- Public API ----
@@ -74,34 +80,35 @@ class CartographyValidator:
         failed_checks: List[str] = []
         check_scores: Dict[str, int] = {}
 
-        # 1. 图层完整性检查
-        layer_score, layer_issues = self._check_layer_completeness(map_data)
-        if layer_score >= 70:
-            passed_checks.append(f"图层完整性: {layer_score}/100")
-        else:
-            failed_checks.append(f"图层完整性: {layer_score}/100")
-        issues.extend(layer_issues)
-        check_scores["layer_completeness"] = layer_score
+        # 7 维制图规范检查（计划 3.1）
+        check_functions = {
+            "topology": self._check_topology_basic,
+            "symbol_normativity": self._check_symbol_normativity,
+            "annotation": self._check_annotation_quality,
+            "load_density": self._check_load_density,
+            "projection": self._check_projection,
+            "decoration": self._check_decoration_completeness,
+            "data_completeness": self._check_layer_completeness,
+        }
+        check_names = {
+            "topology": "拓扑正确性",
+            "symbol_normativity": "符号规范性",
+            "annotation": "注记质量",
+            "load_density": "载负量",
+            "projection": "投影合理性",
+            "decoration": "整饰完整性",
+            "data_completeness": "数据完整性",
+        }
+        for check_name, fn in check_functions.items():
+            score, check_issues = fn(map_data)
+            if score >= 70:
+                passed_checks.append(f"{check_names[check_name]}: {score}/100")
+            else:
+                failed_checks.append(f"{check_names[check_name]}: {score}/100")
+            issues.extend(check_issues)
+            check_scores[check_name] = score
 
-        # 2. 符号规范性检查
-        symbol_score, symbol_issues = self._check_symbol_normativity(map_data)
-        if symbol_score >= 70:
-            passed_checks.append(f"符号规范性: {symbol_score}/100")
-        else:
-            failed_checks.append(f"符号规范性: {symbol_score}/100")
-        issues.extend(symbol_issues)
-        check_scores["symbol_normativity"] = symbol_score
-
-        # 3. 配色协调性检查
-        color_score, color_issues = self._check_color_harmony(map_data)
-        if color_score >= 70:
-            passed_checks.append(f"配色协调性: {color_score}/100")
-        else:
-            failed_checks.append(f"配色协调性: {color_score}/100")
-        issues.extend(color_issues)
-        check_scores["color_harmony"] = color_score
-
-        # 4. 综合评分（加权）: 0-100
+        # 综合评分（加权）: 0-100
         total_score = 0
         weight_sum = 0
         for check_name, weight in self.CHECK_WEIGHTS.items():
@@ -120,7 +127,7 @@ class CartographyValidator:
             except Exception:
                 pass
 
-        print(f"[CartographyValidator] 校验完成: score={total_score}, "
+        logger.info(f"[CartographyValidator] 校验完成: score={total_score}, "
               f"issues={len(issues)}, passed={len(passed_checks)}, "
               f"failed={len(failed_checks)}")
 
@@ -476,3 +483,97 @@ class CartographyValidator:
                 h += 360.0
 
         return (h, s, l)
+
+    def _check_topology_basic(self, map_data: Dict) -> Tuple[int, List[str]]:
+        """拓扑正确性：面自交/重叠快速检测（抽样）"""
+        issues: List[str] = []
+        invalid = 0
+        checked = 0
+        try:
+            from shapely.geometry import Polygon
+            for layer in map_data.get("layers", []) or []:
+                if layer.get("type") not in ("polygon", "area"):
+                    continue
+                for ring in (layer.get("coordinates") or [])[:20]:
+                    if not isinstance(ring, list) or len(ring) < 3:
+                        continue
+                    try:
+                        poly = Polygon([(p[1], p[0]) for p in ring])
+                        if not poly.is_valid:
+                            invalid += 1
+                    except Exception:
+                        invalid += 1
+                    checked += 1
+        except Exception:
+            pass
+        if checked == 0:
+            return 100, issues
+        score = max(0, 100 - int(invalid / checked * 100))
+        if invalid:
+            issues.append(f"拓扑检查发现 {invalid}/{checked} 个无效面要素")
+        return score, issues
+
+    def _check_annotation_quality(self, map_data: Dict) -> Tuple[int, List[str]]:
+        """注记质量：地标类地图是否含注记层，字号是否规范"""
+        issues: List[str] = []
+        map_type = map_data.get("map_type", "")
+        layers = map_data.get("layers", []) or []
+        label_layers = [l for l in layers if l.get("type") in ("textLabel", "label")]
+        if map_type in ("tourism", "traffic", "administrative") and not label_layers:
+            issues.append("缺少注记图层（地标/区名注记）")
+            return 50, issues
+        bad_size = 0
+        for l in label_layers:
+            size = (l.get("style") or {}).get("fontSize")
+            if size is not None and not (8 <= size <= 18):
+                bad_size += 1
+        if bad_size:
+            issues.append(f"{bad_size} 个注记图层字号超出规范范围(8-18px)")
+            return 70, issues
+        return 100, issues
+
+    def _check_load_density(self, map_data: Dict) -> Tuple[int, List[str]]:
+        """载负量：图层数量与要素总量是否超限"""
+        issues: List[str] = []
+        layers = map_data.get("layers", []) or []
+        n_layers = len(layers)
+        total_elements = sum(
+            len(l.get("coordinates") or []) + len(l.get("features") or [])
+            for l in layers
+        )
+        if n_layers > 120 or total_elements > 200000:
+            issues.append(f"载负量偏高：{n_layers} 个图层 / {total_elements} 个要素")
+            return 45, issues
+        if n_layers > 80 or total_elements > 100000:
+            issues.append(f"载负量中等：{n_layers} 个图层 / {total_elements} 个要素，建议LOD分级")
+            return 75, issues
+        return 100, issues
+
+    def _check_projection(self, map_data: Dict) -> Tuple[int, List[str]]:
+        """投影合理性：编制信息是否声明投影，行政区划图是否使用标准投影"""
+        meta = map_data.get("metadata") or {}
+        projection = str(meta.get("投影") or "")
+        map_type = map_data.get("map_type", "")
+        if not projection:
+            return 80, ["编制信息未声明投影，建议补充（Web墨卡托/CGCS2000）"]
+        if map_type == "administrative" and "高斯" not in projection and "CGCS2000" not in projection:
+            return 70, [f"行政区划图建议使用高斯-克吕格/CGCS2000，当前: {projection}"]
+        return 100, []
+
+    def _check_decoration_completeness(self, map_data: Dict) -> Tuple[int, List[str]]:
+        """整饰完整性：图名/图例/比例尺/指北针/说明是否齐备"""
+        issues: List[str] = []
+        name = map_data.get("name") or ""
+        legend = map_data.get("legend") or {}
+        meta = map_data.get("metadata") or {}
+        missing = []
+        if not name:
+            missing.append("图名")
+        if not (legend.get("items") or []):
+            missing.append("图例")
+        if not (meta.get("编制单位") or meta.get("数据来源")):
+            missing.append("编制/来源说明")
+        if missing:
+            issues.append("整饰缺失: " + "、".join(missing))
+            return 55, issues
+        return 100, issues

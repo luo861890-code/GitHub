@@ -269,6 +269,19 @@
         <i class="fa-solid fa-pen"></i>
         <span>重命名</span>
       </div>
+      <div class="menu-item" @click="moveLayerToGroup('')">
+        <i class="fa-solid fa-folder-minus"></i>
+        <span>移出分组</span>
+      </div>
+      <div
+        v-for="[groupId, group] in Object.entries(mapStore.layerGroups_meta)"
+        :key="groupId"
+        class="menu-item"
+        @click="moveLayerToGroup(groupId)"
+      >
+        <i class="fa-solid fa-folder"></i>
+        <span>移动到：{{ group.name }}</span>
+      </div>
       <div class="menu-item" @click="duplicateLayer">
         <i class="fa-solid fa-copy"></i>
         <span>复制图层</span>
@@ -301,6 +314,7 @@ import { useAppStore } from '@/stores/appStore'
 import { useMapStore } from '@/stores/mapStore'
 import type { MapLayer, LayerType } from '@/types'
 import api from '@/services/api'
+import { showInputDialog } from '@/utils/dialog'
 
 const appStore = useAppStore()
 const mapStore = useMapStore()
@@ -501,20 +515,34 @@ function zoomToLayer() {
 
 function moveUp() {
   mapStore.moveLayerUp(contextMenu.value.layerId)
+  persistLayerOrder()
   refreshMapRender()
   hideContextMenu()
 }
 
 function moveDown() {
   mapStore.moveLayerDown(contextMenu.value.layerId)
+  persistLayerOrder()
   refreshMapRender()
   hideContextMenu()
 }
 
-function startRename() {
+/** 将当前图层顺序持久化到后端（防抖） */
+let orderSaveTimer: ReturnType<typeof setTimeout> | null = null
+function persistLayerOrder() {
+  if (!mapStore.currentMapId) return
+  const mapId = mapStore.currentMapId
+  if (orderSaveTimer) clearTimeout(orderSaveTimer)
+  orderSaveTimer = setTimeout(() => {
+    const ids = mapStore.sortedLayers.map((l) => l.id)
+    api.reorderLayers(mapId, ids).catch(() => {})
+  }, 300)
+}
+
+async function startRename() {
   const layer = mapStore.layerGroups[contextMenu.value.layerId]
   if (layer) {
-    const newName = prompt('请输入新的图层名称:', layer.data.name)
+    const newName = await showInputDialog({ title: '请输入新的图层名称', defaultValue: layer.data.name })
     if (newName && newName.trim()) {
       mapStore.renameLayer(contextMenu.value.layerId, newName.trim())
     }
@@ -522,26 +550,59 @@ function startRename() {
   hideContextMenu()
 }
 
-function duplicateLayer() {
+async function duplicateLayer() {
   const layerId = contextMenu.value.layerId
   const item = mapStore.layerGroups[layerId]
   if (!item) return
-  const copy: MapLayer = JSON.parse(JSON.stringify(item.data))
-  copy.id = 'copy_' + Date.now()
-  copy.name = (copy.name || '未命名图层') + ' 副本'
-  const maxOrder = Math.max(0, ...mapStore.sortedLayers.map((l) => l.order))
-  mapStore.layerGroups[copy.id] = { visible: true, data: copy, order: maxOrder + 1 }
+  if (mapStore.currentMapId) {
+    try {
+      const resp = await api.duplicateLayer(mapStore.currentMapId, layerId)
+      const data = resp.data || resp
+      mapStore.setMapData(data)
+      refreshMapRender()
+    } catch (e: any) {
+      alert('复制图层失败: ' + e.message)
+    }
+  } else {
+    // 无地图时的本地兜底
+    const copy: MapLayer = JSON.parse(JSON.stringify(item.data))
+    copy.id = 'copy_' + Date.now()
+    copy.name = (copy.name || '未命名图层') + ' 副本'
+    const maxOrder = Math.max(0, ...mapStore.sortedLayers.map((l) => l.order))
+    mapStore.layerGroups[copy.id] = { visible: true, data: copy, order: maxOrder + 1 }
+  }
   hideContextMenu()
 }
 
-function deleteLayer() {
+async function deleteLayer() {
   if (confirm('确定要删除该图层吗？')) {
     mapStore.removeLayer(contextMenu.value.layerId)
     if (appStore.selectedLayerId === contextMenu.value.layerId) {
       appStore.setSelectedLayer(null)
     }
+    if (mapStore.currentMapId) {
+      try {
+        await api.removeLayer(mapStore.currentMapId, contextMenu.value.layerId)
+      } catch (e: any) {
+        alert('删除图层失败: ' + e.message)
+      }
+    }
     refreshMapRender()
   }
+  hideContextMenu()
+}
+
+/** 将图层移入/移出分组（持久化） */
+async function moveLayerToGroup(groupId: string | null) {
+  const layerId = contextMenu.value.layerId
+  const groupName = groupId ? mapStore.layerGroups_meta[groupId]?.name || groupId : null
+  mapStore.moveLayerToGroup(layerId, groupName || null)
+  if (mapStore.currentMapId) {
+    try {
+      await api.patchLayer(mapStore.currentMapId, layerId, { group: groupName || null })
+    } catch (e) { /* 持久化失败不影响本地 */ }
+  }
+  refreshMapRender()
   hideContextMenu()
 }
 
@@ -572,8 +633,8 @@ function refreshMapRender() {
 }
 
 // 添加图层组
-function handleAddGroup() {
-  const name = prompt('请输入图层组名称:', '新建图层组')
+async function handleAddGroup() {
+  const name = await showInputDialog({ title: '请输入图层组名称', defaultValue: '新建图层组' })
   if (name && name.trim()) {
     mapStore.addLayerGroup(name.trim())
   }

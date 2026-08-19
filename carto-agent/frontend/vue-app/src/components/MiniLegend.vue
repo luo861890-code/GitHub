@@ -34,7 +34,7 @@ const folded = ref(false)
   border: 1px solid var(--color-border);
   border-radius: 8px;
   box-shadow: var(--shadow-sm);
-  z-index: 12;
+  z-index: 820;
   font-size: 11px;
   color: var(--color-text);
   overflow: hidden;

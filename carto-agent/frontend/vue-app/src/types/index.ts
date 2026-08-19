@@ -20,6 +20,7 @@ export interface Message {
   geotoken_info?: GeoTokenInfo | null
   rag_sources?: RagSource[]
   graphrag_entities?: string[]
+  graphrag_chain?: GraphragChainHop[]
   knowledge_sources?: KnowledgeSources
   quality?: QualityReport | null
   timestamp?: number
@@ -161,6 +162,12 @@ export interface KnowledgeSources {
   kg_answer?: string
 }
 
+export interface GraphragChainHop {
+  hop?: number
+  entities?: string[]
+  confidence?: string
+}
+
 // ========== GeoToken类型 ==========
 export interface GeoTokenInfo {
   layer_count: number
@@ -252,6 +259,7 @@ export interface StreamCallbacks {
   onSteps?: (steps: Step[]) => void
   onRag?: (sources: RagSource[]) => void
   onGraphrag?: (data: { entities?: string[] }) => void
+  onGraphragChain?: (chain: GraphragChainHop[]) => void
   onGeotoken?: (info: GeoTokenInfo) => void
   onKnowledgeSources?: (sources: KnowledgeSources) => void
   onDone?: (data: { provider?: string; model?: string }) => void

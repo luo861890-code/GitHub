@@ -1,6 +1,8 @@
 # 业务服务包
 # 导出所有服务类供API层和其他模块使用
 
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 from app.services.llm_service import (
     LLMProvider,
     OllamaProvider,

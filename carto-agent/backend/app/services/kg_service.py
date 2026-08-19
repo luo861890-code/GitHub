@@ -12,6 +12,10 @@ KGService为制图智能体提供知识支撑：
 - 制图决策查询（指定地图类型的完整制图方案，含图层配置、符号方案、配色方案、标注规则）
 - 图层顺序查询（指定地图类型的图层叠置顺序）
 """
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
+import os
+import time
 from typing import List, Dict, Any, Optional
 
 from app.core.config import settings
@@ -38,6 +42,8 @@ class KGService:
         self.llm_service = llm_service
         self.driver = None
         self._memory_store: Dict[str, List[dict]] = {}  # 内存模式的数据存储
+        self._last_connect_attempt = 0.0
+        self._reconnect_interval = 60.0
 
         # 尝试连接Neo4j
         try:
@@ -49,13 +55,50 @@ class KGService:
             )
             # 验证连接
             self.driver.verify_connectivity()
-            print("[KGService] Neo4j连接成功，使用图数据库模式")
+            logger.info("[KGService] Neo4j连接成功，使用图数据库模式")
+            self._last_connect_attempt = time.time()
         except Exception as e:
-            print(f"[KGService] Neo4j连接失败: {e}，降级为内存规则模式")
+            logger.info(f"[KGService] Neo4j连接失败: {e}，降级为内存规则模式")
             self.driver = None
             self._init_memory_store()
+            self._last_connect_attempt = time.time()
+
+    def _ensure_connected(self):
+        """Neo4j 断连后自动重连：每次请求按退避间隔尝试，恢复后切回图数据库模式。"""
+        if self.driver is not None:
+            return
+        now = time.time()
+        if now - self._last_connect_attempt < self._reconnect_interval:
+            return
+        self._last_connect_attempt = now
+        try:
+            from neo4j import GraphDatabase
+
+            driver = GraphDatabase.driver(
+                settings.neo4j_uri,
+                auth=(settings.neo4j_username, settings.neo4j_password),
+            )
+            driver.verify_connectivity()
+            self.driver = driver
+            logger.info("[KGService] Neo4j重新连接成功，切换回图数据库模式")
+        except Exception as e:
+            logger.info(f"[KGService] Neo4j重连失败: {e}，保持内存模式")
 
     # ==================== 知识初始化 ====================
+
+    @staticmethod
+    def _safe_label(label) -> str:
+        """将外部标签规范化为 Neo4j 合法标签（非法时回退 Entity）"""
+        import re
+        s = str(label or "").strip()
+        return s if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", s) else "Entity"
+
+    @staticmethod
+    def _safe_rel_type(rel_type) -> str:
+        """将外部关系类型规范化为 Neo4j 合法类型（非法时回退 RELATED）"""
+        import re
+        s = str(rel_type or "").strip()
+        return s if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", s) else "RELATED"
 
     def init_knowledge(self) -> bool:
         """初始化图谱数据
@@ -68,8 +111,9 @@ class KGService:
         Returns:
             初始化是否成功
         """
+        self._ensure_connected()
         if self.driver is None:
-            print("[KGService] 内存模式，知识已内置，无需初始化")
+            logger.info("[KGService] 内存模式，知识已内置，无需初始化")
             return True
 
         try:
@@ -129,11 +173,77 @@ class KGService:
                         name=landmark["name"],
                     )
 
-                print("[KGService] 知识图谱初始化完成")
+                # 导入完整本体数据（init_data.json：样式/规则/图层配置/符号等扩展知识）
+                import json as _json
+                init_data_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+                    "data", "kg", "init_data.json",
+                )
+                if os.path.exists(init_data_path):
+                    with open(init_data_path, "r", encoding="utf-8") as f:
+                        data = _json.load(f)
+                    json_nodes = data.get("nodes", [])
+                    json_relations = data.get("relations", [])
+                    # 追加 5 大类本体（MapElement/MapSymbol/MapData/MapProjection/CartoFactor）
+                    try:
+                        from app.core.kg_ontology import ONTOLOGY_NODES, ONTOLOGY_RELATIONS
+                        json_nodes = list(json_nodes) + list(ONTOLOGY_NODES)
+                        json_relations = list(json_relations) + list(ONTOLOGY_RELATIONS)
+                    except ImportError:
+                        pass
+
+                    # 与内存模式一致：按 name 去重，首次出现为准
+                    seen_names = set()
+                    unique_nodes = []
+                    for node in json_nodes:
+                        name = (node.get("name") or "").strip()
+                        if not name or name in seen_names:
+                            continue
+                        seen_names.add(name)
+                        unique_nodes.append(node)
+
+                    for node in unique_nodes:
+                        name = node.get("name") or ""
+                        label = self._safe_label(node.get("label") or "Entity")
+                        props = {}
+                        for key, value in node.items():
+                            if key in ("name", "label"):
+                                continue
+                            if isinstance(value, (dict, list)):
+                                props[key] = _json.dumps(value, ensure_ascii=False)
+                            elif value is not None:
+                                props[key] = value
+                        session.run(
+                            f"MERGE (n:{label} {{name: $name}}) SET n += $props",
+                            name=name,
+                            props=props,
+                        )
+
+                    for rel in json_relations:
+                        rel_type = self._safe_rel_type(rel.get("type") or "RELATED")
+                        from_name = rel.get("from") or rel.get("source") or ""
+                        to_name = rel.get("to") or rel.get("target") or ""
+                        if not from_name or not to_name:
+                            continue
+                        rel_props = {}
+                        for key, value in (rel.get("properties") or {}).items():
+                            if isinstance(value, (dict, list)):
+                                rel_props[key] = _json.dumps(value, ensure_ascii=False)
+                            elif value is not None:
+                                rel_props[key] = value
+                        session.run(
+                            f"MATCH (a {{name: $from_name}}), (b {{name: $to_name}}) "
+                            f"MERGE (a)-[r:{rel_type}]->(b) SET r += $props",
+                            from_name=from_name,
+                            to_name=to_name,
+                            props=rel_props,
+                        )
+
+                logger.info("[KGService] 知识图谱初始化完成")
                 return True
 
         except Exception as e:
-            print(f"[KGService] 知识初始化失败: {e}")
+            logger.info(f"[KGService] 知识初始化失败: {e}")
             return False
 
     # ==================== 知识查询 ====================
@@ -144,6 +254,7 @@ class KGService:
         Returns:
             约束列表，每项包含 map_type 和 constraint 字段
         """
+        self._ensure_connected()
         if self.driver is None:
             # 内存模式：返回内置约束
             constraints = self._memory_store.get("constraints", [])
@@ -157,7 +268,7 @@ class KGService:
                     for record in result
                 ]
         except Exception as e:
-            print(f"[KGService] 查询约束失败: {e}")
+            logger.info(f"[KGService] 查询约束失败: {e}")
             return []
 
     def get_style_recommendations(self, map_type: str,
@@ -214,7 +325,7 @@ class KGService:
                             "style": record["style"],
                         })
             except Exception as e:
-                print(f"[KGService] 查询样式推荐失败: {e}")
+                logger.info(f"[KGService] 查询样式推荐失败: {e}")
 
         return recommendations
 
@@ -227,6 +338,7 @@ class KGService:
         Returns:
             {"nodes": [{id, label, name, properties}], "links": [{source, target, type}]}
         """
+        self._ensure_connected()
         if self.driver is None:
             # 内存模式：返回内置地标图谱
             return self._get_memory_graph_data(limit)
@@ -272,7 +384,7 @@ class KGService:
                 return {"nodes": nodes, "links": links}
 
         except Exception as e:
-            print(f"[KGService] 获取图谱数据失败: {e}")
+            logger.info(f"[KGService] 获取图谱数据失败: {e}")
             return {"nodes": [], "links": []}
 
     def get_subgraph(self, entity_name: str, depth: int = 2, limit: int = 50) -> Dict[str, List[dict]]:
@@ -289,6 +401,7 @@ class KGService:
         Returns:
             {"nodes": [...], "links": [...], "center": entity_name}
         """
+        self._ensure_connected()
         if self.driver is None:
             return self._get_memory_subgraph(entity_name, depth, limit)
 
@@ -332,7 +445,7 @@ class KGService:
                     "center": entity_name,
                 }
         except Exception as e:
-            print(f"[KGService] 子图检索失败: {e}")
+            logger.info(f"[KGService] 子图检索失败: {e}")
             return {"nodes": [], "links": [], "center": entity_name}
 
     def _get_memory_subgraph(self, entity_name: str, depth: int, limit: int) -> Dict[str, List[dict]]:
@@ -442,6 +555,7 @@ class KGService:
             }
             如果找不到决策数据，返回空字典。
         """
+        self._ensure_connected()
         if self.driver is None:
             return self._query_cartographic_decision_memory(map_type, audience)
 
@@ -465,7 +579,7 @@ class KGService:
                 decisions = [record.data() for record in result]
 
                 if not decisions:
-                    print(f"[KGService] 未找到地图类型'{map_type}'受众'{audience}'的制图决策数据")
+                    logger.info(f"[KGService] 未找到地图类型'{map_type}'受众'{audience}'的制图决策数据")
                     return {}
 
                 # 按decision_type分组组装结果
@@ -520,12 +634,12 @@ class KGService:
                 else:
                     assembled["confidence"] = "none"
 
-                print(f"[KGService] 查询制图决策成功: map_type={map_type}, audience={audience}, "
+                logger.info(f"[KGService] 查询制图决策成功: map_type={map_type}, audience={audience}, "
                       f"decisions={decision_count}, confidence={assembled['confidence']}")
                 return assembled
 
         except Exception as e:
-            print(f"[KGService] 查询制图决策失败: {e}，回退到内存模式")
+            logger.info(f"[KGService] 查询制图决策失败: {e}，回退到内存模式")
             return self._query_cartographic_decision_memory(map_type, audience)
 
     def _query_cartographic_decision_memory(self, map_type: str, audience: str) -> Dict[str, Any]:
@@ -565,7 +679,7 @@ class KGService:
                     matched_decisions.append(props)
 
         if not matched_decisions:
-            print(f"[KGService] 内存模式未找到地图类型'{map_type}'的制图决策数据")
+            logger.info(f"[KGService] 内存模式未找到地图类型'{map_type}'的制图决策数据")
             return {}
 
         # 按decision_type分组
@@ -623,7 +737,7 @@ class KGService:
         else:
             assembled["confidence"] = "none"
 
-        print(f"[KGService] 内存模式查询制图决策: map_type={map_type}, audience={audience}, "
+        logger.info(f"[KGService] 内存模式查询制图决策: map_type={map_type}, audience={audience}, "
               f"decisions={len(matched_decisions)}, confidence={assembled['confidence']}")
         return assembled
 
@@ -640,6 +754,7 @@ class KGService:
             排序后的图层列表，每项包含 name, order, osm_tags, symbol_type 等字段。
             如果找不到图层配置，返回空列表并打印警告。
         """
+        self._ensure_connected()
         if self.driver is None:
             return self._query_layer_order_memory(map_type)
 
@@ -654,7 +769,7 @@ class KGService:
                 records = [record.data() for record in result]
 
                 if not records:
-                    print(f"[KGService] 未找到地图类型'{map_type}'的图层配置决策")
+                    logger.info(f"[KGService] 未找到地图类型'{map_type}'的图层配置决策")
                     return []
 
                 # 从决策参数中提取图层列表并排序
@@ -668,11 +783,11 @@ class KGService:
 
                 # 按order排序
                 layers.sort(key=lambda x: x.get("order", 999))
-                print(f"[KGService] 查询图层顺序成功: map_type={map_type}, layers={len(layers)}")
+                logger.info(f"[KGService] 查询图层顺序成功: map_type={map_type}, layers={len(layers)}")
                 return layers
 
         except Exception as e:
-            print(f"[KGService] 查询图层顺序失败: {e}，回退到内存模式")
+            logger.info(f"[KGService] 查询图层顺序失败: {e}，回退到内存模式")
             return self._query_layer_order_memory(map_type)
 
     def _query_layer_order_memory(self, map_type: str) -> List[Dict[str, Any]]:
@@ -704,12 +819,12 @@ class KGService:
                         layers.append(layer)
 
         if not layers:
-            print(f"[KGService] 内存模式未找到地图类型'{map_type}'的图层配置")
+            logger.info(f"[KGService] 内存模式未找到地图类型'{map_type}'的图层配置")
             return []
 
         # 按order排序
         layers.sort(key=lambda x: x.get("order", 999))
-        print(f"[KGService] 内存模式查询图层顺序: map_type={map_type}, layers={len(layers)}")
+        logger.info(f"[KGService] 内存模式查询图层顺序: map_type={map_type}, layers={len(layers)}")
         return layers
 
     def query(self, question: str) -> str:
@@ -783,7 +898,7 @@ class KGService:
 
         # 安全校验：拒绝写操作，防止 LLM 生成的 Cypher 破坏图谱数据
         if not self._is_readonly_cypher(cypher):
-            print(f"[KGService] 拒绝执行非只读Cypher查询: {cypher[:100]}")
+            logger.info(f"[KGService] 拒绝执行非只读Cypher查询: {cypher[:100]}")
             return self._query_with_keywords(question)
 
         try:
@@ -797,7 +912,7 @@ class KGService:
                 else:
                     return "查询未返回结果。"
         except Exception as e:
-            print(f"[KGService] Cypher查询执行失败: {e}，回退到关键词匹配")
+            logger.info(f"[KGService] Cypher查询执行失败: {e}，回退到关键词匹配")
             return self._query_with_keywords(question)
 
     def _query_with_keywords(self, question: str) -> str:
@@ -873,12 +988,13 @@ class KGService:
         Raises:
             KnowledgeGraphError: 创建失败
         """
+        self._ensure_connected()
         if self.driver is None:
             # 内存模式
             node_id = generate_id("node")
             node = {"id": node_id, "label": label, "properties": properties}
             self._memory_store.setdefault("nodes", []).append(node)
-            print(f"[KGService] 内存模式创建实体: {label} (ID: {node_id})")
+            logger.info(f"[KGService] 内存模式创建实体: {label} (ID: {node_id})")
             return node
 
         try:
@@ -911,12 +1027,13 @@ class KGService:
         Raises:
             KnowledgeGraphError: 更新失败
         """
+        self._ensure_connected()
         if self.driver is None:
             # 内存模式
             for node in self._memory_store.get("nodes", []):
                 if node["id"] == node_id:
                     node["properties"].update(properties)
-                    print(f"[KGService] 内存模式更新实体: {node_id}")
+                    logger.info(f"[KGService] 内存模式更新实体: {node_id}")
                     return node
             raise KnowledgeGraphError(f"节点不存在: {node_id}")
 
@@ -949,20 +1066,21 @@ class KGService:
         Raises:
             KnowledgeGraphError: 删除失败
         """
+        self._ensure_connected()
         if self.driver is None:
             # 内存模式
             nodes = self._memory_store.get("nodes", [])
             original_count = len(nodes)
             self._memory_store["nodes"] = [n for n in nodes if n["id"] != node_id]
             if len(self._memory_store["nodes"]) < original_count:
-                print(f"[KGService] 内存模式删除实体: {node_id}")
+                logger.info(f"[KGService] 内存模式删除实体: {node_id}")
                 return True
             raise KnowledgeGraphError(f"节点不存在: {node_id}")
 
         try:
             with self.driver.session() as session:
                 session.run("MATCH (n) WHERE id(n) = toInteger($node_id) DETACH DELETE n", node_id=node_id)
-                print(f"[KGService] 删除实体: {node_id}")
+                logger.info(f"[KGService] 删除实体: {node_id}")
                 return True
         except Exception as e:
             raise KnowledgeGraphError(f"删除实体失败: {e}")
@@ -976,6 +1094,7 @@ class KGService:
         Returns:
             实体列表，每项包含 id, label, properties
         """
+        self._ensure_connected()
         if self.driver is None:
             # 内存模式
             nodes = self._memory_store.get("nodes", [])
@@ -995,7 +1114,7 @@ class KGService:
                     })
                 return entities
         except Exception as e:
-            print(f"[KGService] 查询实体失败: {e}")
+            logger.info(f"[KGService] 查询实体失败: {e}")
             return []
 
     def create_relation(
@@ -1023,6 +1142,7 @@ class KGService:
         Raises:
             KnowledgeGraphError: 创建失败
         """
+        self._ensure_connected()
         if self.driver is None:
             # 内存模式
             relation = {
@@ -1032,7 +1152,7 @@ class KGService:
                 "properties": properties or {},
             }
             self._memory_store.setdefault("relations", []).append(relation)
-            print(f"[KGService] 内存模式创建关系: {source_id}-[{relation_type}]->{target_id}")
+            logger.info(f"[KGService] 内存模式创建关系: {source_id}-[{relation_type}]->{target_id}")
             return relation
 
         try:
@@ -1122,7 +1242,7 @@ class KGService:
                             )
                             imported_entities.append(entity)
 
-        print(f"[KGService] 文档导入完成，共创建{len(imported_entities)}个实体")
+        logger.info(f"[KGService] 文档导入完成，共创建{len(imported_entities)}个实体")
         return {"imported_count": len(imported_entities), "entities": imported_entities}
 
     # ==================== 内部辅助方法 ====================
@@ -1179,11 +1299,11 @@ class KGService:
                 
                 self._memory_store["nodes"] = converted_nodes
                 self._memory_store["relations"] = json_relations
-                print(f"[KGService] 从init_data.json加载: {len(converted_nodes)}个节点, "
+                logger.info(f"[KGService] 从init_data.json加载: {len(converted_nodes)}个节点, "
                       f"{len(json_relations)}条关系")
                 loaded_from_file = True
             except Exception as e:
-                print(f"[KGService] 加载init_data.json失败: {e}，回退到本体模块")
+                logger.info(f"[KGService] 加载init_data.json失败: {e}，回退到本体模块")
         
         # 如果文件加载失败，回退到kg_ontology.py
         if not loaded_from_file:
@@ -1191,12 +1311,12 @@ class KGService:
                 from app.core.kg_ontology import ONTOLOGY_NODES, ONTOLOGY_RELATIONS
                 self._memory_store["nodes"] = list(ONTOLOGY_NODES)
                 self._memory_store["relations"] = list(ONTOLOGY_RELATIONS)
-                print(f"[KGService] 内存知识库已初始化（含{len(ONTOLOGY_NODES)}个本体节点, "
+                logger.info(f"[KGService] 内存知识库已初始化（含{len(ONTOLOGY_NODES)}个本体节点, "
                       f"{len(ONTOLOGY_RELATIONS)}条本体关系）")
             except ImportError:
                 self._memory_store["nodes"] = []
                 self._memory_store["relations"] = []
-                print("[KGService] 内存知识库已初始化（本体模块未加载）")
+                logger.info("[KGService] 内存知识库已初始化（本体模块未加载）")
 
     def _get_memory_graph_data(self, limit: int) -> Dict[str, List[dict]]:
         """获取内存模式的图谱数据
@@ -1283,4 +1403,4 @@ class KGService:
         """关闭Neo4j连接"""
         if self.driver is not None:
             self.driver.close()
-            print("[KGService] Neo4j连接已关闭")
+            logger.info("[KGService] Neo4j连接已关闭")

@@ -5,6 +5,8 @@
 拓扑几何 / 属性数据 / 元数据统计 / 逻辑一致性 / 专题图层适配。
 输出结构化报告，支持前端"问题定位跳转"。
 """
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 from typing import Any, Dict, List
 
 from app.utils.geometry import (

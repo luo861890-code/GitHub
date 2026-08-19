@@ -1,0 +1,34 @@
+{
+  "schema_version": "1",
+  "source_path": "D:\\AAA-Study\\work\\样例\\LLM-KG-Carto一种基于大语言模型和知识图谱的自动制图框架-廖成-2021202050034.pptx",
+  "source_filename": "LLM-KG-Carto一种基于大语言模型和知识图谱的自动制图框架-廖成-2021202050034.pptx",
+  "source_hash": "f918dba5e722",
+  "source_size_bytes": 18421302,
+  "kind": "pptx",
+  "rendered_at_utc": "2026-08-17T10:21:22+00:00",
+  "output_dir": "D:\\AAA-Study\\work\\github\\carto-agent\\.preview\\f918dba5e722",
+  "page_count": 0,
+  "rendered_page_count": 0,
+  "collage_count": 0,
+  "extracted_text_chars": 0,
+  "text_relpath": null,
+  "thumbnail_relpath": null,
+  "pages": [],
+  "collages": [],
+  "warnings": [
+    "pptx parse produced no slides or text"
+  ],
+  "options": {
+    "max_pages": 12,
+    "collage": true,
+    "page_range": null,
+    "thumbnail": true,
+    "text_only": true,
+    "jpeg_quality": 85,
+    "out_max_dim": 2048
+  },
+  "summary": {
+    "slide_count": 0,
+    "slide_titles": []
+  }
+}

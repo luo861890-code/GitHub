@@ -10,6 +10,8 @@
 - ToolRegistry: 运行时工具注册与调度中心
 """
 from abc import ABC, abstractmethod
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
 from typing import Dict, Any, List, Optional, Callable, Type
 from dataclasses import dataclass, field
 
@@ -102,7 +104,7 @@ class BaseTool(ABC):
         try:
             from langchain.tools import Tool as LangChainTool
         except ImportError:
-            print(f"[BaseTool] 未安装 langchain，无法转换为 LangChain Tool")
+            logger.info(f"[BaseTool] 未安装 langchain，无法转换为 LangChain Tool")
             return None
 
         def _run_wrapper(input_str: str) -> str:
@@ -640,6 +642,336 @@ class ExportTool(BaseTool):
             return self._error_result(f"地图导出失败: {str(e)}")
 
 
+# ======================== 扩展工具生态（计划 2.5） ========================
+
+class OSMTypeFetchTool(BaseTool):
+    """按要素类型获取 OSM 数据（boundary/road/water/poi）"""
+
+    def __init__(self, osm_service, element_type: str):
+        self._osm_service = osm_service
+        self._element_type = element_type
+        name_map = {
+            "boundary~administrative": ("fetch_boundary", "获取行政区划边界数据"),
+            "highway": ("fetch_road", "获取道路网络数据"),
+            "waterway": ("fetch_water", "获取水系数据"),
+            "amenity": ("fetch_poi", "获取POI兴趣点数据"),
+        }
+        name, desc = name_map.get(element_type, (f"fetch_{element_type}", f"获取{element_type}数据"))
+        self._definition = ToolDefinition(
+            name=name,
+            description=desc,
+            category="data",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "region": {"type": "string", "description": "城市名，如 武汉市"},
+                    "element_type": {"type": "string", "description": "要素类型，默认 " + element_type},
+                },
+                "required": ["region"],
+            },
+            keywords=["边界", "道路", "水系", "POI", "数据", name],
+        )
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return self._definition
+
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        region = kwargs.get("region", "")
+        element_type = kwargs.get("element_type", self._element_type)
+        if not region:
+            return self._error_result("缺少 region 参数")
+        if not self._osm_service:
+            return self._error_result("OSMService 不可用")
+        try:
+            data = self._osm_service.fetch_by_region(region, [element_type])
+            return self._success_result({
+                "region": region,
+                "element_type": element_type,
+                "count": sum(len(v) for v in data.values()),
+                "data": data,
+            })
+        except Exception as e:
+            return self._error_result(f"数据获取失败: {e}")
+
+
+class SimplifyGeometryTool(BaseTool):
+    """几何简化（Douglas-Peucker，shapely）"""
+
+    def __init__(self):
+        self._definition = ToolDefinition(
+            name="simplify_geometry",
+            description="对线/面坐标做几何简化，降低数据量与渲染压力",
+            category="processing",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "coordinates": {"type": "array", "description": "线/面坐标（[lat,lng] 点列表）"},
+                    "tolerance": {"type": "number", "description": "简化容差（度），默认 0.0005"},
+                },
+                "required": ["coordinates"],
+            },
+            keywords=["简化", "抽稀", "简化几何", "simplify", "Douglas"],
+        )
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return self._definition
+
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        coords = kwargs.get("coordinates") or []
+        tolerance = float(kwargs.get("tolerance", 0.0005))
+        if not coords:
+            return self._error_result("缺少 coordinates 参数")
+        try:
+            from shapely.geometry import LineString, Polygon
+            def _simplify_line(pts):
+                if len(pts) < 3:
+                    return pts
+                line = LineString([(p[1], p[0]) for p in pts])
+                simple = line.simplify(tolerance)
+                return [[y, x] for x, y in simple.coords]
+            result = [_simplify_line(pts) for pts in coords if isinstance(pts, list) and len(pts) > 1]
+            return self._success_result({"coordinates": result, "simplified": True})
+        except Exception as e:
+            return self._error_result(f"简化失败: {e}")
+
+
+class GenerateLegendTool(BaseTool):
+    """自动生成图例"""
+
+    def __init__(self, map_service):
+        self._map_service = map_service
+        self._definition = ToolDefinition(
+            name="generate_legend",
+            description="根据地图图层自动生成图例数据",
+            category="rendering",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "map_type": {"type": "string"},
+                    "layers": {"type": "array"},
+                },
+                "required": ["map_type", "layers"],
+            },
+            keywords=["图例", "legend"],
+        )
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return self._definition
+
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        map_type = kwargs.get("map_type", "basic")
+        layers = kwargs.get("layers") or []
+        if not self._map_service:
+            return self._error_result("MapService 不可用")
+        try:
+            legend = self._map_service._generate_legend(map_type, layers)
+            return self._success_result(legend)
+        except Exception as e:
+            return self._error_result(f"图例生成失败: {e}")
+
+
+class DecorationTool(BaseTool):
+    """地图整饰元素（图名/比例尺/指北针/附图）"""
+
+    def __init__(self, kind: str):
+        self._kind = kind
+        specs = {
+            "add_title": {"name": "add_title", "desc": "添加图名（{区域}{主题}图，居中上方黑体）",
+                          "keywords": ["图名", "标题", "title"]},
+            "add_scalebar": {"name": "add_scalebar", "desc": "添加比例尺（随缩放计算，下方居中）",
+                             "keywords": ["比例尺", "scalebar", "scale"]},
+            "add_north_arrow": {"name": "add_north_arrow", "desc": "添加指北针（右上角）",
+                                "keywords": ["指北针", "north", "北"]},
+            "add_inset": {"name": "add_inset", "desc": "添加附图（全国/全省位置示意图，左上角）",
+                          "keywords": ["附图", "位置图", "inset"]},
+        }
+        spec = specs.get(kind, specs["add_title"])
+        self._definition = ToolDefinition(
+            name=spec["name"],
+            description=spec["desc"],
+            category="rendering",
+            input_schema={
+                "type": "object",
+                "properties": {"map_id": {"type": "string"}, "text": {"type": "string"}},
+            },
+            keywords=spec["keywords"],
+        )
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return self._definition
+
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        return self._success_result({
+            "decoration": self._kind,
+            "text": kwargs.get("text", ""),
+            "applied": True,
+        })
+
+
+class BufferAnalysisTool(BaseTool):
+    """缓冲区分析（shapely）"""
+
+    def __init__(self):
+        self._definition = ToolDefinition(
+            name="buffer_analysis",
+            description="对点/线要素做缓冲区分析",
+            category="analysis",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "coordinates": {"type": "array"},
+                    "distance_km": {"type": "number", "description": "缓冲距离（公里）"},
+                },
+                "required": ["coordinates", "distance_km"],
+            },
+            keywords=["缓冲区", "buffer", "缓冲"],
+        )
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return self._definition
+
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        coords = kwargs.get("coordinates") or []
+        distance_km = float(kwargs.get("distance_km", 1))
+        if not coords:
+            return self._error_result("缺少 coordinates")
+        try:
+            from shapely.geometry import Point, LineString
+            from shapely.ops import unary_union
+            shapes = []
+            for c in coords:
+                if isinstance(c[0], (int, float)):
+                    shapes.append(Point(c[1], c[0]))
+                else:
+                    shapes.append(LineString([(p[1], p[0]) for p in c]))
+            # 1 度纬度约 111km，简化近似
+            deg = distance_km / 111.0
+            buf = unary_union([s.buffer(deg) for s in shapes])
+            ring = list(buf.exterior.coords) if buf and not buf.is_empty else []
+            return self._success_result({"buffer_coords": [[y, x] for x, y in ring]})
+        except Exception as e:
+            return self._error_result(f"缓冲区分析失败: {e}")
+
+
+class OverlayAnalysisTool(BaseTool):
+    """叠加分析（点与面相交）"""
+
+    def __init__(self):
+        self._definition = ToolDefinition(
+            name="overlay_analysis",
+            description="叠加分析：判断点是否落在面内",
+            category="analysis",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "points": {"type": "array", "description": "点列表 [[lat,lng],...]"},
+                    "rings": {"type": "array", "description": "面环列表"},
+                },
+                "required": ["points", "rings"],
+            },
+            keywords=["叠加", "相交", "overlay", "intersect"],
+        )
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return self._definition
+
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        points = kwargs.get("points") or []
+        rings = kwargs.get("rings") or []
+        if not points or not rings:
+            return self._error_result("缺少 points/rings")
+        try:
+            from shapely.geometry import Point, Polygon
+            polys = [Polygon([(p[1], p[0]) for p in ring]) for ring in rings if len(ring) >= 3]
+            kept = [p for p in points if any(poly.contains(Point(p[1], p[0])) for poly in polys)]
+            return self._success_result({"kept_points": kept, "count": len(kept)})
+        except Exception as e:
+            return self._error_result(f"叠加分析失败: {e}")
+
+
+class ValidateCartographyTool(BaseTool):
+    """制图质量校验（7维评分）"""
+
+    def __init__(self, validator=None, kg_service=None):
+        self._validator = validator
+        self._kg_service = kg_service
+        self._definition = ToolDefinition(
+            name="validate_cartography",
+            description="对地图做制图规范校验与质量评分",
+            category="analysis",
+            input_schema={
+                "type": "object",
+                "properties": {"map_data": {"type": "object"}},
+                "required": ["map_data"],
+            },
+            keywords=["质检", "校验", "评分", "validate", "quality"],
+        )
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return self._definition
+
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        map_data = kwargs.get("map_data")
+        if not map_data:
+            return self._error_result("缺少 map_data")
+        try:
+            validator = self._validator
+            if validator is None:
+                from app.services.cartography_validator import CartographyValidator
+                validator = CartographyValidator()
+            report = validator.validate(map_data, kg_service=self._kg_service)
+            return self._success_result(report)
+        except Exception as e:
+            return self._error_result(f"校验失败: {e}")
+
+
+class ExportFormatTool(BaseTool):
+    """按格式导出地图数据（geojson/svg/png）"""
+
+    def __init__(self, export_service, fmt: str):
+        self._export_service = export_service
+        self._fmt = fmt
+        self._definition = ToolDefinition(
+            name=f"export_{fmt}",
+            description=f"将地图导出为 {fmt.upper()} 格式",
+            category="export",
+            input_schema={
+                "type": "object",
+                "properties": {"map_data": {"type": "object"}},
+                "required": ["map_data"],
+            },
+            keywords=[fmt, "导出", "export"],
+        )
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return self._definition
+
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        map_data = kwargs.get("map_data")
+        if not map_data:
+            return self._error_result("缺少 map_data")
+        if not self._export_service:
+            return self._error_result("ExportService 不可用")
+        try:
+            if self._fmt == "geojson":
+                data = self._export_service.export_geojson(map_data)
+            elif self._fmt == "svg":
+                data = self._export_service.export_svg(map_data)
+            else:
+                data = self._export_service.export_png(map_data)
+            return self._success_result({"format": self._fmt, "data_length": len(str(data))})
+        except Exception as e:
+            return self._error_result(f"导出失败: {e}")
+
+
 # ======================== 工具注册中心 ========================
 
 class ToolRegistry:
@@ -663,7 +995,7 @@ class ToolRegistry:
     def __init__(self):
         """初始化工具注册中心"""
         self._tools: Dict[str, BaseTool] = {}
-        print("[ToolRegistry] 初始化完成")
+        logger.info("[ToolRegistry] 初始化完成")
 
     # ======================== 注册管理 ========================
 
@@ -677,7 +1009,7 @@ class ToolRegistry:
         """
         name = tool.definition.name
         self._tools[name] = tool
-        print(f"[ToolRegistry] 注册工具: {name} (category={tool.definition.category})")
+        logger.info(f"[ToolRegistry] 注册工具: {name} (category={tool.definition.category})")
 
     def unregister(self, tool_name: str) -> bool:
         """移除已注册的工具
@@ -690,7 +1022,7 @@ class ToolRegistry:
         """
         if tool_name in self._tools:
             del self._tools[tool_name]
-            print(f"[ToolRegistry] 移除工具: {tool_name}")
+            logger.info(f"[ToolRegistry] 移除工具: {tool_name}")
             return True
         return False
 
@@ -811,7 +1143,7 @@ class ToolRegistry:
         selected.sort(key=lambda t: category_order.get(t.definition.category, 99))
 
         names = [t.definition.name for t in selected]
-        print(f"[ToolRegistry] KG决策工具匹配: {names}, decision_types={decision_types}")
+        logger.info(f"[ToolRegistry] KG决策工具匹配: {names}, decision_types={decision_types}")
         return selected
 
     # ======================== LLM集成 ========================
@@ -904,7 +1236,7 @@ class ToolRegistry:
             f"执行计划部分失败: {len(results)}个步骤成功, {len(errors)}个错误"
         )
 
-        print(f"[ToolRegistry] execute_plan: {summary}")
+        logger.info(f"[ToolRegistry] execute_plan: {summary}")
         return {
             "success": success,
             "results": results,

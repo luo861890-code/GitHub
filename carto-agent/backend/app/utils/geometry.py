@@ -14,6 +14,29 @@ import math
 R_EARTH_KM = 6371.0
 
 
+def haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Haversine 球面距离（米）
+
+    Args:
+        lat1, lng1: 第一个点 [lat, lng]
+        lat2, lng2: 第二个点 [lat, lng]
+
+    Returns:
+        两点间大圆距离（米）
+    """
+    R = 6371000.0
+    lat1_rad = math.radians(lat1)
+    lat2_rad = math.radians(lat2)
+    delta_lat = math.radians(lat2 - lat1)
+    delta_lng = math.radians(lng2 - lng1)
+    a = (
+        math.sin(delta_lat / 2) ** 2
+        + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lng / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+
+
 def _point_in_ring(pt: list, ring: list) -> bool:
     """射线法判断点 [lat, lng] 是否在环内（经纬度平面近似）。
 

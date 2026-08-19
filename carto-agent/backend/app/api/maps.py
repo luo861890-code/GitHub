@@ -1,6 +1,7 @@
 """地图API路由 - 地图生成、图层/要素管理与动态修改"""
 import asyncio
-from fastapi import APIRouter, Depends, Query
+import json
+from fastapi import APIRouter, Depends, Query, File, UploadFile, Form
 from pydantic import BaseModel, Field
 from typing import Optional as Opt, Any
 
@@ -59,6 +60,11 @@ class UpdateLayerGeometryRequest(BaseModel):
     properties: Opt[Any] = Field(default=None, description="新的属性数组（整层替换）")
     style: Opt[dict] = Field(default=None, description="新的样式")
     features: Opt[Any] = Field(default=None, description="新的 features 数组（features 型图层）")
+
+
+class StylePackageRequest(BaseModel):
+    """风格包应用请求（计划 3.5）"""
+    package: str = Field(..., description="风格包 key：classic/minimal/vintage/dark/academic/handdrawn")
 
 
 @router.post("/{map_id}/marker", response_model=ApiResponse, summary="添加自定义标注点（答辩演示：标注赏樱点/卫生间等）")
@@ -217,19 +223,88 @@ async def add_layer(
     request: AddLayerRequest,
     map_service: MapService = Depends(get_map_service),
 ):
-    """向指定地图添加新图层（如道路、POI、水系等）"""
+    """向指定地图添加新图层（支持OSM自动填充或直接写入坐标/要素数据）"""
     try:
         result = map_service.add_layer(
             map_id=map_id,
             layer_type=request.layer_type,
             name=request.name,
             query=request.query,
+            coordinates=request.coordinates,
+            properties=request.properties,
+            style=request.style,
+            features=request.features,
+            group=request.group,
         )
         return ApiResponse(success=True, message="图层添加成功", data=result)
     except CartoAgentError as e:
         return ApiResponse(success=False, message=str(e))
     except Exception as e:
         return ApiResponse(success=False, message=f"添加图层失败: {e}")
+
+
+@router.post("/{map_id}/layers/import", response_model=ApiResponse, summary="导入GeoJSON图层")
+async def import_geojson_layer(
+    map_id: str,
+    file: UploadFile = File(..., description="GeoJSON 文件"),
+    name: str = Form(..., description="图层名称"),
+    layer_type: str = Form("auto", description="auto/point/line/polygon"),
+    map_service: MapService = Depends(get_map_service),
+):
+    """导入用户上传的 GeoJSON 数据为地图图层（计划 2.2）"""
+    try:
+        content = await file.read()
+        geojson = json.loads(content.decode("utf-8"))
+        result = map_service.import_geojson_layer(
+            map_id=map_id,
+            name=name,
+            geojson=geojson,
+            layer_type=layer_type,
+        )
+        return ApiResponse(success=True, message="GeoJSON 图层导入成功", data=result)
+    except CartoAgentError as e:
+        return ApiResponse(success=False, message=str(e))
+    except Exception as e:
+        return ApiResponse(success=False, message=f"GeoJSON 导入失败: {e}")
+
+
+class ReorderLayersRequest(BaseModel):
+    """图层重排请求"""
+    layer_ids: list = Field(..., description="按新顺序排列的图层ID列表")
+
+
+@router.post("/{map_id}/layers/reorder", response_model=ApiResponse,
+             summary="调整图层顺序")
+async def reorder_layers(
+    map_id: str,
+    request: ReorderLayersRequest,
+    map_service: MapService = Depends(get_map_service),
+):
+    """按给定顺序重排图层（图层面板“上移/下移”持久化）"""
+    try:
+        result = map_service.reorder_layers(map_id, request.layer_ids)
+        return ApiResponse(success=True, message="图层顺序已更新", data=result)
+    except CartoAgentError as e:
+        return ApiResponse(success=False, message=str(e))
+    except Exception as e:
+        return ApiResponse(success=False, message=f"调整图层顺序失败: {e}")
+
+
+@router.post("/{map_id}/layers/{layer_id}/duplicate", response_model=ApiResponse,
+             summary="复制图层")
+async def duplicate_layer(
+    map_id: str,
+    layer_id: str,
+    map_service: MapService = Depends(get_map_service),
+):
+    """复制指定图层（含几何/属性/样式）"""
+    try:
+        result = map_service.duplicate_layer(map_id, layer_id)
+        return ApiResponse(success=True, message="图层已复制", data=result)
+    except CartoAgentError as e:
+        return ApiResponse(success=False, message=str(e))
+    except Exception as e:
+        return ApiResponse(success=False, message=f"复制图层失败: {e}")
 
 
 @router.delete("/{map_id}/layers/{layer_id}", response_model=ApiResponse, summary="删除图层")
@@ -318,6 +393,10 @@ async def patch_layer(
             target_layer["name"] = request["name"]
             updated = True
 
+        if "group" in request:
+            map_service.set_layer_group(map_id, layer_id, request["group"] or None)
+            updated = True
+
         if not updated:
             return ApiResponse(success=False, message="未提供有效的更新字段")
 
@@ -364,6 +443,22 @@ async def update_theme(
         return ApiResponse(success=False, message=str(e))
     except Exception as e:
         return ApiResponse(success=False, message=f"更新地图主题失败: {e}")
+
+
+@router.post("/{map_id}/style-package", response_model=ApiResponse, summary="应用地图风格包")
+async def apply_style_package(
+    map_id: str,
+    request: StylePackageRequest,
+    map_service: MapService = Depends(get_map_service),
+):
+    """按风格包统一调整地图配色（经典/简约/复古/暗黑/学术/手绘）"""
+    try:
+        result = map_service.apply_style_package(map_id, request.package)
+        return ApiResponse(success=True, message=f"风格包 {request.package} 已应用", data=result)
+    except CartoAgentError as e:
+        return ApiResponse(success=False, message=str(e))
+    except Exception as e:
+        return ApiResponse(success=False, message=f"应用风格包失败: {e}")
 
 
 @router.post(
@@ -418,6 +513,22 @@ async def remove_feature(
         return ApiResponse(success=False, message=f"删除要素失败: {e}")
 
 
+@router.post("/{map_id}/quality/accept", response_model=ApiResponse,
+             summary="接受质量检测结果")
+async def accept_quality(
+    map_id: str,
+    map_service: MapService = Depends(get_map_service),
+):
+    """人工接受质量检测结果，写入编制说明（质检结论/时间）"""
+    try:
+        result = map_service.accept_quality(map_id)
+        return ApiResponse(success=True, message="质量结果已接受", data=result)
+    except CartoAgentError as e:
+        return ApiResponse(success=False, message=str(e))
+    except Exception as e:
+        return ApiResponse(success=False, message=f"接受质量结果失败: {e}")
+
+
 @router.post("/{map_id}/modify", response_model=ApiResponse, summary="自然语言修改地图")
 async def modify_map(
     map_id: str,
@@ -461,7 +572,10 @@ async def export_map(
         elif fmt == "svg":
             result = export_service.export_svg(map_data)
         elif fmt == "png":
-            result = export_service.export_png(map_data)
+            if request.layout:
+                result = export_service.export_layout_png(map_data, request.layout)
+            else:
+                result = export_service.export_png(map_data)
         else:
             return ApiResponse(success=False, message=f"不支持的导出格式: {fmt}")
 

@@ -4,6 +4,9 @@
 当 backend/.env 配置 AMAP_API_KEY 后自动启用；
 未配置时优雅降级（打印提示），不影响OSM主数据源。
 """
+from app.utils.logger import get_logger
+logger = get_logger(__name__)
+import os
 import requests
 
 from app.core.config import settings
@@ -42,10 +45,16 @@ class AmapService:
     }
 
     def __init__(self):
-        self.key = getattr(settings, "amap_api_key", "") or ""
+        self.key = (
+            getattr(settings, "amap_api_key", "")
+            or getattr(settings, "amap_key", "")
+            or os.getenv("AMAP_API_KEY")
+            or os.getenv("AMAP_KEY")
+            or ""
+        )
         self.enabled = bool(self.key)
         if not self.enabled:
-            print("[AmapService] 未配置 AMAP_API_KEY，跳过高德数据补充（在 backend/.env 填写后自动启用）")
+            logger.info("[AmapService] 未配置 AMAP_API_KEY，跳过高德数据补充（在 backend/.env 填写后自动启用）")
 
     def search_pois(self, keyword: str, city: str, offset: int = 25) -> list:
         """高德关键字搜索POI，返回OSM风格元素列表"""
@@ -62,7 +71,7 @@ class AmapService:
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
-            print(f"[AmapService] 关键字[{keyword}]搜索失败: {e}")
+            logger.info(f"[AmapService] 关键字[{keyword}]搜索失败: {e}")
             return []
         if str(data.get("status")) != "1":
             return []
@@ -119,5 +128,5 @@ class AmapService:
                 continue
             seen.add(key)
             unique.append(e)
-        print(f"[AmapService] 高德POI补充完成: {region} 共 {len(unique)} 个")
+        logger.info(f"[AmapService] 高德POI补充完成: {region} 共 {len(unique)} 个")
         return unique

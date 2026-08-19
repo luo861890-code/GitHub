@@ -138,6 +138,12 @@ watch(
   { deep: true }
 )
 
+// 类型过滤变化时重新渲染图谱
+watch(
+  () => [...kgStore.activeFilters],
+  () => renderGraph()
+)
+
 function initD3() {
   if (!svgRef.value || !svgContainerRef.value) return
 
@@ -205,8 +211,18 @@ function initD3() {
 
 function renderGraph() {
   if (!simulation || !linkGroup || !nodeGroup) return
-  const nodes = kgStore.graphData.nodes
-  const links = kgStore.graphData.links
+  const filters = kgStore.activeFilters
+  const nodes = filters.size > 0
+    ? kgStore.graphData.nodes.filter((n) => filters.has(n.label))
+    : kgStore.graphData.nodes
+  const visibleIds = new Set(nodes.map((n) => n.id))
+  const links = filters.size > 0
+    ? kgStore.graphData.links.filter((l) => {
+        const s = typeof l.source === 'object' ? (l.source as KGNode).id : l.source
+        const t = typeof l.target === 'object' ? (l.target as KGNode).id : l.target
+        return visibleIds.has(s) && visibleIds.has(t)
+      })
+    : kgStore.graphData.links
 
   simulation.nodes(nodes)
   simulation.force<d3.ForceLink<KGNode, KGLink>>('link')?.links(links)
@@ -393,7 +409,7 @@ function handleResize() {
   backdrop-filter: blur(12px);
   display: flex;
   flex-direction: column;
-  z-index: 30;
+  z-index: 900;
   border-left: 1px solid var(--color-border);
   box-shadow: -4px 0 20px rgba(0, 0, 0, 0.08);
   animation: slideIn 0.3s ease-out;
