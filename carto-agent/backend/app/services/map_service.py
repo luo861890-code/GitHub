@@ -1765,6 +1765,8 @@ class MapService:
             from app.services.generalization import GeneralizationEngine
             engine = GeneralizationEngine()
             scale = self._zoom_to_scale(zoom)
+            # linemerge 后统一去重 exact/reverse（避免重复进入综合）
+            map_layers[:] = self._dedupe_polyline_layers(map_layers)
             result = engine.generalize(map_type, map_layers, scale)
             # 用综合后的图层替换（就地修改 map_layers 引用）
             map_layers[:] = result["layers"]
@@ -1772,6 +1774,45 @@ class MapService:
         except Exception as e:
             logger.info(f"[MapService] 制图综合失败（保留原图层）: {e}")
             return {"error": str(e)}
+
+    def _dedupe_polyline_layers(self, map_layers: List[dict]) -> List[dict]:
+        """对 polyline 图层做 exact/reverse 去重（linemerge 后统一）"""
+        for layer in map_layers:
+            if layer.get("type") != "polyline":
+                continue
+            coords = layer.get("coordinates") or []
+            props = layer.get("properties") or []
+            seen = set()
+            kept_c, kept_p = [], []
+            removed = 0
+            for i, c in enumerate(coords):
+                if not (isinstance(c, (list, tuple)) and c and isinstance(c[0], (list, tuple))):
+                    kept_c.append(c)
+                    if props:
+                        kept_p.append(props[i])
+                    continue
+                try:
+                    key = repr([(round(float(p[0]), 4), round(float(p[1]), 4)) for p in c])
+                    rkey = repr([(round(float(p[0]), 4), round(float(p[1]), 4)) for p in reversed(c)])
+                except Exception:
+                    kept_c.append(c)
+                    if props:
+                        kept_p.append(props[i])
+                    continue
+                if key in seen or rkey in seen:
+                    removed += 1
+                else:
+                    seen.add(key)
+                    seen.add(rkey)
+                    kept_c.append(c)
+                    if props:
+                        kept_p.append(props[i])
+            if removed:
+                layer["coordinates"] = kept_c
+                if props:
+                    layer["properties"] = kept_p
+                layer["_dedup_removed"] = removed
+        return map_layers
 
 
     def _generate_thematic_layers(self, map_type: str, region: str, center: List[float]) -> List[dict]:

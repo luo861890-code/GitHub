@@ -919,7 +919,53 @@ class LocalGeoService:
                              "description": ROAD_CN.get(hw, hw)},
             })
         logger.info(f"[LocalGeo] 使用本地路网数据: {clipped_total}条道路(已裁剪到市域内), {len(layers)}个等级图层")
-        return layers
+        return [self._dedupe_road_layer(l) for l in layers]
+
+    def _dedupe_road_layer(self, layer: dict) -> dict:
+        """SourceRoadDeduplication：exact/reverse duplicate 只保留一条，保留 provenance。
+
+        合法平行道路不删除（仅在 exact/reverse 坐标相同时去重）。
+        """
+        coords = layer.get("coordinates") or []
+        props = layer.get("properties") or []
+        if not coords:
+            return layer
+        seen: dict = {}
+        kept_coords, kept_props = [], []
+        removed = []
+        for i, c in enumerate(coords):
+            try:
+                key = repr([(round(float(p[0]), 4), round(float(p[1]), 4))
+                            for p in c if isinstance(p, (list, tuple)) and len(p) >= 2])
+                rkey = repr([(round(float(p[0]), 4), round(float(p[1]), 4))
+                             for p in reversed(c) if isinstance(p, (list, tuple)) and len(p) >= 2])
+            except Exception:
+                kept_coords.append(c)
+                if props:
+                    kept_props.append(props[i])
+                continue
+            if key in seen or rkey in seen:
+                removed.append({
+                    "removed_feature_id": i,
+                    "kept_feature_id": seen.get(key, seen.get(rkey)),
+                    "reason": "exact_or_reverse_duplicate",
+                    "source": "wuhan_roads.geojson",
+                })
+            else:
+                seen[key] = i
+                seen[rkey] = i
+                kept_coords.append(c)
+                if props:
+                    kept_props.append(props[i])
+        if removed:
+            layer["coordinates"] = kept_coords
+            if props:
+                layer["properties"] = kept_props
+            layer["metadata"] = {
+                **(layer.get("metadata") or {}),
+                "dedup": {"removed_count": len(removed), "provenance": removed[:50]},
+            }
+        return layer
 
     # ==================== 旅游POI（武汉旅游图） ====================
     TOURISM_ICONS = {

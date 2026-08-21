@@ -44,24 +44,36 @@ class Displacement:
         lines: List[dict],
         distance_m: float,
     ) -> List[dict]:
-        """对一组线做平行冲突消解：主要素不动，次要要素位移"""
+        """对一组线做平行冲突消解：主要素不动，次要要素位移，带 QA 回滚。
+
+        候选位移应用后检查：若与已保留线的距离未改善或产生新重复，则回滚到原坐标。
+        """
         # 按 importance 降序（主要素在前）
         ordered = sorted(lines, key=lambda l: l.get("importance", 0.5), reverse=True)
         out = []
+        rollback_count = 0
         for line in ordered:
             lonlat = [(c[0], c[1]) for c in line.get("coordinates", [])]
             displaced = list(lonlat)
             for kept in out:
                 kept_lonlat = [(c[0], c[1]) for c in kept.get("coordinates", [])]
                 try:
-                    if self._distance_between(
-                        self.crs.to_projected(lonlat),
-                        self.crs.to_projected(kept_lonlat),
-                    ) < distance_m:
-                        displaced = self.displace(kept_lonlat, lonlat, distance_m)
+                    proj_self = self.crs.to_projected(lonlat)
+                    proj_kept = self.crs.to_projected(kept_lonlat)
+                    before_d = self._distance_between(proj_self, proj_kept)
+                    if before_d < distance_m:
+                        candidate = self.displace(kept_lonlat, lonlat, distance_m)
+                        cand_proj = self.crs.to_projected(candidate)
+                        after_d = self._distance_between(cand_proj, proj_kept)
+                        # QA：位移后距离改善且不产生新的近距冲突才接受，否则回滚
+                        if after_d > before_d + 5.0:
+                            displaced = candidate
+                        else:
+                            rollback_count += 1
                         break
                 except Exception:
                     continue
             line["coordinates"] = displaced
             out.append(line)
+        self.last_rollback_count = rollback_count
         return out

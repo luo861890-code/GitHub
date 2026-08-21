@@ -49,6 +49,7 @@ class GeneralizationEngine:
         self.topology = TopologyCheck(self.crs)
         self.duplicate = DuplicateDetector(self.crs)
         self._selection_removed = 0  # selection 真实移除数（聚合/坍缩不计入）
+        self._displacement_rollbacks = 0
 
     def generalize(
         self,
@@ -59,7 +60,9 @@ class GeneralizationEngine:
         rule = get_scale_rule(scale_denominator)
         self.selection.rule = rule
         self._selection_removed = 0
+        self._displacement_rollbacks = 0
         before_counts = self._counts(layers)
+        raw_dup = count_exact_duplicates([c for l in layers for c in (l.get("coordinates") or [])])
         out_layers: List[Dict] = []
         for layer in layers:
             cat = LAYER_CATEGORY.get(layer.get("name", ""), "unknown")
@@ -110,6 +113,11 @@ class GeneralizationEngine:
             "gates": gates,
             "blockers": blockers,
             "final_duplicate_count": final_dup,
+            "stage_metrics": {
+                "raw_duplicate": raw_dup,
+                "after_displacement_rollbacks": self._displacement_rollbacks,
+                "final_exact_duplicate": final_dup,
+            },
             "scale": scale_denominator,
             "before_counts": before_counts,
             "after_counts": after_counts,
@@ -327,6 +335,7 @@ class GeneralizationEngine:
         if len(lines) >= 2:
             lines = self.displacement.resolve_parallel(lines, rule.displacement_distance_m(cat))
             new_coords = [l["coordinates"] for l in lines]
+            self._displacement_rollbacks += self.displacement.last_rollback_count
 
         layer["coordinates"] = new_coords
         if props and len(props) == n:
