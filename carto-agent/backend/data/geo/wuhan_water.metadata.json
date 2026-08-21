@@ -1,0 +1,26 @@
+{
+ "dataset_id": "wuhan_water",
+ "name": "武汉市水系",
+ "geometry_type": "LineString/Polygon/MultiPolygon",
+ "feature_count": 2232,
+ "crs": "EPSG:4326",
+ "source": "OpenStreetMap (Overpass API)",
+ "source_url": "https://www.openstreetmap.org",
+ "source_type": "osm",
+ "acquisition_date": null,
+ "last_verified": null,
+ "processing_history": [
+  "下载(Overpass)",
+  "裁剪到武汉市域",
+  "同名湖合并",
+  "繁简归一",
+  "面积过滤",
+  "去除无名碎片"
+ ],
+ "original_crs": "EPSG:4326",
+ "current_crs": "EPSG:4326",
+ "accuracy": null,
+ "license": "ODbL",
+ "version": "1.0",
+ "quality_status": "cleaned"
+}

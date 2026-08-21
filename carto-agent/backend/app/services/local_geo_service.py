@@ -27,6 +27,7 @@ from shapely.ops import unary_union
 from app.utils.helpers import generate_id
 from app.utils.geometry import _convex_hull, _ring_area_km2
 from app.core.constants import TOURISM_CATEGORIES
+from app.core.crs_manager import CRSManager
 
 GEO_DATA_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -34,6 +35,14 @@ GEO_DATA_DIR = os.path.join(
 )
 
 WATER_COLOR = "#1e90ff"
+# 米制几何操作容差（按要素类别参数化，禁止用经纬度度值近似米数）
+SIMPLIFY_TOLERANCE_M = {
+    "riverline": 13.0,   # 河流中心线
+    "builtup": 13.0,     # 居民地街区轮廓
+}
+BUFFER_DISTANCE_M = {
+    "builtup_merge": 55.0,  # 相邻街区合并间距（原 0.0005° ≈ 55m 的米制等价）
+}
 # 路网分级配色：高速/主干道用暖色加粗突出，次级/支路逐级变浅变细，
 # 与行政区面/水系形成清晰层级
 ROAD_COLOR = {
@@ -61,6 +70,7 @@ class LocalGeoService:
         self.data_dir = data_dir or GEO_DATA_DIR
         self._boundary_cache = None   # 武汉市域边界多边形缓存（路网裁剪用）
         self._layer_cache: Dict[str, List[dict]] = {}  # 已处理图层缓存（deepcopy返回，防共享污染）
+        self._crs = CRSManager()
 
     def _cached(self, key: str, builder) -> List[dict]:
         """缓存包装：命中直接返回深拷贝；未命中构建后缓存"""
@@ -362,13 +372,14 @@ class LocalGeoService:
                 g = g.buffer(0)
             if g.is_empty or g.area <= 0:
                 continue
-            _pool.append({"geom": g, "name": "", "area": g.area * 9700})
+            _pool.append({"geom": g, "name": "", "area": self._crs.area_meters2(g) / 1e6})
         # 同名湖块 440m 缓冲合并：修复原始数据中同一湖泊被拆成大量碎块/重叠的问题
         # （如东湖在原始数据中散成 30+ 块，直接 union 无法拼合）
-        _NAME_BUF = 0.005   # ~550m：同名湖块拼合，修复碎块/重叠（东湖实测可拼回整湖）
+        _NAME_BUF_M = 550.0   # 550m：同名湖块拼合（米制），修复碎块/重叠
         for nm, gs in _by_name.items():
             try:
-                u = unary_union([g.buffer(_NAME_BUF) for g in gs]).buffer(-_NAME_BUF)
+                u = unary_union([self._crs.buffer_shapely_meters(g, _NAME_BUF_M) for g in gs])
+                u = self._crs.buffer_shapely_meters(u, -_NAME_BUF_M)
                 parts = list(u.geoms) if u.geom_type == "MultiPolygon" else [u]
                 for part in parts:
                     if part.geom_type == "Polygon" and not part.is_empty:
@@ -565,17 +576,24 @@ class LocalGeoService:
         poly = self._boundary_polygon(region)
         prep_poly = prep(poly) if poly is not None else None
 
+        # 湖岸几何投影一次缓存，避免对每个河流端点重复投影整个湖岸
+        lake_shores_proj = None
+        if lake_shores is not None and not lake_shores.is_empty:
+            lake_shores_proj = self._crs._to_projected_shapely(lake_shores)
+
         def _snap_to_shore(pts):
             """把折线两端吸附到最近湖岸点（<=400m），保持河湖连通性。"""
-            if lake_shores is None or lake_shores.is_empty or len(pts) < 2:
+            if lake_shores_proj is None or len(pts) < 2:
                 return pts
             out = [list(p) for p in pts]
             for k in (0, -1):
-                pt = Point(out[k][1], out[k][0])
-                d = pt.distance(lake_shores)
-                if d <= 0.0036:   # ~400m
-                    proj = lake_shores.interpolate(lake_shores.project(pt))
-                    out[k] = [proj.y, proj.x]
+                pt_lonlat = Point(out[k][1], out[k][0])
+                pt = self._crs._to_projected_shapely(pt_lonlat)
+                d = pt.distance(lake_shores_proj)
+                if d <= 400.0:   # 400m 米制距离
+                    proj = lake_shores_proj.interpolate(lake_shores_proj.project(pt))
+                    lonlat = self._crs._from_projected_shapely(Point(proj.x, proj.y))
+                    out[k] = [lonlat.y, lonlat.x]   # [lat, lng]
             return out
 
         major, minor = [], []
@@ -585,7 +603,7 @@ class LocalGeoService:
                 return True
             if name and len(name) >= 2:
                 return True
-            return ln_len > 0.25   # 无名长河（>25km）也按主干保留
+            return ln_len > 25000.0   # 无名长河（>25km）也按主干保留（米制）
 
         for feat in features:
             geom = feat.get("geometry") or {}
@@ -613,11 +631,13 @@ class LocalGeoService:
             for ln in segs:
                 if ln.geom_type != "LineString" or len(ln.coords) < 2:
                     continue
-                sim = ln.simplify(0.00012, preserve_topology=True)   # ~13m 化简
-                if len(sim.coords) < 2:
+                # 米制简化：WGS84 → 武汉投影 → 13m Douglas-Peucker → 回 WGS84
+                sim_geom = self._crs.simplify_shapely_meters(ln, SIMPLIFY_TOLERANCE_M["riverline"])
+                if sim_geom.geom_type != "LineString" or len(sim_geom.coords) < 2:
                     continue
-                pts = [[p[1], p[0]] for p in sim.coords]             # [lat, lng]
-                if _classify(name, sim.length):
+                pts = [[p[1], p[0]] for p in sim_geom.coords]        # [lat, lng]
+                sim_len_m = self._crs.length_meters(list(sim_geom.coords))
+                if _classify(name, sim_len_m):
                     major.append({"coords": _snap_to_shore(pts), "name": name})
                 else:
                     minor.append({"coords": pts, "name": name})
@@ -674,7 +694,7 @@ class LocalGeoService:
             g = Polygon(ring)
             if not g.is_valid:
                 g = g.buffer(0)
-            if g.is_empty or g.area * 9700 < 0.1:   # 过滤 <0.1km² 碎块
+            if g.is_empty or self._crs.area_meters2(g) / 1e6 < 0.1:   # 过滤 <0.1km² 碎块
                 continue
             if prep_poly is not None:
                 try:
@@ -686,13 +706,15 @@ class LocalGeoService:
                     g = inter
                 except Exception:
                     continue
-            geoms.append(g.simplify(0.00012, preserve_topology=True))
+            geoms.append(self._crs.simplify_shapely_meters(g, SIMPLIFY_TOLERANCE_M["builtup"]))
         if not geoms:
             return []
 
         # 相邻街区合并（间距<110m），消除细碎缝隙；保持街区群分布格局
         try:
-            merged = unary_union([g.buffer(0.0005) for g in geoms]).buffer(-0.0005)
+            buffer_m = BUFFER_DISTANCE_M["builtup_merge"]
+            merged = unary_union([self._crs.buffer_shapely_meters(g, buffer_m) for g in geoms])
+            merged = self._crs.buffer_shapely_meters(merged, -buffer_m)
         except Exception:
             merged = unary_union(geoms)
         parts = list(merged.geoms) if merged.geom_type == "MultiPolygon" else [merged]
@@ -701,7 +723,7 @@ class LocalGeoService:
         for part in parts:
             if part.geom_type != "Polygon" or not part.is_valid or part.is_empty:
                 continue
-            area = part.area * 9700   # km² 近似
+            area = self._crs.area_meters2(part) / 1e6   # km²
             if area < 0.2:
                 continue
             ring = [[pt[1], pt[0]] for pt in part.exterior.coords]

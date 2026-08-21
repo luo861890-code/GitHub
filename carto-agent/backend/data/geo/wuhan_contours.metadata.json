@@ -1,0 +1,34 @@
+{
+ "dataset_id": "wuhan_contours",
+ "name": "武汉市等高线（SRTM 派生）",
+ "geometry_type": "LineString",
+ "feature_count": 3146,
+ "crs": "EPSG:4326",
+ "source": "NASA SRTMGL1 30m DEM（派生）",
+ "source_url": "https://doi.org/10.5066/F7K072R7",
+ "source_type": "generated",
+ "acquisition_date": null,
+ "last_verified": null,
+ "processing_history": [
+  "下载(SRTM .hgt)",
+  "拼接",
+  "空洞填充",
+  "等高线生成",
+  "遇水断开",
+  "制图综合(舍谷/扩谷/鞍部保持)"
+ ],
+ "original_crs": "EPSG:4326",
+ "current_crs": "EPSG:4326",
+ "accuracy": {
+  "resolution_m": 30,
+  "horizontal_m": null,
+  "vertical_m": null,
+  "note": "水平分辨率 30m（真实）；垂直精度未在本地核验，标注 None"
+ },
+ "license": "public domain",
+ "version": "1.0",
+ "quality_status": "cleaned",
+ "resolution_m": 30,
+ "vertical_datum": null,
+ "vertical_datum_reason": "SRTM 为 EGM96 大地水准面；本地未做转换核验，故不声明"
+}

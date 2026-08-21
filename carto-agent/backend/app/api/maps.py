@@ -185,6 +185,26 @@ async def map_quality_check(
     except Exception as e:
         return ApiResponse(success=False, message=f"质量检测失败: {e}")
 
+
+@router.get("/{map_id}/qa", response_model=ApiResponse, summary="地图质量验收报告（1000 分制）")
+async def map_qa_report(
+    map_id: str,
+    map_service: MapService = Depends(get_map_service),
+):
+    """对地图生成 1000 分制验收报告（六级评分 + 致命错误门槛 + 问题/缺失清单）"""
+    try:
+        map_data = map_service.get_map(map_id)
+        if not map_data:
+            return ApiResponse(success=False, message=f"地图不存在: {map_id}")
+        from app.services.map_qa_service import MapQAService
+        report = await run_in_thread(MapQAService().generate_report, map_data)
+        return ApiResponse(success=True, message="验收报告生成成功", data=report)
+    except CartoAgentError as e:
+        return ApiResponse(success=False, message=str(e))
+    except Exception as e:
+        return ApiResponse(success=False, message=f"验收报告生成失败: {e}")
+
+
 @router.get("/{map_id}", response_model=ApiResponse, summary="获取地图数据")
 async def get_map(
     map_id: str,

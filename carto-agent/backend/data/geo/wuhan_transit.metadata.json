@@ -1,0 +1,23 @@
+{
+ "dataset_id": "wuhan_transit",
+ "name": "武汉市轨道交通",
+ "geometry_type": "LineString/Point",
+ "feature_count": 3178,
+ "crs": "EPSG:4326",
+ "source": "OpenStreetMap (Overpass API)",
+ "source_url": "https://www.openstreetmap.org",
+ "source_type": "osm",
+ "acquisition_date": null,
+ "last_verified": null,
+ "processing_history": [
+  "下载(Overpass)",
+  "裁剪到武汉市域",
+  "线路/站点分级"
+ ],
+ "original_crs": "EPSG:4326",
+ "current_crs": "EPSG:4326",
+ "accuracy": null,
+ "license": "ODbL",
+ "version": "1.0",
+ "quality_status": "cleaned"
+}

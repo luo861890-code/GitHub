@@ -1,0 +1,23 @@
+{
+ "dataset_id": "wuhan_tourism",
+ "name": "武汉市旅游 POI",
+ "geometry_type": "Point",
+ "feature_count": 824,
+ "crs": "EPSG:4326",
+ "source": "OpenStreetMap (Overpass API)",
+ "source_url": "https://www.openstreetmap.org",
+ "source_type": "osm",
+ "acquisition_date": null,
+ "last_verified": null,
+ "processing_history": [
+  "下载(Overpass)",
+  "类别归一",
+  "裁剪到武汉市域"
+ ],
+ "original_crs": "EPSG:4326",
+ "current_crs": "EPSG:4326",
+ "accuracy": null,
+ "license": "ODbL",
+ "version": "1.0",
+ "quality_status": "cleaned"
+}

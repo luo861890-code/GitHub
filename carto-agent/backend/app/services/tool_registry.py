@@ -28,6 +28,12 @@ class ToolDefinition:
         category: 工具分类: data / rendering / analysis / export
         input_schema: JSON Schema 格式的输入参数定义
         output_schema: JSON Schema 格式的输出结果定义
+        preconditions: 前置条件（执行前必须满足，如 "geometry_valid=true"）
+        postconditions: 后置条件（执行后应满足，如 "feature_count_same_or_lower=true"）
+        cost: 成本估算（low/medium/high 或 token 估算）
+        destructive: 是否可能破坏数据（删除/覆盖）
+        retryable: 是否可安全重试（幂等）
+        provenance: 是否记录来源（数据来源/调用记录，供可追溯性）
         kg_trigger_rules: KG推理触发规则列表，每条规则含
             {relation_type, source_label, target_label}，
             当KG推理结果匹配规则时自动激活该工具
@@ -38,8 +44,33 @@ class ToolDefinition:
     category: str  # data / rendering / analysis / export
     input_schema: Dict[str, Any] = field(default_factory=dict)
     output_schema: Dict[str, Any] = field(default_factory=dict)
+    # ---- 工具契约（研究基线版 §15-16） ----
+    preconditions: List[str] = field(default_factory=list)
+    postconditions: List[str] = field(default_factory=list)
+    cost: str = "low"
+    destructive: bool = False
+    retryable: bool = True
+    provenance: bool = True
     kg_trigger_rules: List[Dict[str, str]] = field(default_factory=list)
     keywords: List[str] = field(default_factory=list)
+
+    def contract(self) -> Dict[str, Any]:
+        """输出完整工具契约（供 Agent Trace / 工具选择评估）"""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "category": self.category,
+            "input_schema": self.input_schema,
+            "output_schema": self.output_schema,
+            "preconditions": self.preconditions,
+            "postconditions": self.postconditions,
+            "cost": self.cost,
+            "destructive": self.destructive,
+            "retryable": self.retryable,
+            "provenance": self.provenance,
+            "kg_trigger_rules": self.kg_trigger_rules,
+            "keywords": self.keywords,
+        }
 
 
 # ======================== 工具基类 ========================
@@ -191,6 +222,11 @@ class OSMFetchTool(BaseTool):
                     "element_count": {"type": "integer"},
                 },
             },
+            preconditions=["bbox_valid=true", "osm_tags_nonempty=true"],
+            postconditions=["coordinates_valid=true", "element_count>=0"],
+            cost="medium",
+            retryable=True,
+            provenance=True,
             kg_trigger_rules=[
                 {"relation_type": "HAS_DECISION", "source_label": "MapType", "target_label": "CartographicDecision"},
                 {"relation_type": "REQUIRES_LAYER", "source_label": "MapType", "target_label": "MapLayer"},
@@ -428,6 +464,11 @@ class MapRenderTool(BaseTool):
                     "zoom": {"type": "integer"},
                 },
             },
+            preconditions=["map_type_in_known_types=true", "region_resolvable=true"],
+            postconditions=["map_id_generated=true", "layer_count>=1"],
+            cost="high",
+            retryable=False,
+            provenance=True,
             kg_trigger_rules=[
                 {"relation_type": "HAS_DECISION", "source_label": "MapType", "target_label": "CartographicDecision"},
                 {"relation_type": "USES_COLOR", "source_label": "MapType", "target_label": "ColorConstraint"},
@@ -518,6 +559,11 @@ class QualityCheckTool(BaseTool):
                     "failed_checks": {"type": "array"},
                 },
             },
+            preconditions=["map_data_nonempty=true", "layers_present=true"],
+            postconditions=["score_0_100=true", "dimensions_reported=true"],
+            cost="low",
+            retryable=True,
+            provenance=True,
             kg_trigger_rules=[
                 {"relation_type": "CONSTRAINED_BY", "source_label": "Symbol", "target_label": "ScaleFactor"},
                 {"relation_type": "APPLIES_TO", "source_label": "AnnotationRule", "target_label": "MapLayer"},
@@ -602,6 +648,11 @@ class ExportTool(BaseTool):
                     "file_size": {"type": "integer"},
                 },
             },
+            preconditions=["map_id_exists=true", "format_supported=true"],
+            postconditions=["file_created=true", "file_size>0"],
+            cost="low",
+            retryable=True,
+            provenance=True,
             kg_trigger_rules=[],
             keywords=["导出", "下载", "保存", "export", "download", "save", "geojson", "png", "svg"],
         )
@@ -707,10 +758,23 @@ class SimplifyGeometryTool(BaseTool):
                 "type": "object",
                 "properties": {
                     "coordinates": {"type": "array", "description": "线/面坐标（[lat,lng] 点列表）"},
-                    "tolerance": {"type": "number", "description": "简化容差（度），默认 0.0005"},
+                    "tolerance": {"type": "number", "description": "简化容差（米），默认 20"},
                 },
                 "required": ["coordinates"],
             },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "simplified_coordinates": {"type": "array"},
+                    "original_points": {"type": "integer"},
+                    "simplified_points": {"type": "integer"},
+                },
+            },
+            preconditions=["coordinates_valid=true", "tolerance>0"],
+            postconditions=["feature_count_same_or_lower=true", "geometry_valid=true"],
+            cost="low",
+            retryable=True,
+            provenance=True,
             keywords=["简化", "抽稀", "简化几何", "simplify", "Douglas"],
         )
 
@@ -720,17 +784,18 @@ class SimplifyGeometryTool(BaseTool):
 
     def execute(self, **kwargs) -> Dict[str, Any]:
         coords = kwargs.get("coordinates") or []
-        tolerance = float(kwargs.get("tolerance", 0.0005))
+        tolerance_m = float(kwargs.get("tolerance", 20.0))
         if not coords:
             return self._error_result("缺少 coordinates 参数")
         try:
-            from shapely.geometry import LineString, Polygon
+            from app.utils.geo_simplify import simplify_coords_meters
             def _simplify_line(pts):
                 if len(pts) < 3:
                     return pts
-                line = LineString([(p[1], p[0]) for p in pts])
-                simple = line.simplify(tolerance)
-                return [[y, x] for x, y in simple.coords]
+                # 输入 [lat,lng] -> [lng,lat] -> 米制简化 -> [lat,lng]
+                lonlat = [(p[1], p[0]) for p in pts]
+                simple = simplify_coords_meters(lonlat, tolerance_m, preserve_topology=True)
+                return [[y, x] for x, y in simple]
             result = [_simplify_line(pts) for pts in coords if isinstance(pts, list) and len(pts) > 1]
             return self._success_result({"coordinates": result, "simplified": True})
         except Exception as e:
@@ -1165,8 +1230,32 @@ class ToolRegistry:
                 "description": tool_def.description,
                 "parameters": tool_def.input_schema,
                 "category": tool_def.category,
+                "preconditions": tool_def.preconditions,
+                "postconditions": tool_def.postconditions,
+                "cost": tool_def.cost,
+                "destructive": tool_def.destructive,
+                "retryable": tool_def.retryable,
             })
         return definitions
+
+    def list_tool_contracts(self) -> List[Dict[str, Any]]:
+        """输出全部工具契约（Agent Trace / 实验记录用，研究基线版 §15-16）"""
+        return [tool.definition.contract() for tool in self._tools.values()]
+
+    def get_tool_provenance_summary(self) -> List[Dict[str, Any]]:
+        """输出精简工具契约摘要（地图 provenance 记录用，避免全量 schema 冗余）"""
+        summary = []
+        for tool in self._tools.values():
+            d = tool.definition
+            summary.append({
+                "name": d.name,
+                "category": d.category,
+                "preconditions": d.preconditions,
+                "postconditions": d.postconditions,
+                "destructive": d.destructive,
+                "retryable": d.retryable,
+            })
+        return summary
 
     # ======================== 计划执行 ========================
 

@@ -26,8 +26,19 @@ class SixDimParser:
         "5. 制图方法(cartographic_method)：choropleth（底色普染）/dot_density（点密度）/flow（流向）/heatmap（热力）/symbol_map（符号地图）/graduated_symbol（分级符号）\n"
         "6. 符号风格(symbol_style)：geometric（几何符号）/pictorial（象形符号）/abstract（抽象符号）/text（文字符号）\n"
         "\n"
+        "同时为每个维度给出：\n"
+        "- confidence: 0-1 置信度（用户明确给出的维度置信度>=0.9，推断的高频默认值0.5-0.7，无法确定的为0）\n"
+        "- inferred: 该维度是否为系统推断（用户未明说、由默认规则推断时置true）\n"
+        "如果用户需求存在歧义或关键维度（主题/区域）缺失，设置 clarification_required=true。\n"
+        "最后给出 reasoning_summary：一句话说明为什么需要这些字段（不要输出内部思维链）。\n"
+        "\n"
         "返回严格的JSON格式，不要有任何额外文本。示例：\n"
-        '{"spatial_scope":"武汉市","temporal_range":null,"topic":"交通","audience":"public","cartographic_method":"symbol_map","symbol_style":"geometric"}'
+        '{"spatial_scope":"武汉市","temporal_range":null,"topic":"交通","audience":"public",'
+        '"cartographic_method":"symbol_map","symbol_style":"geometric",'
+        '"confidence":{"spatial_scope":0.99,"topic":0.97,"audience":0.6,"cartographic_method":0.55,"symbol_style":0.5},'
+        '"inferred":{"audience":true,"cartographic_method":true,"symbol_style":true},'
+        '"clarification_required":false,'
+        '"reasoning_summary":"用户明确了区域与主题，其余维度按公众受众与符号地图默认推断。"}'
     )
 
     def __init__(self, llm_service=None):
@@ -114,7 +125,7 @@ class SixDimParser:
             return None
 
         # 归一化：LLM 可能返回 null/非字符串，统一转为合法值
-        def _clean(value, default: str = "") -> str:
+        def _clean(value, default: Optional[str] = "") -> Optional[str]:
             if value is None:
                 return default
             if isinstance(value, str):
@@ -137,6 +148,17 @@ class SixDimParser:
         if symbol not in valid_symbols:
             symbol = "geometric"
 
+        # 置信度 / 推断 / 澄清标记（计划 §11：JSON Schema 锁住 LLM 结构化输出）
+        confidence_raw = data.get("confidence") or {}
+        inferred_raw = data.get("inferred") or {}
+        confidence = {
+            k: float(v) if isinstance(v, (int, float)) else 0.0
+            for k, v in confidence_raw.items()
+        }
+        inferred = {
+            k: bool(v) for k, v in inferred_raw.items()
+        }
+
         return CartographyTask(
             spatial_scope=_clean(data.get("spatial_scope")),
             temporal_range=_clean(data.get("temporal_range"), None) or None,
@@ -144,7 +166,11 @@ class SixDimParser:
             audience=audience,
             cartographic_method=method,
             symbol_style=symbol,
-        )
+            confidence=confidence,
+            inferred=inferred,
+            clarification_required=bool(data.get("clarification_required", False)),
+            reasoning_summary=_clean(data.get("reasoning_summary")),
+        ).ensure_defaults()
 
     def _fallback_parse(self, user_input: str) -> CartographyTask:
         """降级方案：基于关键词规则的六维解析
@@ -165,6 +191,23 @@ class SixDimParser:
         cartographic_method = self._extract_cartographic_method(user_input)
         symbol_style = self._extract_symbol_style(user_input)
 
+        # 规则降级解析：命中关键词的维度置信度较高，缺失维度标记为推断
+        confidence = {
+            "spatial_scope": 0.92 if spatial_scope else 0.0,
+            "temporal_range": 0.9 if temporal_range else 0.0,
+            "topic": 0.88 if topic else 0.0,
+            "audience": 0.85 if audience != "public" else 0.5,
+            "cartographic_method": 0.75 if cartographic_method != "basic" else 0.4,
+            "symbol_style": 0.7 if symbol_style != "geometric" else 0.4,
+        }
+        inferred = {
+            "spatial_scope": not bool(spatial_scope),
+            "temporal_range": not bool(temporal_range),
+            "topic": not bool(topic),
+            "audience": audience == "public",
+            "cartographic_method": cartographic_method == "basic",
+            "symbol_style": symbol_style == "geometric",
+        }
         return CartographyTask(
             spatial_scope=spatial_scope,
             temporal_range=temporal_range,
@@ -172,7 +215,14 @@ class SixDimParser:
             audience=audience,
             cartographic_method=cartographic_method,
             symbol_style=symbol_style,
-        )
+            confidence=confidence,
+            inferred=inferred,
+            clarification_required=(not spatial_scope or not topic),
+            reasoning_summary=(
+                "基于关键词规则解析；"
+                + ("区域/主题缺失，建议澄清。" if (not spatial_scope or not topic) else "关键维度已命中。")
+            ),
+        ).ensure_defaults()
 
     # ==================== 各维度关键词匹配规则 ====================
 

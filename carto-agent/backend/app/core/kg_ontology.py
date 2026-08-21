@@ -68,6 +68,18 @@ ONTOLOGY_CLASSES: Dict[str, Dict[str, Any]] = {
         "subtypes": ["BaseLayer", "ThematicLayer", "AnnotationLayer"],
         "properties": ["layer_name", "layer_order", "visibility_default", "min_zoom", "max_zoom", "data_source", "osm_tags", "symbol_type"],
     },
+    "MapCase": {
+        "description": "地图案例 - 已完成的地图作品/任务（相似案例检索，支持 MapCase similar_to MapCase）",
+        "color": "#ec4899",
+        "subtypes": ["AdministrativeCase", "TrafficCase", "TourismCase", "TerrainCase"],
+        "properties": ["case_id", "map_type", "region", "audience", "page_size", "task_summary", "artifact_ref"],
+    },
+    "Dataset": {
+        "description": "数据集 - 可用的制图数据资源（Theme requires Dataset / Dataset suitable_for Symbol）",
+        "color": "#14b8a6",
+        "subtypes": ["VectorDataset", "RasterDataset", "POIDataset", "DEMDataset"],
+        "properties": ["dataset_name", "data_source", "format", "coverage", "license", "resolution"],
+    },
 }
 
 
@@ -301,6 +313,32 @@ ONTOLOGY_NODES: List[Dict[str, Any]] = [
      "description": "DEM高程数据（等高线/晕渲）"},
     {"label": "CartographicData", "name": "admin_data", "data_source": "DataV GeoAtlas",
      "description": "行政区划边界数据"},
+    # ---- Dataset 数据集（Theme requires / Data suitable_for） ----
+    {"label": "Dataset", "name": "osm_vector_dataset", "dataset_name": "OSM矢量数据",
+     "data_source": "OpenStreetMap Overpass", "format": "GeoJSON", "coverage": "全球",
+     "license": "ODbL", "description": "道路/水系/POI等矢量要素数据源"},
+    {"label": "Dataset", "name": "amap_poi_dataset", "dataset_name": "高德POI数据",
+     "data_source": "高德地图API", "format": "JSON", "coverage": "中国",
+     "license": "高德开放平台", "description": "餐厅/银行/医院等兴趣点数据源"},
+    {"label": "Dataset", "name": "srtm_dem_dataset", "dataset_name": "SRTM DEM",
+     "data_source": "NASA SRTM 30m", "format": "GeoTIFF", "coverage": "全球",
+     "license": "公有领域", "resolution": "30m", "description": "高程模型数据源（等高线/山体阴影）"},
+    {"label": "Dataset", "name": "datav_admin_dataset", "dataset_name": "DataV行政区划",
+     "data_source": "DataV GeoAtlas", "format": "GeoJSON", "coverage": "中国",
+     "license": "DataV", "description": "省/市/县行政边界数据源"},
+    # ---- MapCase 地图案例（相似案例检索） ----
+    {"label": "MapCase", "name": "case_traffic_wuhan_public", "case_id": "case_traffic_001",
+     "map_type": "traffic", "region": "武汉市", "audience": "公众", "page_size": "A4 横向",
+     "task_summary": "武汉市交通图，面向公众，突出道路与轨道交通",
+     "artifact_ref": "map_1506ba8fca8b", "description": "武汉公众交通图案例"},
+    {"label": "MapCase", "name": "case_admin_wuhan", "case_id": "case_admin_001",
+     "map_type": "administrative", "region": "武汉市", "audience": "公众", "page_size": "A4 横向",
+     "task_summary": "武汉市行政区划图，边界为主、水系道路为辅",
+     "artifact_ref": "map_22e0541ef5d9", "description": "武汉行政区划图案例"},
+    {"label": "MapCase", "name": "case_terrain_wuhan", "case_id": "case_terrain_001",
+     "map_type": "terrain", "region": "武汉市", "audience": "公众", "page_size": "A4 横向",
+     "task_summary": "武汉市地势图，DEM山体阴影+等高线",
+     "artifact_ref": "map_af99c7bdbd01", "description": "武汉地势图案例"},
 ]
 
 
@@ -447,6 +485,31 @@ ONTOLOGY_RELATIONS: List[Dict[str, Any]] = [
      "properties": {"description": "儿童受众影响配色（更鲜艳明快）"}},
     {"from": "media_print", "to": "color_constraint", "type": "AFFECTS",
      "properties": {"description": "纸质印刷影响色彩规范"}},
+    # ---- 决策关系补充（研究基线版 §6：KG 不仅存知识，还要能“做决策”） ----
+    {"from": "scale_factor", "to": "road_element", "type": "CONTROLS",
+     "properties": {"description": "比例尺控制要素选取（制图综合：小比例尺只保留主干要素）"}},
+    {"from": "scale_factor", "to": "poi_element", "type": "CONTROLS",
+     "properties": {"description": "比例尺控制POI数量（缩小后先保留重要地标，其次次要）"}},
+    {"from": "theme_traffic", "to": "osm_vector_dataset", "type": "REQUIRES",
+     "properties": {"description": "交通图需要OSM矢量数据（道路/轨道）"}},
+    {"from": "theme_terrain", "to": "srtm_dem_dataset", "type": "REQUIRES",
+     "properties": {"description": "地势图需要SRTM DEM数据"}},
+    {"from": "theme_administrative", "to": "datav_admin_dataset", "type": "REQUIRES",
+     "properties": {"description": "行政区划图需要DataV行政边界数据"}},
+    {"from": "theme_tourism", "to": "amap_poi_dataset", "type": "REQUIRES",
+     "properties": {"description": "旅游图需要POI数据（景点/设施）"}},
+    {"from": "osm_vector_dataset", "to": "highway_symbol", "type": "SUITABLE_FOR",
+     "properties": {"description": "OSM道路数据适配线状道路符号"}},
+    {"from": "amap_poi_dataset", "to": "poi_symbol", "type": "SUITABLE_FOR",
+     "properties": {"description": "POI数据适配点状兴趣点符号"}},
+    {"from": "srtm_dem_dataset", "to": "contour_symbol", "type": "SUITABLE_FOR",
+     "properties": {"description": "DEM数据适配等高线符号"}},
+    {"from": "audience_public", "to": "poi_symbol", "type": "AFFECTS",
+     "properties": {"description": "公众受众影响兴趣点符号（更直观的象形符号）"}},
+    {"from": "audience_child", "to": "poi_symbol", "type": "AFFECTS",
+     "properties": {"description": "儿童受众影响符号（鲜艳象形）"}},
+    {"from": "case_traffic_wuhan_public", "to": "case_admin_wuhan", "type": "SIMILAR_TO",
+     "properties": {"description": "交通图案例与行政图案例区域相似"}},
 ]
 
 

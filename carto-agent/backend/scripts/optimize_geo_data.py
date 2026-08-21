@@ -1,48 +1,38 @@
 # -*- coding: utf-8 -*-
-"""本地地理数据优化：Douglas-Peucker 几何简化（视觉无损，减小数据体量）
+"""本地地理数据优化：米制 Douglas-Peucker 几何简化（视觉无损，减小数据体量）
 
-对道路/水系/轨道交通坐标做轻量简化（容差约 20~30m），
-大幅减小 maps.json 落盘体积与内存占用，地图视觉基本无差异。
+在局部等距投影下按米制 tolerance 简化（WGS84 → 投影 → 米制简化 → 回投影），
+避免直接在经纬度上以度值近似米数。容差按要素类型与尺度设置。
 """
 import json
 import os
 
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from app.utils.geo_simplify import simplify_coords_meters, simplify_geometry_meters
+
 GEO = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "geo")
 
-# (文件名, 简化容差(度))  —— 0.0003度≈33m，0.0002≈22m，0.0001≈11m
+# (文件名, 简化容差(米)) —— 按要素类型与尺度设置
 PLANS = [
-    ("wuhan_roads.geojson", 0.0002),
-    # 水系用更小容差（≈11m）：保留自然河湖的微弯，避免出现"笔直长段"假象
-    ("wuhan_water.geojson", 0.0001),
-    ("wuhan_transit.geojson", 0.0002),
-    ("hubei_cities.geojson", 0.0005),
-    ("wuhan_districts.geojson", 0.0005),
+    ("wuhan_roads.geojson", 20.0),
+    # 水系用更小容差（10m）：保留自然河湖微弯，避免"笔直长段"假象
+    ("wuhan_water.geojson", 10.0),
+    ("wuhan_transit.geojson", 20.0),
+    ("hubei_cities.geojson", 30.0),
+    ("wuhan_districts.geojson", 30.0),
 ]
 
 
 def simplify_coords(coords, tol):
-    """对坐标序列做 Douglas-Peucker 简化（支持 [lng,lat] 点序列）"""
-    try:
-        from shapely.geometry import LineString, Polygon, MultiPolygon
-        from shapely.geometry import shape, mapping
-    except ImportError:
-        return coords  # 无 shapely 时原样保留
-
-    g = shape({"type": "LineString", "coordinates": coords})
-    sg = g.simplify(tol, preserve_topology=True)
-    return list(sg.coords)
+    """对 [lng,lat] 点序列做米制 Douglas-Peucker 简化"""
+    return simplify_coords_meters(coords, tol, preserve_topology=True)
 
 
 def simplify_geometry(geom, tol):
-    from shapely.geometry import shape, mapping
-    try:
-        g = shape(geom)
-    except Exception:
-        return geom
-    if g.is_empty:
-        return geom
-    sg = g.simplify(tol, preserve_topology=True)
-    return mapping(sg)
+    """对 GeoJSON 几何做米制简化"""
+    return simplify_geometry_meters(geom, tol, preserve_topology=True)
 
 
 def main():

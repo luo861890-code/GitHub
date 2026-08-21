@@ -1,0 +1,21 @@
+{
+ "metadata_schema": {
+  "dataset_id": "string, 唯一标识",
+  "name": "string, 数据集名",
+  "geometry_type": "string, Point/LineString/Polygon/Multi*",
+  "feature_count": "integer, 要素数",
+  "crs": "string, 当前 CRS（EPSG:4326）",
+  "source": "string, 数据来源",
+  "source_url": "string|null, 来源 URL（未知则 null）",
+  "source_type": "string, 来源类型（official/professional/osm/third-party/generated）",
+  "acquisition_date": "string|null, 获取/发布日期（未知则 null）",
+  "last_verified": "string|null, 最后核验日期",
+  "processing_history": "array<string>, 处理历史（下载/清洗/合并/简化/CRS转换/过滤）",
+  "original_crs": "string, 原始 CRS",
+  "current_crs": "string, 当前 CRS",
+  "accuracy": "object|null, {horizontal_m, vertical_m, note}（未知 null）",
+  "license": "string|null, 许可",
+  "version": "string, 数据版本",
+  "quality_status": "string, unknown/cleaned/verified"
+ }
+}

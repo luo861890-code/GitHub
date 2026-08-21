@@ -1,0 +1,252 @@
+{
+ "datasets": [
+  {
+   "dataset_id": "wuhan_roads",
+   "name": "武汉市道路网",
+   "geometry_type": "LineString",
+   "feature_count": 34833,
+   "crs": "EPSG:4326",
+   "source": "OpenStreetMap (Overpass API)",
+   "source_url": "https://www.openstreetmap.org",
+   "source_type": "osm",
+   "acquisition_date": null,
+   "last_verified": null,
+   "processing_history": [
+    "下载(Overpass)",
+    "裁剪到武汉市域",
+    "道路分级",
+    "Douglas-Peucker 简化"
+   ],
+   "original_crs": "EPSG:4326",
+   "current_crs": "EPSG:4326",
+   "accuracy": null,
+   "license": "ODbL",
+   "version": "1.0",
+   "quality_status": "cleaned"
+  },
+  {
+   "dataset_id": "wuhan_water",
+   "name": "武汉市水系",
+   "geometry_type": "LineString/Polygon/MultiPolygon",
+   "feature_count": 2232,
+   "crs": "EPSG:4326",
+   "source": "OpenStreetMap (Overpass API)",
+   "source_url": "https://www.openstreetmap.org",
+   "source_type": "osm",
+   "acquisition_date": null,
+   "last_verified": null,
+   "processing_history": [
+    "下载(Overpass)",
+    "裁剪到武汉市域",
+    "同名湖合并",
+    "繁简归一",
+    "面积过滤",
+    "去除无名碎片"
+   ],
+   "original_crs": "EPSG:4326",
+   "current_crs": "EPSG:4326",
+   "accuracy": null,
+   "license": "ODbL",
+   "version": "1.0",
+   "quality_status": "cleaned"
+  },
+  {
+   "dataset_id": "wuhan_transit",
+   "name": "武汉市轨道交通",
+   "geometry_type": "LineString/Point",
+   "feature_count": 3178,
+   "crs": "EPSG:4326",
+   "source": "OpenStreetMap (Overpass API)",
+   "source_url": "https://www.openstreetmap.org",
+   "source_type": "osm",
+   "acquisition_date": null,
+   "last_verified": null,
+   "processing_history": [
+    "下载(Overpass)",
+    "裁剪到武汉市域",
+    "线路/站点分级"
+   ],
+   "original_crs": "EPSG:4326",
+   "current_crs": "EPSG:4326",
+   "accuracy": null,
+   "license": "ODbL",
+   "version": "1.0",
+   "quality_status": "cleaned"
+  },
+  {
+   "dataset_id": "wuhan_tourism",
+   "name": "武汉市旅游 POI",
+   "geometry_type": "Point",
+   "feature_count": 824,
+   "crs": "EPSG:4326",
+   "source": "OpenStreetMap (Overpass API)",
+   "source_url": "https://www.openstreetmap.org",
+   "source_type": "osm",
+   "acquisition_date": null,
+   "last_verified": null,
+   "processing_history": [
+    "下载(Overpass)",
+    "类别归一",
+    "裁剪到武汉市域"
+   ],
+   "original_crs": "EPSG:4326",
+   "current_crs": "EPSG:4326",
+   "accuracy": null,
+   "license": "ODbL",
+   "version": "1.0",
+   "quality_status": "cleaned"
+  },
+  {
+   "dataset_id": "wuhan_builtup",
+   "name": "武汉市居民地街区",
+   "geometry_type": "Polygon",
+   "feature_count": 9050,
+   "crs": "EPSG:4326",
+   "source": "OpenStreetMap (Overpass API)",
+   "source_url": "https://www.openstreetmap.org",
+   "source_type": "osm",
+   "acquisition_date": null,
+   "last_verified": null,
+   "processing_history": [
+    "下载(Overpass)",
+    "裁剪到武汉市域",
+    "街区形状概括"
+   ],
+   "original_crs": "EPSG:4326",
+   "current_crs": "EPSG:4326",
+   "accuracy": null,
+   "license": "ODbL",
+   "version": "1.0",
+   "quality_status": "cleaned"
+  },
+  {
+   "dataset_id": "hubei_cities",
+   "name": "湖北省地级市边界",
+   "geometry_type": "MultiPolygon/Polygon",
+   "feature_count": 17,
+   "crs": "EPSG:4326",
+   "source": "DataV GeoAtlas（阿里云 DataV 可视化，基于民政部行政区划）",
+   "source_url": "https://datav.aliyun.com/portal/school/atlas/area_selector",
+   "source_type": "third-party",
+   "acquisition_date": null,
+   "last_verified": null,
+   "processing_history": [
+    "下载(DataV GeoAtlas)",
+    "坐标规整"
+   ],
+   "original_crs": "EPSG:4326",
+   "current_crs": "EPSG:4326",
+   "accuracy": null,
+   "license": null,
+   "version": "1.0",
+   "quality_status": "cleaned"
+  },
+  {
+   "dataset_id": "hubei_province",
+   "name": "湖北省省界",
+   "geometry_type": "MultiPolygon",
+   "feature_count": 1,
+   "crs": "EPSG:4326",
+   "source": "DataV GeoAtlas（阿里云 DataV 可视化，基于民政部行政区划）",
+   "source_url": "https://datav.aliyun.com/portal/school/atlas/area_selector",
+   "source_type": "third-party",
+   "acquisition_date": null,
+   "last_verified": null,
+   "processing_history": [
+    "下载(DataV GeoAtlas)",
+    "坐标规整"
+   ],
+   "original_crs": "EPSG:4326",
+   "current_crs": "EPSG:4326",
+   "accuracy": null,
+   "license": null,
+   "version": "1.0",
+   "quality_status": "cleaned"
+  },
+  {
+   "dataset_id": "wuhan_districts",
+   "name": "武汉市 13 区行政区划",
+   "geometry_type": "Polygon/MultiPolygon",
+   "feature_count": 13,
+   "crs": "EPSG:4326",
+   "source": "DataV GeoAtlas（阿里云 DataV 可视化，基于民政部行政区划）",
+   "source_url": "https://datav.aliyun.com/portal/school/atlas/area_selector",
+   "source_type": "third-party",
+   "acquisition_date": null,
+   "last_verified": null,
+   "processing_history": [
+    "下载(DataV GeoAtlas)",
+    "坐标规整"
+   ],
+   "original_crs": "EPSG:4326",
+   "current_crs": "EPSG:4326",
+   "accuracy": null,
+   "license": null,
+   "version": "1.0",
+   "quality_status": "cleaned"
+  },
+  {
+   "dataset_id": "wuhan_contours",
+   "name": "武汉市等高线（SRTM 派生）",
+   "geometry_type": "LineString",
+   "feature_count": 3146,
+   "crs": "EPSG:4326",
+   "source": "NASA SRTMGL1 30m DEM（派生）",
+   "source_url": "https://doi.org/10.5066/F7K072R7",
+   "source_type": "generated",
+   "acquisition_date": null,
+   "last_verified": null,
+   "processing_history": [
+    "下载(SRTM .hgt)",
+    "拼接",
+    "空洞填充",
+    "等高线生成",
+    "遇水断开",
+    "制图综合(舍谷/扩谷/鞍部保持)"
+   ],
+   "original_crs": "EPSG:4326",
+   "current_crs": "EPSG:4326",
+   "accuracy": {
+    "resolution_m": 30,
+    "horizontal_m": null,
+    "vertical_m": null,
+    "note": "水平分辨率 30m（真实）；垂直精度未在本地核验，标注 None"
+   },
+   "license": "public domain",
+   "version": "1.0",
+   "quality_status": "cleaned",
+   "resolution_m": 30,
+   "vertical_datum": null,
+   "vertical_datum_reason": "SRTM 为 EGM96 大地水准面；本地未做转换核验，故不声明"
+  },
+  {
+   "dataset_id": "srtm_dem",
+   "name": "武汉市 SRTM 30m DEM",
+   "geometry_type": "Raster(.hgt)",
+   "feature_count": 0,
+   "crs": "EPSG:4326",
+   "source": "NASA SRTMGL1",
+   "source_url": "https://doi.org/10.5066/F7K072R7",
+   "source_type": "generated",
+   "acquisition_date": null,
+   "last_verified": null,
+   "processing_history": [
+    "下载(SRTM .hgt)"
+   ],
+   "original_crs": "EPSG:4326",
+   "current_crs": "EPSG:4326",
+   "accuracy": {
+    "resolution_m": 30,
+    "horizontal_m": null,
+    "vertical_m": null,
+    "note": "水平分辨率 30m（真实）；垂直精度未本地核验"
+   },
+   "license": "public domain",
+   "version": "1.0",
+   "quality_status": "cleaned",
+   "resolution_m": 30,
+   "vertical_datum": "EGM96（SRTM 官方声明）",
+   "nodata": -32768
+  }
+ ]
+}

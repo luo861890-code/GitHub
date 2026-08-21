@@ -220,12 +220,21 @@ class AgentService:
         elif is_map and not is_modify:
             # 明显的地图生成请求，直接进入制图流程，跳过RAG和GraphRAG
             logger.info(f"[AgentService] 快速路径：识别为地图生成请求，跳过RAG/GraphRAG")
+            # 六维任务理解仍然执行（任务书/置信度/可追溯性），仅跳过 RAG 与 GraphRAG
+            cartography_task = None
+            try:
+                cartography_task = self.task_parser.parse(message, None)
+                logger.info(f"[AgentService] 快速路径六维解析: audience={cartography_task.audience}, "
+                      f"topic={cartography_task.topic}, region={cartography_task.spatial_scope}")
+            except Exception as e:
+                logger.info(f"[AgentService] 快速路径六维解析失败（降级）: {e}")
+                cartography_task = CartographyTask()
             return self._handle_map_generation(
                 message, provider, model,
                 rag_results=[],
                 graphrag_context="",
                 graphrag_result={"entities": [], "subgraph_count": 0, "aggregated_knowledge": []},
-                cartography_task=None,
+                cartography_task=cartography_task,
                 progress_cb=progress_cb,
             )
 
@@ -894,6 +903,20 @@ class AgentService:
             step4.thinking = f"地图生成成功，共{layer_count}个图层"
             step4.result = {"map_id": map_data.get("map_id"), "layer_count": layer_count}
             step4.status = "success"
+
+            # ===== 地图 provenance（研究基线版 §20：可追溯“为什么这样画”） =====
+            try:
+                map_data["provenance"] = self._build_provenance(
+                    message=message,
+                    cartography_task=cartography_task,
+                    kg_execution_plan=kg_execution_plan,
+                    provider=provider,
+                    model=model,
+                    map_data=map_data,
+                )
+                map_data["task"] = map_data["provenance"]["task"]
+            except Exception as e:
+                logger.info(f"[AgentService] 写入地图provenance失败: {e}")
         except Exception as e:
             step4.thinking = f"地图生成失败: {e}"
             step4.result = str(e)
@@ -1030,6 +1053,41 @@ class AgentService:
             progress_cb({"type": event_type, "content": content})
         except Exception:
             pass
+
+    def _build_provenance(
+        self,
+        message: str,
+        cartography_task: Optional[CartographyTask],
+        kg_execution_plan: Any,
+        provider: str,
+        model: str,
+        map_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """构建地图 provenance（研究基线版 §20：可追溯“为什么这样画”）
+
+        记录输入需求、六维任务书、知识引用、完整规划、工具契约、
+        模型信息、验证结果与产物链接，供实验/论文追溯。
+        """
+        task_book = (
+            cartography_task.to_task_book()
+            if isinstance(cartography_task, CartographyTask)
+            else {}
+        )
+        return {
+            "input_prompt": message,
+            "task": task_book,
+            "knowledge_refs": list(getattr(kg_execution_plan, "knowledge_refs", [])),
+            "plan": (
+                kg_execution_plan.to_dict()
+                if hasattr(kg_execution_plan, "to_dict")
+                else {}
+            ),
+            "tools": self.tool_registry.get_tool_provenance_summary(),
+            "model": {"provider": provider, "model": model},
+            "validation": map_data.get("quality") or {},
+            "revision_history": [],
+            "artifacts": [f"/api/maps/{map_data.get('map_id')}/export?format=png"],
+        }
 
     # ==================== 内部流程：问答请求处理 ====================
 

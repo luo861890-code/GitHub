@@ -55,6 +55,27 @@ class CartographyValidator:
         "data_completeness": 0.10, # 数据完整性
     }
 
+    # 六层评估体系映射（研究基线版 §22）：
+    # schema / geometry / spatial / cartography / visual / task_compliance
+    CHECK_DIMENSIONS: Dict[str, str] = {
+        "topology": "spatial",
+        "symbol_normativity": "cartography",
+        "annotation": "cartography",
+        "load_density": "cartography",
+        "projection": "cartography",
+        "decoration": "visual",
+        "data_completeness": "data",
+    }
+    DIMENSION_NAMES: Dict[str, str] = {
+        "schema": "Schema 结构",
+        "geometry": "Geometry 几何",
+        "spatial": "Spatial 空间",
+        "cartography": "Cartography 制图",
+        "visual": "Visual 视觉",
+        "task_compliance": "Task Compliance 任务符合度",
+        "data": "Data 数据",
+    }
+
     # ---- Public API ----
 
     def validate(self, map_data: Dict[str, Any], kg_service=None) -> Dict[str, Any]:
@@ -116,6 +137,40 @@ class CartographyValidator:
             weight_sum += weight
         total_score = round(total_score / weight_sum) if weight_sum > 0 else 0
 
+        # 六层评估维度汇总（研究基线版 §22）：每层取其下属检查项的平均分与问题清单
+        by_dimension: Dict[str, List[int]] = {}
+        for check_name, score in check_scores.items():
+            dim = self.CHECK_DIMENSIONS.get(check_name, "cartography")
+            by_dimension.setdefault(dim, []).append(score)
+        dimension_scores = {
+            dim: round(sum(scores) / len(scores)) if scores else 0
+            for dim, scores in by_dimension.items()
+        }
+        dimension_issues: Dict[str, List[str]] = {}
+        for issue in issues:
+            for dim, checks in (
+                ("geometry", ("几何", "self_intersection", "empty", "简化")),
+                ("spatial", ("拓扑", "重叠", "包含", "相交")),
+                ("cartography", ("符号", "注记", "载负", "投影", "整饰", "配色", "图层")),
+                ("visual", ("视觉", "布局", "对比")),
+                ("task_compliance", ("任务", "主题", "区域")),
+            ):
+                if any(k in issue for k in checks):
+                    dimension_issues.setdefault(dim, []).append(issue)
+                    break
+            else:
+                dimension_issues.setdefault("data", []).append(issue)
+        dimensions = {
+            "scores": {
+                dim: {
+                    "score": dimension_scores.get(dim, 0),
+                    "name": self.DIMENSION_NAMES.get(dim, dim),
+                    "issues": dimension_issues.get(dim, []),
+                }
+                for dim in self.DIMENSION_NAMES
+            }
+        }
+
         # 如果有KG服务，可进行参考规范附加校验（不改变分数，仅增加提示）
         if kg_service:
             try:
@@ -129,13 +184,15 @@ class CartographyValidator:
 
         logger.info(f"[CartographyValidator] 校验完成: score={total_score}, "
               f"issues={len(issues)}, passed={len(passed_checks)}, "
-              f"failed={len(failed_checks)}")
+              f"failed={len(failed_checks)}, dimensions={list(dimension_scores.keys())}")
 
         return {
             "score": total_score,
             "issues": issues,
             "passed_checks": passed_checks,
             "failed_checks": failed_checks,
+            "check_scores": check_scores,
+            "dimensions": dimensions,
         }
 
     # ---- Check Methods ----

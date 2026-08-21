@@ -1,0 +1,23 @@
+{
+ "dataset_id": "wuhan_builtup",
+ "name": "武汉市居民地街区",
+ "geometry_type": "Polygon",
+ "feature_count": 9050,
+ "crs": "EPSG:4326",
+ "source": "OpenStreetMap (Overpass API)",
+ "source_url": "https://www.openstreetmap.org",
+ "source_type": "osm",
+ "acquisition_date": null,
+ "last_verified": null,
+ "processing_history": [
+  "下载(Overpass)",
+  "裁剪到武汉市域",
+  "街区形状概括"
+ ],
+ "original_crs": "EPSG:4326",
+ "current_crs": "EPSG:4326",
+ "accuracy": null,
+ "license": "ODbL",
+ "version": "1.0",
+ "quality_status": "cleaned"
+}

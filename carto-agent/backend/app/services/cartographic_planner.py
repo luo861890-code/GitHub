@@ -7,18 +7,36 @@ KGPriorPlanner 实现 KG 知识优先的制图任务规划策略：
 """
 from app.utils.logger import get_logger
 logger = get_logger(__name__)
+import time
 from typing import Dict, Any, List, Optional
 
 from app.models.agent_models import CartographyTask
 
 
+# 地图类型中文名（版式规划/图名用）
+_TYPE_NAMES = {
+    "traffic": "交通图", "tourism": "旅游图", "campus": "校园图",
+    "basic": "基础地图", "food": "美食图", "administrative": "行政区划图",
+    "terrain": "地势图",
+}
+
+
 class ExecutionPlan:
     """制图执行计划
 
-    将制图任务分解为结构化的三个步骤序列：
+    将制图任务分解为结构化的规划序列（研究基线版）：
     - data_steps: 数据获取步骤（图层数据源、OSM标签、城市范围）
     - style_steps: 样式配置步骤（符号类型、颜色、线宽等）
     - render_steps: 渲染步骤（背景色、主色调、标注配置）
+    - knowledge_refs: 知识引用（KG 决策来源，可追溯）
+    - map_spec: 地图规格（类型/区域/比例尺/主题）
+    - projection_plan: 投影规划
+    - generalization_plan: 制图综合（载负量/抽稀）规划
+    - symbol_plan: 符号方案（要素类型 -> 符号）
+    - annotation_plan: 注记配置
+    - layout_plan: 版式规划（图名/图例/比例尺/指北针/审图落款）
+    - validation_plan: 验证计划（六层评估清单）
+    - export_plan: 导出计划
 
     Attributes:
         data_steps: 数据获取步骤列表
@@ -28,15 +46,45 @@ class ExecutionPlan:
         quality_warnings: 质量警告列表（KG信息缺失、置信度低等）
     """
     def __init__(self):
+        self.task_id: str = ""
         self.data_steps: List[Dict] = []
         self.style_steps: List[Dict] = []
         self.render_steps: List[Dict] = []
         self.llm_enhanced: bool = False
         self.quality_warnings: List[str] = []
+        # ---- 研究基线版新增字段（可追溯、可复现） ----
+        self.knowledge_refs: List[Dict] = []
+        self.map_spec: Dict[str, Any] = {}
+        self.projection_plan: Dict[str, Any] = {}
+        self.generalization_plan: Dict[str, Any] = {}
+        self.symbol_plan: Dict[str, Any] = {}
+        self.annotation_plan: Dict[str, Any] = {}
+        self.layout_plan: Dict[str, Any] = {}
+        self.validation_plan: Dict[str, Any] = {}
+        self.export_plan: Dict[str, Any] = {}
 
     def is_empty(self) -> bool:
         """判断执行计划是否为空（没有任何有效步骤）"""
         return len(self.data_steps) == 0 and len(self.style_steps) == 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """输出完整规划结构（供 Agent Trace / 地图 provenance 记录）"""
+        return {
+            "task_id": self.task_id,
+            "map_spec": self.map_spec,
+            "knowledge_refs": self.knowledge_refs,
+            "data_plan": self.data_steps,
+            "projection_plan": self.projection_plan,
+            "generalization_plan": self.generalization_plan,
+            "symbol_plan": self.symbol_plan,
+            "annotation_plan": self.annotation_plan,
+            "layout_plan": self.layout_plan,
+            "render_plan": self.render_steps,
+            "validation_plan": self.validation_plan,
+            "export_plan": self.export_plan,
+            "llm_enhanced": self.llm_enhanced,
+            "quality_warnings": self.quality_warnings,
+        }
 
 
 class KGPriorPlanner:
@@ -94,6 +142,7 @@ class KGPriorPlanner:
             结构化的执行计划 ExecutionPlan
         """
         plan = ExecutionPlan()
+        plan.task_id = f"task_{map_type}_{city}_{int(time.time())}"
 
         # 确定受众级别
         audience = task.audience if task else "public"
@@ -108,6 +157,26 @@ class KGPriorPlanner:
             except Exception as e:
                 logger.info(f"[KGPriorPlanner] KG决策获取失败: {e}")
                 plan.quality_warnings.append(f"KG决策查询异常: {str(e)[:80]}")
+
+        # 记录知识引用（可追溯：这张图依据了哪些 KG 决策）
+        if kg_decision:
+            kg_source = (
+                "neo4j"
+                if self.kg_service and getattr(self.kg_service, "driver", None)
+                else "memory-rule-mode"
+            )
+            plan.knowledge_refs.append({
+                "ref": f"kg:decision:{map_type}:{audience}",
+                "map_type": map_type,
+                "audience_level": audience,
+                "confidence": kg_decision.get("confidence", "n/a"),
+                "source": kg_source,
+                "components": [k for k in ("layer_configs", "symbol_scheme", "color_scheme", "annotation_rules")
+                               if kg_decision.get(k)],
+            })
+
+        # 完整规划结构（研究基线版：投影/综合/符号/注记/版式/验证/导出）
+        self._enrich_plan(plan, map_type, city, audience, kg_decision)
 
         # ===== 步骤2：从KG决策提取数据获取步骤 =====
         layer_configs = kg_decision.get("layer_configs", [])
@@ -335,3 +404,108 @@ class KGPriorPlanner:
             parts.append("\n> 注意：此计划已由LLM补充，部分步骤为推导结果，置信度可能较低。")
 
         return "\n".join(parts)
+
+    def _enrich_plan(
+        self,
+        plan: ExecutionPlan,
+        map_type: str,
+        city: str,
+        audience: str,
+        kg_decision: Dict[str, Any],
+    ) -> None:
+        """补齐规划结构：map_spec / projection / generalization / symbol /
+        annotation / layout / validation / export（研究基线版 §14）。
+
+        专业规则优先由 KG 提供（计划 §6），KG 缺失时使用内置制图规范兜底，
+        避免 LLM 直接决定专业制图规则。
+        """
+        # 1) 地图规格
+        plan.map_spec = {
+            "map_type": map_type,
+            "region": city,
+            "audience": audience,
+            "scale_level": "城市级",
+            "page_size": "A4 横向",
+        }
+
+        # 2) 投影规划（区域 -> 投影 决策，参考 KG 或内置规范）
+        projection = "web_mercator"
+        projection_name = "Web墨卡托投影（网页显示）"
+        if city in ("武汉市", "湖北省") or city.endswith("省"):
+            projection = "cgcs2000_gk"
+            projection_name = "CGCS2000 / 高斯-克吕格 3°分带（标准地图）"
+        elif city in ("北京市", "上海市", "广州市", "深圳市"):
+            projection = "web_mercator"
+            projection_name = "Web墨卡托投影"
+        plan.projection_plan = {
+            "crs": "EPSG:4326（数据）/ EPSG:3857（网页渲染）",
+            "projection": projection,
+            "display_name": projection_name,
+            "rationale": "区域与用途匹配的标准投影（专业规则由 KG 提供）",
+        }
+
+        # 3) 制图综合规划（比例尺 -> 载负量档位）
+        load_factor = {
+            "administrative": 0.6, "traffic": 1.0, "tourism": 1.0,
+            "basic": 1.0, "terrain": 0.8, "campus": 1.0, "food": 1.0,
+        }.get(map_type, 1.0)
+        plan.generalization_plan = {
+            "load_level": "standard",
+            "load_factor": load_factor,
+            "lod_bands": [
+                {"zoom": "<9", "keep": "主干要素（高速/大湖/行政中心）"},
+                {"zoom": "9-10", "keep": "主要道路/大型湖泊/区县名"},
+                {"zoom": "11-12", "keep": "次干道/中型湖泊/地标"},
+                {"zoom": "13-14", "keep": "支路/小型湖泊/POI"},
+                {"zoom": ">=15", "keep": "全量（建筑/全部POI）"},
+            ],
+            "rationale": "按比例尺分级显示，先保留重要地标/建筑，其次次要（制图综合·选取）",
+        }
+
+        # 4) 符号方案（KG symbol_scheme 兜底：内置要素符号规范）
+        symbol_scheme = kg_decision.get("symbol_scheme") or {}
+        plan.symbol_plan = {
+            "scheme": symbol_scheme,
+            "note": "符号推荐优先来自 KG（suitable_for 关系），LLM 不直接决定符号规范",
+        }
+
+        # 5) 注记配置（KG annotation_rules 兜底）
+        annotation_rules = kg_decision.get("annotation_rules") or {}
+        plan.annotation_plan = {
+            "rules": annotation_rules,
+            "defaults": {
+                "name_label": {"font": "宋体", "weight": 2},
+                "water_label": {"color": "#2E6FA3", "size": 12},
+                "district_label": {"color": "#000000", "size": 14},
+                "avoid_conflict": True,
+            },
+        }
+
+        # 6) 版式规划（整饰：图名/图例/比例尺/指北针/审图落款）
+        plan.layout_plan = {
+            "page": "A4 横向",
+            "title": f"{city}{_TYPE_NAMES.get(map_type, '地图')}",
+            "decoration": ["图名", "图例", "数字比例尺", "指北针", "审图落款"],
+            "legend": True,
+            "scale_bar": True,
+            "north_arrow": True,
+        }
+
+        # 7) 验证计划（六层评估：schema/geometry/spatial/cartography/visual/task）
+        plan.validation_plan = {
+            "layers": [
+                {"layer": "schema", "checks": ["json", "geojson", "pydantic"]},
+                {"layer": "geometry", "checks": ["valid_geometry", "self_intersection", "empty_geometry"]},
+                {"layer": "spatial", "checks": ["topology", "containment", "overlap"]},
+                {"layer": "cartography", "checks": ["layer_order", "symbol", "color", "annotation", "scale", "projection", "load_density"]},
+                {"layer": "visual", "checks": ["layout", "contrast", "label_readability"]},
+                {"layer": "task_compliance", "checks": ["theme_match", "region_match", "audience_match"]},
+            ],
+        }
+
+        # 8) 导出计划
+        plan.export_plan = {
+            "formats": ["png", "svg", "geojson"],
+            "layout_export": True,
+            "dpi": 150,
+        }

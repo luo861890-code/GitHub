@@ -320,6 +320,8 @@ class SessionService:
                         "content": msg.content,
                         "timestamp": msg.timestamp,
                         "map_data": msg.map_data,
+                        "map_id": msg.map_id,
+                        "map_summary": msg.map_summary,
                         "thinking": msg.thinking,
                     }
                     # 序列化步骤列表

@@ -67,6 +67,12 @@ class CartographyTask(BaseModel):
 
     从用户自然语言中提取结构化的制图任务描述，六个维度全面刻画
     地图制图的时空、语义、受众和方法论特征。
+
+    升级（研究基线版）：
+    - confidence: 每个维度的置信度（0-1）
+    - inferred: 每个维度是否由系统推断（用户未明说时置 True）
+    - clarification_required: 用户需求存在歧义/关键信息缺失时置 True
+    - reasoning_summary: 解析依据摘要（不暴露内部思维链）
     """
     spatial_scope: str = ""           # 空间范围："武汉市"/"洪山区"/"长江经济带"
     temporal_range: Optional[str] = None  # 时间区间："2020-2025"/"冷战时期"
@@ -74,6 +80,77 @@ class CartographyTask(BaseModel):
     audience: str = "public"          # 用户受众：expert/student/public/child/elderly
     cartographic_method: str = "basic"  # 制图方法：choropleth/dot_density/flow/heatmap/symbol_map/graduated_symbol
     symbol_style: str = "geometric"   # 符号风格：geometric/pictorial/abstract/text
+
+    # ---- 任务书增强字段（六维解析置信度与来源标记） ----
+    confidence: Dict[str, float] = Field(default_factory=dict)  # 每维置信度 0-1
+    inferred: Dict[str, bool] = Field(default_factory=dict)     # 每维是否推断
+    clarification_required: bool = False                        # 是否需澄清
+    reasoning_summary: str = ""                                 # 解析依据摘要
+
+    # 六个维度的标准键（供 to_task_book 使用，兼容研究计划命名）
+    DIMENSION_KEYS: List[str] = [
+        "theme", "region", "temporal", "cartographic_method",
+        "audience", "symbol_expression",
+    ]
+
+    def _dim_value(self, key: str) -> Optional[str]:
+        """内部键 -> 标准维度键值映射"""
+        mapping = {
+            "theme": self.topic or None,
+            "region": self.spatial_scope or None,
+            "temporal": self.temporal_range,
+            "cartographic_method": self.cartographic_method or None,
+            "audience": self.audience or None,
+            "symbol_expression": self.symbol_style or None,
+        }
+        return mapping.get(key)
+
+    def to_task_book(self) -> Dict[str, Any]:
+        """输出标准化六维制图任务书（研究计划格式）
+
+        每个维度包含 value / confidence / inferred，便于下游 KG 查询与
+        可追溯性记录（provenance）。
+        """
+        internal_map = {
+            "theme": "topic",
+            "region": "spatial_scope",
+            "temporal": "temporal_range",
+            "cartographic_method": "cartographic_method",
+            "audience": "audience",
+            "symbol_expression": "symbol_style",
+        }
+        book: Dict[str, Any] = {}
+        for key in self.DIMENSION_KEYS:
+            internal_key = internal_map[key]
+            book[key] = {
+                "value": self._dim_value(key),
+                "confidence": self.confidence.get(internal_key, 0.0),
+                "inferred": self.inferred.get(internal_key, False),
+            }
+        book["clarification_required"] = self.clarification_required
+        book["reasoning_summary"] = self.reasoning_summary
+        return book
+
+    def ensure_defaults(self) -> "CartographyTask":
+        """为缺失维度补齐推断标记与低置信度（供降级解析/LLM缺字段时使用）"""
+        internal_keys = ["topic", "spatial_scope", "temporal_range",
+                         "cartographic_method", "audience", "symbol_style"]
+        values = {
+            "topic": self.topic,
+            "spatial_scope": self.spatial_scope,
+            "temporal_range": self.temporal_range,
+            "cartographic_method": self.cartographic_method,
+            "audience": self.audience,
+            "symbol_style": self.symbol_style,
+        }
+        for key, value in values.items():
+            if value in (None, ""):
+                self.confidence[key] = 0.0
+                self.inferred[key] = True
+            else:
+                self.confidence.setdefault(key, 0.6)
+                self.inferred.setdefault(key, False)
+        return self
 
     # 受众与制图方法的推荐映射
     AUDIENCE_METHOD_MAP: Dict[str, List[str]] = {

@@ -875,6 +875,8 @@ class MapService:
             map_layers = self._sort_layers(map_layers)
             # 线状要素按名称连通：同一条道路/边界/铁路的离散线段合并为完整折线（制图综合连通性）
             map_layers = self._connect_polylines_by_name(map_layers)
+            # 应用 Cartographic Profile（主题-数据-尺度约束矩阵）：按图类型过滤/提取/分级
+            map_layers = self._apply_cartographic_profile(map_type, map_layers, zoom)
 
             # 生成图例数据
             legend = self._generate_legend(map_type, map_layers)
@@ -919,8 +921,8 @@ class MapService:
                 "quality": quality,
                 # 编制说明（规范3.7：坐标系/投影/数据来源/资料截止）
                 "metadata": {
-                    "坐标系": "CGCS2000 国家大地坐标系",
-                    "投影": "高斯-克吕格投影 3°分带（标准地图）/ Web墨卡托（网页显示）",
+                    "坐标系": "WGS84 (EPSG:4326) 经纬度（源数据）",
+                    "投影": "前端渲染 Web墨卡托 (EPSG:3857)；导出/米制计算可重投影 CGCS2000 高斯-克吕格 3°分带 (EPSG:4547)",
                     "数据来源": "DataV GeoAtlas 官方行政区划数据 / OpenStreetMap",
                     "地图类型": meta_type,
                     "图幅范围": "武汉市及周边相邻地市（区位关系）",
@@ -1632,6 +1634,68 @@ class MapService:
         raise MapGenerationError(f"图层不存在: {layer_id}")
 
     # ==================== 内部辅助方法 ====================
+
+
+    def _apply_cartographic_profile(
+        self, map_type: str, map_layers: List[dict], zoom: int
+    ) -> List[dict]:
+        """按 Cartographic Profile 约束图层集合（《武汉四类专题地图数据规范》）
+
+        1) 移除各主题禁止的图层（forbidden_layers）
+        2) 交通图：提取「主要桥梁」独立主题层（跨江结构）
+        3) 旅游图：POI 按 P0-P3 分级写入 importance（前端 LOD 抽稀优先保留核心景点）
+        """
+        from app.core.cartographic_profiles import (
+            get_profile, get_tourism_level, is_major_bridge,
+        )
+        profile = get_profile(map_type)
+        filtered = [
+            l for l in map_layers
+            if not profile.layer_forbidden(l.get("name") or "")
+        ]
+        if map_type == "traffic":
+            bridge_layer = self._extract_bridge_layer(map_layers)
+            if bridge_layer:
+                filtered.append(bridge_layer)
+        elif map_type == "tourism":
+            for l in filtered:
+                if l.get("type") not in ("circleMarker", "marker", "point"):
+                    continue
+                level, importance, _ = get_tourism_level(l.get("name") or "")
+                for p in (l.get("properties") or []):
+                    if isinstance(p, dict):
+                        p.setdefault("importance", importance)
+                        p["poi_level"] = level
+        return filtered
+
+    def _extract_bridge_layer(self, map_layers: List[dict]) -> Optional[dict]:
+        """从道路线图层提取「主要桥梁」（跨江/跨河重要桥梁）独立主题层"""
+        from app.core.cartographic_profiles import is_major_bridge
+        bridge_coords: List[list] = []
+        bridge_props: List[dict] = []
+        for l in map_layers:
+            if l.get("type") not in ("polyline", "line"):
+                continue
+            if "道路" not in (l.get("name") or ""):
+                continue
+            props = l.get("properties") or []
+            coords = l.get("coordinates") or []
+            for i, p in enumerate(props):
+                nm = (p.get("name") or "") if isinstance(p, dict) else ""
+                if is_major_bridge(nm) and i < len(coords):
+                    bridge_coords.append(coords[i])
+                    bridge_props.append({"name": nm, "kind": "bridge", "importance": 1.0})
+        if not bridge_coords:
+            return None
+        return {
+            "id": generate_id("layer"),
+            "type": "polyline",
+            "name": "主要桥梁",
+            "coordinates": bridge_coords,
+            "properties": bridge_props,
+            "style": {"color": "#1e40af", "weight": 3.0, "opacity": 0.95},
+            "group": "交通要素",
+        }
 
 
     def _generate_thematic_layers(self, map_type: str, region: str, center: List[float]) -> List[dict]:
