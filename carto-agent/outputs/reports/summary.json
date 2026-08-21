@@ -1,0 +1,46 @@
+[
+ {
+  "map_id": "map_7db00c28b95e",
+  "name": "武汉市行政区划图",
+  "map_type": "administrative",
+  "total_score": 834,
+  "grade": "B",
+  "status": "CONDITIONAL_PASS",
+  "critical": 0,
+  "major": 4,
+  "minor": 7
+ },
+ {
+  "map_id": "map_a8d0edb09c1a",
+  "name": "武汉市交通图",
+  "map_type": "traffic",
+  "total_score": 817,
+  "grade": "B",
+  "status": "CONDITIONAL_PASS",
+  "critical": 0,
+  "major": 4,
+  "minor": 8
+ },
+ {
+  "map_id": "map_ae46a62b18ec",
+  "name": "武汉市旅游图",
+  "map_type": "tourism",
+  "total_score": 800,
+  "grade": "B",
+  "status": "PASS",
+  "critical": 0,
+  "major": 5,
+  "minor": 8
+ },
+ {
+  "map_id": "map_a8bd2062dcab",
+  "name": "武汉市地势图",
+  "map_type": "terrain",
+  "total_score": 828,
+  "grade": "B",
+  "status": "CONDITIONAL_PASS",
+  "critical": 0,
+  "major": 5,
+  "minor": 6
+ }
+]
