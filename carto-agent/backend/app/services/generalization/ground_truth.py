@@ -66,17 +66,55 @@ def compute_all_recall(map_type: str, layers: List[Dict]) -> Dict[str, Any]:
     if map_type == "traffic":
         from app.core.transport_reference import TRAFFIC_GT
         generated = _collect_names(layers)
-        cat_names = [c["name"] for c in TRAFFIC_GT["categories"]]
-        cat_matched = [n for n in cat_names if n in generated]
+        generated_canonical = _collect_canonical_ids(layers)
+        # 类别级：canonical_id 比较（不依赖中文名）
+        cat_expected = [c["canonical_id"] for c in TRAFFIC_GT["categories"]]
+        cat_matched = [cid for cid in cat_expected if cid in generated_canonical]
         ent_names = [e["name"] for e in TRAFFIC_GT["entities"]]
         ent_matched = [n for n in ent_names if n in generated]
-        result["category_recall"] = round(len(cat_matched) / len(cat_names), 4)
+        result["category_expected"] = cat_expected
+        result["category_matched"] = cat_matched
+        result["category_missed"] = [c for c in cat_expected if c not in cat_matched]
+        result["category_recall"] = round(len(cat_matched) / len(cat_expected), 4)
         result["entity_recall"] = round(len(ent_matched) / len(ent_names), 4)
         result["entity_missed"] = [n for n in ent_names if n not in generated]
+        # geometry_verified：铁路/枢纽是否空间精度已验证（当前 unverified）
+        verified = [n for n in generated if n in ent_names and _is_verified(layers, n)]
+        result["geometry_verified"] = round(len(verified) / max(1, len(ent_names)), 4)
     # 总 recall（跨类别平均）
     recalls = [r["recall"] for r in result.values() if isinstance(r, dict) and "recall" in r]
     result["overall_recall"] = round(sum(recalls) / len(recalls), 4) if recalls else 1.0
     return result
+
+
+def _collect_canonical_ids(layers: List[Dict]) -> List[str]:
+    """从图层名/属性收集 canonical category_id"""
+    mapping = {
+        "道路-高速公路主线": "highway.motorway",
+        "道路-城市干线主干道": "highway.trunk",
+        "道路-城市主干道": "highway.primary",
+        "铁路": "railway.main",
+        "轨道交通线路": "metro.line",
+        "主要桥梁": "bridge.major",
+    }
+    ids = []
+    for l in layers:
+        n = l.get("name", "")
+        if n in mapping:
+            ids.append(mapping[n])
+        # 图层自身 category_id 字段优先
+        if l.get("category_id"):
+            ids.append(l["category_id"])
+    return ids
+
+
+def _is_verified(layers: List[Dict], name: str) -> bool:
+    """要素是否 geometry_verified（铁路/枢纽当前均 unverified）"""
+    for l in layers:
+        for p in (l.get("properties") or []):
+            if isinstance(p, dict) and p.get("name") == name:
+                return p.get("geometry_quality") == "verified" or p.get("verification_status") == "verified"
+    return False
 
 
 def _collect_names(layers: List[Dict]) -> List[str]:

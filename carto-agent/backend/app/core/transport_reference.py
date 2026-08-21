@@ -12,6 +12,7 @@ RAILWAYS: List[Dict[str, Any]] = [
     {
         "name": "京广铁路", "category": "railway", "importance": 1.0,
         "source": "公开铁路网走向", "verification_status": "unverified",
+        "geometry_quality": "approximate", "source_confidence": "unverified",
         "coords": [
             [31.02, 113.95], [30.72, 114.25], [30.6210, 114.2500],  # 孝感→汉口→汉口站
             [30.5850, 114.2950], [30.5492, 114.2981],  # 经长江大桥
@@ -21,6 +22,7 @@ RAILWAYS: List[Dict[str, Any]] = [
     {
         "name": "京广高铁", "category": "railway", "importance": 1.0,
         "source": "公开铁路网走向", "verification_status": "unverified",
+        "geometry_quality": "approximate", "source_confidence": "unverified",
         "coords": [
             [31.10, 114.20], [30.70, 114.35], [30.6070, 114.4230],  # 武汉站
             [30.30, 114.40],
@@ -29,6 +31,7 @@ RAILWAYS: List[Dict[str, Any]] = [
     {
         "name": "汉丹铁路", "category": "railway", "importance": 0.9,
         "source": "公开铁路网走向", "verification_status": "unverified",
+        "geometry_quality": "approximate", "source_confidence": "unverified",
         "coords": [
             [30.6210, 114.2500], [30.70, 114.10], [30.80, 113.90],  # 汉口→襄阳方向
         ],
@@ -36,6 +39,7 @@ RAILWAYS: List[Dict[str, Any]] = [
     {
         "name": "武九铁路", "category": "railway", "importance": 0.9,
         "source": "公开铁路网走向", "verification_status": "unverified",
+        "geometry_quality": "approximate", "source_confidence": "unverified",
         "coords": [
             [30.5310, 114.3160], [30.55, 114.60], [30.40, 114.90],  # 武昌→鄂州→九江方向
         ],
@@ -63,11 +67,16 @@ HUBS: List[Dict[str, Any]] = [
 # 交通 Ground Truth：类别级 + 实体级
 TRAFFIC_GT: Dict[str, Any] = {
     "categories": [
-        {"id": "cat_motorway", "name": "高速公路", "category": "highway", "importance": 1.0},
-        {"id": "cat_trunk", "name": "主干道", "category": "primary_road", "importance": 0.9},
-        {"id": "cat_railway", "name": "铁路", "category": "railway", "importance": 1.0},
-        {"id": "cat_metro", "name": "轨道交通线路", "category": "metro", "importance": 1.0},
-        {"id": "cat_bridge", "name": "主要桥梁", "category": "bridge", "importance": 1.0},
+        {"id": "cat_motorway", "name": "高速公路", "canonical_id": "highway.motorway",
+         "category": "highway", "importance": 1.0},
+        {"id": "cat_trunk", "name": "主干道", "canonical_id": "highway.trunk",
+         "category": "primary_road", "importance": 0.9},
+        {"id": "cat_railway", "name": "铁路", "canonical_id": "railway.main",
+         "category": "railway", "importance": 1.0},
+        {"id": "cat_metro", "name": "轨道交通线路", "canonical_id": "metro.line",
+         "category": "metro", "importance": 1.0},
+        {"id": "cat_bridge", "name": "主要桥梁", "canonical_id": "bridge.major",
+         "category": "bridge", "importance": 1.0},
     ],
     "entities": [
         {"id": "hub_wuhan_station", "name": "武汉站", "category": "transport_hub",

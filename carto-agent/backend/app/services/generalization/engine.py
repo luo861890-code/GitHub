@@ -19,6 +19,7 @@ from .exaggeration import Exaggeration
 from .metrics import MapLoadMetrics, ImportantFeatureRecall, DataLossMetrics, TopologyCheck
 from .ground_truth import compute_all_recall
 from .terrain_scale_rules import contour_interval, select_contours
+from .duplicate import DuplicateDetector, count_exact_duplicates
 
 
 def _to_lonlat(latlng: List[tuple]) -> List[tuple]:
@@ -46,6 +47,7 @@ class GeneralizationEngine:
         self.recall = ImportantFeatureRecall()
         self.loss = DataLossMetrics()
         self.topology = TopologyCheck(self.crs)
+        self.duplicate = DuplicateDetector(self.crs)
         self._selection_removed = 0  # selection 真实移除数（聚合/坍缩不计入）
 
     def generalize(
@@ -62,6 +64,31 @@ class GeneralizationEngine:
         for layer in layers:
             cat = LAYER_CATEGORY.get(layer.get("name", ""), "unknown")
             out_layers.append(self._generalize_layer(layer, cat, rule))
+        after_counts = self._counts(out_layers)
+        # pipeline 内去重（simplification/linemerge 后，displacement 前已在 _generalize_roads 做；
+        # 此处对全部 polyline 统一去重 exact/reverse，保证 final exact duplicate=0）
+        final_dup = 0
+        for l in out_layers:
+            if l.get("type") != "polyline":
+                continue
+            coords = l.get("coordinates") or []
+            kept = []
+            seen = set()
+            layer_dup = 0
+            for c in coords:
+                if not (isinstance(c, (list, tuple)) and c and isinstance(c[0], (list, tuple))):
+                    kept.append(c)
+                    continue
+                key = repr([(round(float(p[0]), 4), round(float(p[1]), 4)) for p in c])
+                rkey = repr([(round(float(p[0]), 4), round(float(p[1]), 4)) for p in reversed(c)])
+                if key in seen or rkey in seen:
+                    layer_dup += 1
+                else:
+                    seen.add(key)
+                    kept.append(c)
+            if layer_dup:
+                l["coordinates"] = kept
+                final_dup += layer_dup
         after_counts = self._counts(out_layers)
         recall = compute_all_recall(map_type, out_layers)
         topology_checks = self._topology_checks(map_type, out_layers)
@@ -82,6 +109,7 @@ class GeneralizationEngine:
             "topology": topology_checks,
             "gates": gates,
             "blockers": blockers,
+            "final_duplicate_count": final_dup,
             "scale": scale_denominator,
             "before_counts": before_counts,
             "after_counts": after_counts,
@@ -288,6 +316,14 @@ class GeneralizationEngine:
         # displacement：平行近距线位移（真实几何偏移）
         lines = [{"coordinates": c, "importance": 1.0 if cat in ("motorway", "trunk_road") else 0.5}
                  for c in new_coords if isinstance(c, list) and c and isinstance(c[0], list)]
+        # duplicate detection：去除 exact/reverse 重复（pipeline 内，非最后过滤）
+        dup_report = self.duplicate.detect(new_coords)
+        exact_idx = {a for a, b, _ in dup_report["exact_pairs"]}
+        if exact_idx:
+            new_coords = [c for i, c in enumerate(new_coords) if i not in exact_idx]
+            layer["duplicate_removed"] = len(exact_idx)
+            lines = [{"coordinates": c, "importance": 1.0 if cat in ("motorway", "trunk_road") else 0.5}
+                     for c in new_coords if isinstance(c, list) and c and isinstance(c[0], list)]
         if len(lines) >= 2:
             lines = self.displacement.resolve_parallel(lines, rule.displacement_distance_m(cat))
             new_coords = [l["coordinates"] for l in lines]

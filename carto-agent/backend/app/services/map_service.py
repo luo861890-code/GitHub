@@ -1685,6 +1685,8 @@ class MapService:
                     "name": r["name"], "category": "railway",
                     "importance": r["importance"], "source": r["source"],
                     "verification_status": r["verification_status"],
+                    "geometry_quality": r.get("geometry_quality", "approximate"),
+                    "source_confidence": r.get("source_confidence", "unverified"),
                 })
             if rail_coords:
                 layers.append({
@@ -1698,7 +1700,9 @@ class MapService:
             hub_coords = [[h["lat"], h["lng"]] for h in HUBS]
             hub_props = [{"name": h["name"], "category": "transport_hub",
                           "importance": h["importance"], "source": h["source"],
-                          "verification_status": h["verification_status"]} for h in HUBS]
+                          "verification_status": h["verification_status"],
+                          "geometry_quality": "reference_point",
+                          "source_confidence": "unverified"} for h in HUBS]
             if hub_coords:
                 layers.append({
                     "id": generate_id("layer"), "type": "circleMarker", "name": "交通枢纽",
