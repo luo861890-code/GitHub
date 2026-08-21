@@ -1938,6 +1938,68 @@ class MapService:
             return "core_poi"
         return "normal"
 
+    @staticmethod
+    def _label_min_zoom(layer_name: str, prop: dict) -> int:
+        """注记最小显示比例尺档位（zoom）：小比例尺只保留重要注记。
+
+        规则依据《武汉四类专题地图数据规范》注记分级：
+        市级名称 z>=7 → 区县名称 z>=9 → 山峰/地标 z>=10-11 → 水系/道路 z>=12。
+        """
+        name = layer_name or ""
+        pname = (prop.get("name") or "") if isinstance(prop, dict) else ""
+        if "市级名称" in name:
+            return 7
+        if "区县名称" in name:
+            return 9
+        if "山峰" in name:
+            return 10
+        if any(k in name for k in ("地标", "重点地标")):
+            return 11
+        if "水系" in name or "湖泊" in name:
+            # 大型湖泊/主要河流低比例尺即可显示；小湖/支流放大后显示
+            MAJOR_WATER = {
+                "长江", "汉江", "东湖", "汤逊湖", "梁子湖", "涨渡湖", "斧头湖",
+                "武湖", "后官湖", "沉湖", "严西湖", "童家湖", "牛山湖", "鲁湖",
+                "豹澥后湖", "夏家寺水库", "梅店水库", "后湖", "金银湖",
+            }
+            return 9 if pname in MAJOR_WATER else 12
+        if "道路" in name:
+            # 道路注记按等级：高速/干线/主干道 z>=11，次干道 z>=13，其他 z>=14
+            if any(k in (prop.get("layer") or "") for k in ("高速公路", "城市干线", "城市主干道")):
+                return 11
+            if "次干道" in (prop.get("layer") or ""):
+                return 13
+            return 14
+        if any(k in name for k in ("铁路", "轨道")):
+            return 10
+        return 12
+
+    @staticmethod
+    def _label_importance(layer_name: str, prop: dict) -> float:
+        """注记重要性（0-1），供前端按比例尺/载负量优先保留"""
+        name = layer_name or ""
+        if any(k in name for k in ("市级名称", "区县名称")):
+            return 1.0
+        if "山峰" in name:
+            return 0.9
+        if any(k in name for k in ("地标", "重点地标")):
+            return 0.8
+        if "水系" in name or "湖泊" in name:
+            pname = (prop.get("name") or "") if isinstance(prop, dict) else ""
+            MAJOR_WATER = {
+                "长江", "汉江", "东湖", "汤逊湖", "梁子湖", "涨渡湖", "斧头湖",
+                "武湖", "后官湖", "沉湖", "严西湖", "童家湖", "牛山湖", "鲁湖",
+                "豹澥后湖", "夏家寺水库", "梅店水库", "后湖", "金银湖",
+            }
+            return 0.9 if pname in MAJOR_WATER else 0.5
+        if "道路" in name:
+            if any(k in (prop.get("layer") or "") for k in ("高速公路", "城市干线", "城市主干道")):
+                return 0.7
+            return 0.4
+        if any(k in name for k in ("铁路", "轨道")):
+            return 0.8
+        return 0.3
+
     def _apply_label_engine(self, map_type: str, map_layers: List[dict], zoom: int) -> dict:
         """LabelEngine 接入：点注记候选/碰撞消解 + 道路/河流线注记。
 
@@ -1997,7 +2059,10 @@ class MapService:
                     placed_count += 1
                     kept_c.append(c)
                     if i < len(props):
-                        kept_p.append(props[i])
+                        p = dict(props[i]) if isinstance(props[i], dict) else {"name": name}
+                        p["min_zoom"] = self._label_min_zoom(layer.get("name") or "", p)
+                        p["importance"] = self._label_importance(layer.get("name") or "", p)
+                        kept_p.append(p)
                 else:
                     suppressed_count += 1
             layer["coordinates"] = kept_c
@@ -2005,14 +2070,21 @@ class MapService:
                 layer["properties"] = kept_p
             layer["label_engine"] = {"category": cat, "suppressed": len(coords) - len(kept_c)}
 
-        # 线注记：主要道路/河流（有名称）沿中线放置
-        line_labels = []
-        LINE_HINT = ("道路", "高速", "公路", "干道", "河流", "水系", "长江", "汉江", "铁路", "轨道")
+        # 线注记：主要道路/河流/轨道（有名称）沿中线放置，按类别分入注记层
+        line_labels = []          # 道路注记
+        water_line_labels = []    # 水系注记（并入已有水系注记层或新建）
+        rail_line_labels = []     # 铁路/轨道注记
+        LINE_HINT = ("道路", "高速", "公路", "干道", "环线", "匝道")
+        WATER_HINT = ("河流", "水系", "长江", "汉江", "溪流")
+        RAIL_HINT = ("铁路", "轨道", "地铁", "轻轨")
         for layer in map_layers:
             if layer.get("type") not in ("polyline", "line"):
                 continue
             lname = layer.get("name") or ""
-            if not any(k in lname for k in LINE_HINT):
+            is_road = any(k in lname for k in LINE_HINT)
+            is_water = any(k in lname for k in WATER_HINT)
+            is_rail = any(k in lname for k in RAIL_HINT)
+            if not (is_road or is_water or is_rail):
                 continue
             coords = layer.get("coordinates") or []
             props = layer.get("properties") or []
@@ -2042,42 +2114,65 @@ class MapService:
                     if used_cells.get(ck, 0) >= 2:
                         continue
                     used_cells[ck] = used_cells.get(ck, 0) + 1
-                    line_labels.append({
+                    _prop = {"name": name, "layer": lname}
+                    _label = {
                         "lat": lat, "lng": lng, "name": name,
                         "rotation": res.get("angle", 0), "layer": lname,
-                    })
-        if line_labels and map_type in ("traffic", "tourism", "administrative", "basic"):
-            # 已存在道路注记/水系注记层则并入，否则新建
-            target = None
-            for layer in map_layers:
-                if layer.get("name") == "道路注记":
-                    target = layer
-                    break
+                        "min_zoom": self._label_min_zoom("道路注记" if is_road else (
+                            "水系注记" if is_water else "轨道注记"), _prop),
+                        "importance": self._label_importance("道路注记" if is_road else (
+                            "水系注记" if is_water else "轨道注记"), _prop),
+                    }
+                    if is_road:
+                        line_labels.append(_label)
+                    elif is_water:
+                        water_line_labels.append(_label)
+                    elif is_rail:
+                        rail_line_labels.append(_label)
+        # 道路注记层（仅道路；河流注记并入水系注记层，避免混层）
+        def _append_line_labels(target_name: str, labels: list, base_style: dict):
+            if not labels:
+                return
+            target = next((l for l in map_layers if l.get("name") == target_name), None)
             if target is None:
                 target = {
                     "id": generate_id("layer"),
                     "type": "textLabel",
-                    "name": "道路注记",
+                    "name": target_name,
                     "coordinates": [],
                     "properties": [],
-                    "style": {"color": "#374151", "fontSize": 11, "weight": 2,
-                              "font": "song", "lineLabel": True},
+                    "style": dict(base_style),
                     "group": "注记",
                 }
                 map_layers.append(target)
-            for lb in line_labels:
+            for lb in labels:
                 target["coordinates"].append([lb["lat"], lb["lng"]])
                 target["properties"].append({
                     "name": lb["name"], "rotation": lb["rotation"], "lineLabel": True,
-                    "layer": lb["layer"],
+                    "layer": lb["layer"], "min_zoom": lb["min_zoom"],
+                    "importance": lb["importance"],
                 })
-            placed_count += len(line_labels)
+
+        if (line_labels or water_line_labels or rail_line_labels) and map_type in (
+                "traffic", "tourism", "administrative", "basic"):
+            _append_line_labels("道路注记", line_labels,
+                                {"color": "#374151", "fontSize": 11, "weight": 2,
+                                 "font": "song", "lineLabel": True})
+            _append_line_labels("水系注记", water_line_labels,
+                                {"color": "#1e3a8a", "fontSize": 12, "weight": 2,
+                                 "font": "song", "lineLabel": True})
+            _append_line_labels("轨道注记", rail_line_labels,
+                                {"color": "#6b21a8", "fontSize": 11, "weight": 2,
+                                 "font": "song", "lineLabel": True})
+            placed_count += len(line_labels) + len(water_line_labels) + len(rail_line_labels)
 
         from app.services.label.metrics import compute_metrics
         metrics = compute_metrics(engine.placed, engine.suppressed, important_total=placed_count + suppressed_count)
         metrics.update({
             "line_label_count": len(line_labels),
-            "point_label_count": placed_count - len(line_labels),
+            "water_line_label_count": len(water_line_labels),
+            "rail_line_label_count": len(rail_line_labels),
+            "point_label_count": placed_count - len(line_labels) - len(water_line_labels) - len(rail_line_labels),
             "suppressed_count": suppressed_count,
             "applied": True,
         })

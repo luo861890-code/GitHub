@@ -103,12 +103,27 @@ export const useChatStore = defineStore('chat', () => {
   function restoreMapFromMessages(msgs: Message[]) {
     const mapStore = useMapStore()
     const appStore = useAppStore()
-    // 找到最后一条包含map_data的消息
+    // 找到最后一条包含地图的消息（优先内嵌 map_data，其次 map_id 引用）
     for (let i = msgs.length - 1; i >= 0; i--) {
       const msg = msgs[i]
       if (msg.map_data) {
         mapStore.setMapData(msg.map_data)
         if (msg.map_data.name) appStore.setMapTitle(msg.map_data.name)
+        return
+      }
+      if (msg.map_id) {
+        // 历史消息仅存轻量 map_id 引用（session 持久化不内嵌完整地图）：
+        // 异步拉取完整地图数据恢复，避免刷新后出现“未加载地图”
+        api
+          .getMap(msg.map_id)
+          .then((res: any) => {
+            const data = res?.data || res
+            if (data && data.map_id) {
+              mapStore.setMapData(data)
+              if (data.name) appStore.setMapTitle(data.name)
+            }
+          })
+          .catch((err: any) => console.error('恢复地图失败:', err))
         return
       }
     }

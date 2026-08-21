@@ -1175,18 +1175,20 @@ function addTextLabelLayer(layer: MapLayer, style: any) {
   // features 型注记图层
   if (layer.features && Array.isArray(layer.features) && layer.features.length > 0) {
     const group = L.layerGroup()
+    const _zf = Math.min(2.2, Math.max(0.7, Math.pow(1.12, (map?.getZoom?.() ?? 12) - 12)))
     layer.features.forEach((feat: any) => {
       if (!feat || !feat.coordinates || !validLatLng(feat.coordinates)) return
       const featStyle = feat.style || style
       const text = feat.properties?.name || feat.name || ''
       if (!text) return
+      if (feat.properties?.min_zoom && (map?.getZoom?.() ?? 12) < feat.properties.min_zoom) return
       const coord = [feat.coordinates[0], feat.coordinates[1]] as [number, number]
       L.marker(coord, {
         icon: L.divIcon({
           className: 'text-label-icon',
           html: `<div style="
             color: ${featStyle.color || style.color || '#1a1a1a'};
-            font-size: ${featStyle.fontSize || style.fontSize || 13}px;
+            font-size: ${Math.max(9, Math.round((featStyle.fontSize || style.fontSize || 13) * _zf))}px;
             font-weight: ${featStyle.fontWeight || style.fontWeight || 'normal'};
             text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff;
             white-space: nowrap;
@@ -1209,15 +1211,18 @@ function addTextLabelLayer(layer: MapLayer, style: any) {
   const layerGroup = L.layerGroup()
   
   coords.forEach((coord, idx) => {
-    const text = layer.properties?.[idx]?.name || layer.name || ''
+    const prop = layer.properties?.[idx] || {}
+    const text = prop.name || layer.name || ''
     if (!text) return
+    if (prop.min_zoom && (map?.getZoom?.() ?? 12) < prop.min_zoom) return
+    const _zf = Math.min(2.2, Math.max(0.7, Math.pow(1.12, (map?.getZoom?.() ?? 12) - 12)))
     
     const marker = L.marker(coord, {
       icon: L.divIcon({
         className: 'text-label-icon',
         html: `<div style="
           color: ${style.color || '#1a1a1a'};
-          font-size: ${style.fontSize || 13}px;
+          font-size: ${Math.max(9, Math.round((style.fontSize || 13) * _zf))}px;
           font-weight: ${style.fontWeight || 'normal'};
           text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff;
           white-space: nowrap;

@@ -385,11 +385,13 @@ MapPanel.prototype._lodVisible = function(layerData, zoom) {
     if (t === "polyline" && _nm === "轨道交通线路") return _z >= 9;
     // ---- 注记 ----
     if (t === "textLabel") {
-        if (_nm === "水系注记") return _z >= 12;
-        if (_nm === "市级名称标注") return _z >= 9;
+        if (_nm === "水系注记") return _z >= 9;
+        if (_nm === "市级名称标注") return _z >= 7;
         if (_nm === "区县名称标注") return _z >= 9;
         if (_nm === "山峰注记") return _z >= 10;
         if (_nm === "地标名称" || _nm === "重点地标") return _z >= 11;
+        if (_nm === "道路注记") return _z >= 10;
+        if (_nm === "轨道注记") return _z >= 9;
         return true;
     }
     // ---- POI/符号（按重要性档位分级：先保留重要地标/建筑，其次次要）----
@@ -421,8 +423,13 @@ MapPanel.prototype.refreshLabels = function() {
     Object.entries(this.layerGroups).forEach(([id, item]) => {
         if (!item.data) return;
         const t = item.data.type;
-        // 点符号/注记随比例尺改变大小，缩放时重渲染
-        if (t === "textLabel" || t === "circleMarker" || t === "marker" || t === "point") {
+        // 注记字号/数量随比例尺连续变化：缩放时始终重建
+        // （字号由 renderLayer 的 zoomFactor 实时计算，min_zoom 按当前 zoom 过滤数量）
+        if (t === "textLabel" || t === "label") {
+            this.map.removeLayer(item.layer);
+            this.renderLayer(item.data);
+        } else if (t === "circleMarker" || t === "marker" || t === "point") {
+            // 点符号随比例尺改变大小：可见性或保留数量变化时重建
             const show = this._lodVisible(item.data, this.map.getZoom());
             const next = this._applyLoadControl(item.data, this.map.getZoom());
             const nextCount = (next.coordinates || next.features || []).length;

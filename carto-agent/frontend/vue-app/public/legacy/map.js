@@ -766,6 +766,8 @@ class MapPanel {
                         const prop = props[idx] || {};
                         const label = prop.name || layerData.name || "";
                         if (!label) return;
+                        // 注记按比例尺分级：未达到最小显示级别的不渲染（数量随比例尺变化）
+                        if (prop.min_zoom && this.map.getZoom() < prop.min_zoom) return;
                         // 过滤非地名注记：纯英文/数字的长文本（歌词等污染）不渲染
                         if (/^[A-Za-z0-9\s.,'\"-]{15,}$/.test(label)) return;
                         // 名称去重：同一地理名称整图只渲染一处标签
@@ -773,9 +775,9 @@ class MapPanel {
                         if (!this._labelNames) this._labelNames = new Set();
                         this._labelNames.add(label);
                         const labelColor = style.color || "#1a1a1a";
-                        // 字号随缩放级别自适应：基准zoom=12，每+1级字号×1.1，限制0.85~1.6倍且最小11px
-                        const zoomFactor = Math.pow(1.1, this.map.getZoom() - 12);
-                        const itemFontSize = Math.max(11, Math.round(getFontSize(idx) * Math.min(1.6, Math.max(0.85, zoomFactor))));
+                        // 字号随缩放级别自适应：基准zoom=12，每+1级字号×1.12，限制0.7~2.2倍且最小9px
+                        const zoomFactor = Math.pow(1.12, this.map.getZoom() - 12);
+                        const itemFontSize = Math.max(9, Math.round(getFontSize(idx) * Math.min(2.2, Math.max(0.7, zoomFactor))));
                         let rot = (prop.rotation !== undefined) ? prop.rotation : (style.rotation || 0);
                         // 字头朝上：旋转角归一化到[-90,90]，避免文字倒置
                         rot = ((rot + 90) % 180 + 180) % 180 - 90;
