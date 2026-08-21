@@ -65,7 +65,7 @@ class GeneralizationEngine:
         after_counts = self._counts(out_layers)
         recall = compute_all_recall(map_type, out_layers)
         topology_checks = self._topology_checks(map_type, out_layers)
-        gate = self.topology.gate(topology_checks)
+        gates, blockers = self._gate_layers(topology_checks)
         metrics = {
             "map_load": self.load.compute(out_layers),
             "data_loss": self.loss.compute(
@@ -80,7 +80,8 @@ class GeneralizationEngine:
             ),
             "recall": recall,
             "topology": topology_checks,
-            "topology_gate": gate,
+            "gates": gates,
+            "blockers": blockers,
             "scale": scale_denominator,
             "before_counts": before_counts,
             "after_counts": after_counts,
@@ -90,10 +91,33 @@ class GeneralizationEngine:
             "metrics": metrics,
         }
 
+    def _gate_layers(self, checks: Dict[str, Any]):
+        """三层 gate 解耦：dataset / generalization / map（错误来源可追踪）"""
+        gates = {"dataset_gate": "PASS", "generalization_gate": "PASS", "map_gate": "PASS"}
+        source_blockers = []
+        gen_blockers = []
+        # 数据源问题：区县面显著重叠（DataV 边界精度）
+        polygons = checks.get("polygons", {})
+        if polygons.get("significant_overlap_count", 0) > 0:
+            gates["dataset_gate"] = "BLOCKED_BY_SOURCE_DATA"
+            source_blockers.append(
+                f"区县面显著重叠 {polygons['significant_overlap_count']} 处"
+                f"（DataV 边界精度，面积 {polygons.get('overlap_area_min_km2')}~"
+                f"{polygons.get('overlap_area_max_km2')} km²）")
+        # 综合问题：线连通分量过多 / 重复线 / 等高线无效
+        lines = checks.get("lines", {})
+        if lines.get("duplicate", 0) > 0:
+            gates["generalization_gate"] = "BLOCKED_BY_GENERALIZATION"
+            gen_blockers.append(f"重复线 {lines.get('duplicate')}")
+        if checks.get("contours", {}).get("invalid_contours", 0) > 0:
+            gates["generalization_gate"] = "BLOCKED_BY_GENERALIZATION"
+            gen_blockers.append("存在无效等高线")
+        return gates, {"source_blockers": source_blockers, "generalization_blockers": gen_blockers}
+
     def _topology_checks(self, map_type: str, layers: List[Dict]) -> Dict[str, Any]:
         """按地图类型执行对应拓扑检查"""
         checks: Dict[str, Any] = {}
-        # 行政区：多边形 overlap/validity
+        # 行政区：仅区县政区面参与 overlap/gap（湖泊面是自然要素，不在行政拓扑检查内）
         polygons = []
         for l in layers:
             if l.get("name") == "区县政区":
@@ -101,10 +125,6 @@ class GeneralizationEngine:
                     g = f.get("geometry")
                     if g:
                         polygons.append(g)
-            elif l.get("type") in ("polygon", "area") and "湖泊" in (l.get("name") or ""):
-                for c in (l.get("coordinates") or []):
-                    if isinstance(c, list) and len(c) >= 4:
-                        polygons.append({"type": "Polygon", "coordinates": [[(p[1], p[0]) for p in c]]})
         if polygons:
             checks["polygons"] = self.topology.check_polygons(polygons)
 

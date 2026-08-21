@@ -134,7 +134,7 @@ class TopologyCheck:
         self.crs = crs_manager or CRSManager()
 
     def check_polygons(self, polygons: List[Dict]) -> Dict[str, Any]:
-        """行政区/面：overlap 与 gap（成对面积重叠检测，简化）"""
+        """行政区/面：overlap 统计（raw/significant/阈值/面积）+ 真实 gap 检测"""
         from shapely.geometry import shape
         geoms = []
         invalid = 0
@@ -147,16 +147,60 @@ class TopologyCheck:
             except Exception:
                 invalid += 1
         overlap = 0
+        raw_overlap = 0
+        overlap_areas = []
+        threshold_m2 = 50_000.0  # 0.05 km²
         for i in range(len(geoms)):
             for j in range(i + 1, len(geoms)):
                 try:
                     inter = geoms[i].intersection(geoms[j])
-                    if not inter.is_empty and self.crs.area_meters2(inter) > 50_000:
-                        # 显著重叠（>0.05km²）才算拓扑错误，避免边界精度/共享边界误报
-                        overlap += 1
+                    if not inter.is_empty:
+                        area_m2 = self.crs.area_meters2(inter)
+                        if area_m2 > 0:
+                            raw_overlap += 1
+                            overlap_areas.append(area_m2)
+                            if area_m2 > threshold_m2:
+                                overlap += 1
                 except Exception:
                     pass
-        return {"overlap_count": overlap, "invalid_count": invalid, "gap_count": 0}
+        # gap：区县面 union 后的空洞（投影 CRS），阈值区分噪声
+        gap = self._gap_detection(geoms)
+        return {
+            "raw_overlap_count": raw_overlap,
+            "significant_overlap_count": overlap,
+            "threshold_km2": round(threshold_m2 / 1e6, 4),
+            "unit": "m2",
+            "overlap_area_min_km2": round(min(overlap_areas) / 1e6, 4) if overlap_areas else None,
+            "overlap_area_max_km2": round(max(overlap_areas) / 1e6, 4) if overlap_areas else None,
+            "invalid_count": invalid,
+            **gap,
+        }
+
+    def _gap_detection(self, geoms: List) -> Dict[str, Any]:
+        """真实 gap 检测：区县面 union 后的未覆盖空洞（投影 CRS）"""
+        try:
+            from shapely.ops import unary_union
+            union = unary_union([self.crs._to_projected_shapely(g) for g in geoms if not g.is_empty])
+            gaps = []
+            threshold_m2 = 100_000.0  # 0.1 km² 以下视为噪声
+            def collect_holes(poly):
+                for hole in poly.interiors:
+                    a = type(poly)(hole).area
+                    if a >= threshold_m2:
+                        gaps.append(a)
+            if union.geom_type == "Polygon":
+                collect_holes(union)
+            elif union.geom_type == "MultiPolygon":
+                for p in union.geoms:
+                    collect_holes(p)
+            return {
+                "gap_count": len(gaps),
+                "gap_area_total_km2": round(sum(gaps) / 1e6, 4),
+                "gap_max_area_km2": round(max(gaps) / 1e6, 4) if gaps else 0.0,
+                "gap_threshold_km2": round(threshold_m2 / 1e6, 4),
+            }
+        except Exception:
+            return {"gap_count": 0, "gap_area_total_km2": 0.0, "gap_max_area_km2": 0.0, "gap_threshold_km2": 0.1}
 
     def check_line_connectivity(self, lines: List[List[tuple]]) -> Dict[str, Any]:
         """线连通性：连通分量数（端点共享判定）"""

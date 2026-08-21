@@ -76,14 +76,14 @@ def test_topology_polygons_no_overlap():
     tc = TopologyCheck()
     a = _poly([[114.30, 30.55], [114.31, 30.55], [114.31, 30.56], [114.30, 30.55]])
     b = _poly([[114.32, 30.55], [114.33, 30.55], [114.33, 30.56], [114.32, 30.55]])
-    assert tc.check_polygons([a, b])["overlap_count"] == 0
+    assert tc.check_polygons([a, b])["significant_overlap_count"] == 0
 
 
 def test_topology_polygons_overlap():
     tc = TopologyCheck()
     a = _poly([[114.30, 30.55], [114.32, 30.55], [114.32, 30.57], [114.30, 30.55]])
     b = _poly([[114.31, 30.56], [114.33, 30.56], [114.33, 30.58], [114.31, 30.56]])
-    assert tc.check_polygons([a, b])["overlap_count"] >= 1
+    assert tc.check_polygons([a, b])["significant_overlap_count"] >= 1
 
 
 def test_topology_polygons_invalid():

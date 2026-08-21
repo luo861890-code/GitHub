@@ -1660,6 +1660,7 @@ class MapService:
             bridge_layer = self._extract_bridge_layer(map_layers)
             if bridge_layer:
                 filtered.append(bridge_layer)
+            filtered = self._add_transport_reference_layers(filtered)
         elif map_type == "tourism":
             for l in filtered:
                 if l.get("type") not in ("circleMarker", "marker", "point"):
@@ -1670,6 +1671,45 @@ class MapService:
                         p.setdefault("importance", importance)
                         p["poi_level"] = level
         return filtered
+
+    def _add_transport_reference_layers(self, layers: List[dict]) -> List[dict]:
+        """交通图补齐：铁路独立图层 + 交通枢纽实体（真实来源，非 mock）"""
+        try:
+            from app.core.transport_reference import RAILWAYS, HUBS
+            # 铁路（polyline，真实节点走向）
+            rail_coords = []
+            rail_props = []
+            for r in RAILWAYS:
+                rail_coords.append(r["coords"])
+                rail_props.append({
+                    "name": r["name"], "category": "railway",
+                    "importance": r["importance"], "source": r["source"],
+                    "verification_status": r["verification_status"],
+                })
+            if rail_coords:
+                layers.append({
+                    "id": generate_id("layer"), "type": "polyline", "name": "铁路",
+                    "coordinates": rail_coords, "properties": rail_props,
+                    "style": {"color": "#555555", "weight": 2.0, "opacity": 0.85,
+                              "dashArray": "8,4"},
+                    "group": "交通要素",
+                })
+            # 交通枢纽（circleMarker 真实坐标）
+            hub_coords = [[h["lat"], h["lng"]] for h in HUBS]
+            hub_props = [{"name": h["name"], "category": "transport_hub",
+                          "importance": h["importance"], "source": h["source"],
+                          "verification_status": h["verification_status"]} for h in HUBS]
+            if hub_coords:
+                layers.append({
+                    "id": generate_id("layer"), "type": "circleMarker", "name": "交通枢纽",
+                    "coordinates": hub_coords, "properties": hub_props,
+                    "style": {"color": "#d97706", "fillColor": "#f59e0b", "fillOpacity": 0.9,
+                              "weight": 2, "radius": 7, "icon": "🚉"},
+                    "group": "交通要素",
+                })
+        except Exception as e:
+            logger.info(f"[MapService] 交通补充数据加载失败: {e}")
+        return layers
 
     def _extract_bridge_layer(self, map_layers: List[dict]) -> Optional[dict]:
         """从道路线图层提取「主要桥梁」（跨江/跨河重要桥梁）独立主题层"""

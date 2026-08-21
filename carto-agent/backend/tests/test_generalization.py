@@ -230,7 +230,7 @@ def test_topology_no_overlap():
                                                    [114.31, 30.56], [114.30, 30.55]]]},
              {"type": "Polygon", "coordinates": [[[114.32, 30.55], [114.33, 30.55],
                                                    [114.33, 30.56], [114.32, 30.55]]]}]
-    assert tc.check_polygons(polys)["overlap_count"] == 0
+    assert tc.check_polygons(polys)["significant_overlap_count"] == 0
 
 
 # ==================== Engine 集成（真实武汉地图） ====================

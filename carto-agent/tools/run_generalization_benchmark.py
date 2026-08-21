@@ -46,7 +46,8 @@ def main():
             "data_loss": gm.get("data_loss"),
             "recall": gm.get("recall"),
             "topology": gm.get("topology"),
-            "topology_gate": gm.get("topology_gate"),
+            "gates": gm.get("gates"),
+            "blockers": gm.get("blockers"),
         }
         qa_report = qa.generate_report(md)
         files = {
@@ -60,12 +61,18 @@ def main():
                 json.dump(data, f, ensure_ascii=False, indent=1)
         summary.append({
             "map_type": map_type, "scale": scale,
-            "topology_status": gm.get("topology_gate", {}).get("status"),
+            "dataset_gate": gm.get("gates", {}).get("dataset_gate"),
+            "generalization_gate": gm.get("gates", {}).get("generalization_gate"),
+            "map_gate": gm.get("gates", {}).get("map_gate"),
+            "source_blockers": gm.get("blockers", {}).get("source_blockers"),
+            "category_recall": gm.get("recall", {}).get("category_recall"),
+            "entity_recall": gm.get("recall", {}).get("entity_recall"),
             "recall": gm.get("recall", {}).get("overall_recall"),
             "map_load_score": (gm.get("map_load") or {}).get("map_load_score"),
             "qa_score": qa_report.get("total_score"),
         })
-        print(f"[OK] {map_type} 1:{scale} topology={gm.get('topology_gate',{}).get('status')} "
+        print(f"[OK] {map_type} 1:{scale} gates={gm.get('gates',{}).get('dataset_gate')}/"
+              f"{gm.get('gates',{}).get('generalization_gate')} "
               f"recall={gm.get('recall',{}).get('overall_recall')} "
               f"load={(gm.get('map_load') or {}).get('map_load_score')} qa={qa_report.get('total_score')}")
     with open(os.path.join(OUT, "summary.json"), "w", encoding="utf-8") as f:

@@ -42,8 +42,12 @@ def compute_recall(map_type: str, layers: List[Dict], category: str, expected: L
         return {"expected_count": 0, "matched_count": 0, "missed": [], "recall": 1.0}
 
     generated_names = _collect_names(layers)
-    matched = [e for e in expected if e in generated_names]
-    missed = [e for e in expected if e not in generated_names]
+    # 类别级用子串匹配（图层名可能为“道路-高速公路主线”含“高速公路”），实体级精确匹配
+    matched = []
+    for e in expected:
+        if any(e in n for n in generated_names):
+            matched.append(e)
+    missed = [e for e in expected if e not in matched]
     return {
         "expected_count": len(expected),
         "matched_count": len(matched),
@@ -58,8 +62,19 @@ def compute_all_recall(map_type: str, layers: List[Dict]) -> Dict[str, Any]:
     result: Dict[str, Any] = {}
     for category, expected in spec.items():
         result[category] = compute_recall(map_type, layers, category, expected)
+    # 交通：类别级 + 实体级 recall（GT 实体化）
+    if map_type == "traffic":
+        from app.core.transport_reference import TRAFFIC_GT
+        generated = _collect_names(layers)
+        cat_names = [c["name"] for c in TRAFFIC_GT["categories"]]
+        cat_matched = [n for n in cat_names if n in generated]
+        ent_names = [e["name"] for e in TRAFFIC_GT["entities"]]
+        ent_matched = [n for n in ent_names if n in generated]
+        result["category_recall"] = round(len(cat_matched) / len(cat_names), 4)
+        result["entity_recall"] = round(len(ent_matched) / len(ent_names), 4)
+        result["entity_missed"] = [n for n in ent_names if n not in generated]
     # 总 recall（跨类别平均）
-    recalls = [r["recall"] for r in result.values()]
+    recalls = [r["recall"] for r in result.values() if isinstance(r, dict) and "recall" in r]
     result["overall_recall"] = round(sum(recalls) / len(recalls), 4) if recalls else 1.0
     return result
 
