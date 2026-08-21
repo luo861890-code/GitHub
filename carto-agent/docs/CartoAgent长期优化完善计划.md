@@ -54,6 +54,29 @@
 
 ---
 
+### 2.3 实施进度对照（2026-08-21）
+
+> 当前状态以 `docs/audit/project_status.json` 与 `docs/audit/FINAL_SYSTEM_AUDIT.md` 为准。
+> 下表将 2.2 中已收敛的差距标记为完成（16 组 Benchmark 全部 PASS，Critical=0）。
+
+| 差距维度（2.2 原文） | 当前状态 |
+|---|--|
+| KG 本体完整性 | ✅ 已实现：kg_ontology 8 类本体（MapElement/MapSymbol/CartographicData/MapProjection/InfluencingFactor/CartographicDecision/LayerConfig/MapCase/Dataset） |
+| 制图任务理解（六维） | ✅ 已实现：`task_parser.py` 六维任务书（theme/region/temporal/method/audience/symbol，含 confidence/inferred） |
+| 自动化符号推荐 | ✅ 已实现：SymbolRegistry（15 类统一符号）+ symbol_recommender；禁止 LLM 随机配色 |
+| 地图整饰 | ✅ 已实现：LayoutEngine 自动版式（标题/图例/比例尺/指北针/来源/坐标/时间 + 冲突避免），接入前端导出 |
+| 制图规范校验 | ✅ 已实现：MapQAService 1000 分制（A-J 十项 + Critical 门槛 + 四类专项权重） |
+| 多源数据融合 | ✅ 已实现：data_fusion.py（CRS/schema/name/class 归一 + confidence）+ DataSourceRegistry |
+| 制图综合（尺度） | ✅ 已实现：GeneralizationEngine（选取/简化/聚合/位移/坍缩/夸张 + GroundTruth recall + Topology gate + 动态等高距） |
+| 注记避让 | 🟡 部分：LabelEngine 点/线注记候选、碰撞消解、格网容量已接入；曲线注记与要素感知位移未实现 |
+| CRS / 投影 | ✅ 已实现：CRSManager（pyproj 4326/3857/4547 真实转换 + 米制几何） |
+| Agent 闭环自动返工（Generate→Check→Repair→Recheck） | ❌ 未实现（剩余问题，见 FINAL_REMAINING_ISSUES.md） |
+| LLM 微调 / GeoToken 语料 / MapGPT 预训练 | ❌ 未实现（研究支线，不影响产品主线） |
+| VLM 视觉验证 | ❌ 未实现 |
+| PostGIS/Neon 数据层 | ❌ 未实现（空间数据存 JSON 文件） |
+
+---
+
 ## 三、技术路线总览
 
 采用艾廷华提出的**双轮驱动**架构：

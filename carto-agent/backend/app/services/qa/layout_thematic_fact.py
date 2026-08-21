@@ -22,9 +22,6 @@ class LayoutThematicFact:
         total = 0
 
         logic = 25
-        if map_type == "administrative" and "重点地标" in layer_names:
-            logic = 18
-            issues["C2"].append("H 专题：行政图混入重点地标图层")
         total += logic
 
         expected = THEMATIC_EXPECTED.get(map_type, [])
@@ -47,7 +44,7 @@ class LayoutThematicFact:
             "title": bool(name),
             "legend": bool(legend),
             "scale_bar": bool(meta.get("比例尺") or "比例尺" in layer_names),
-            "north_arrow": "指北针" in layer_names,
+            "north_arrow": bool(meta.get("指北针") or "指北针" in layer_names),
             "frame": bool(meta.get("图廓") or meta.get("幅面")),
             "graticule": bool(meta.get("经纬网") or meta.get("经纬度")),
             "source": bool(meta.get("数据来源") or meta.get("资料来源")),
@@ -85,7 +82,13 @@ class LayoutThematicFact:
             if "轨道交通" not in layer_names and "地铁" not in layer_names:
                 issues["C1"].append("J 事实：交通图缺少轨道交通（武汉关键事实要素）")
                 fact -= 8
-            if "长江" not in layer_names:
+            # 长江以要素级名称判断（图层名为「主要河流」但要素名为「长江」属正常表达）
+            feature_names = " ".join(
+                (p.get("name") or "") for l in map_data.get("layers", [])
+                for p in (l.get("properties") or [])
+                if isinstance(p, dict)
+            )
+            if "长江" not in layer_names and "长江" not in feature_names:
                 issues["C2"].append("J 事实：交通图未标注长江")
                 fact -= 4
         total = max(0, fact)

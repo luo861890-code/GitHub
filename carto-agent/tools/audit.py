@@ -19,7 +19,33 @@ def main():
     parser = argparse.ArgumentParser(description="CartoAgent 专家验收")
     parser.add_argument("--map", default="traffic", help="administrative/traffic/tourism/terrain")
     parser.add_argument("--scale", type=int, default=100000, help="比例尺分母")
+    parser.add_argument("--benchmark", action="store_true",
+                        help="对 benchmarks/wuhan/final/ 下全部 16 组评分汇总")
     args = parser.parse_args()
+
+    if args.benchmark:
+        bench_dir = os.path.join(ROOT, "benchmarks", "wuhan", "final")
+        rows = []
+        for d in sorted(os.listdir(bench_dir)):
+            qa_path = os.path.join(bench_dir, d, "qa.json")
+            if not os.path.exists(qa_path):
+                continue
+            with open(qa_path, encoding="utf-8") as f:
+                q = json.load(f)
+            with open(os.path.join(bench_dir, d, "metrics.json"), encoding="utf-8") as f:
+                m = json.load(f)
+            rows.append((d, q, m))
+        print("=" * 78)
+        print("CartoAgent 16组最终 Benchmark 评分汇总")
+        print("=" * 78)
+        print(f"{'case':<26}{'QA':>6}{'grade':>7}{'status':>16}{'C0':>4}{'dup':>5}{'recall':>8}")
+        for d, q, m in rows:
+            recall = (m.get("recall") or {}).get("overall_recall")
+            print(f"{d:<26}{q.get('total_score', 0):>6}{q.get('grade', ''):>7}"
+                  f"{q.get('status', ''):>16}{q.get('critical_errors', 0):>4}"
+                  f"{m.get('final_duplicate_count', 0):>5}{str(recall):>8}")
+        print("=" * 78)
+        return
 
     zoom = {500000: 8, 250000: 10, 100000: 12, 25000: 14}.get(args.scale, 12)
     ms = MapService(persist_path=os.path.join(ROOT, "data", "maps.json"))

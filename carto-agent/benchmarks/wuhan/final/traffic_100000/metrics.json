@@ -1,0 +1,99 @@
+{
+ "map_load": {
+  "point_density": 0.0005,
+  "line_density": NaN,
+  "polygon_density": NaN,
+  "label_density": 0.0109,
+  "collision_density": 0.0001,
+  "map_load_score": 30.1,
+  "feature_counts": {
+   "point": 4,
+   "line": 8036,
+   "polygon": 847,
+   "label": 93
+  }
+ },
+ "data_loss": {
+  "feature_loss_rate": 0.0,
+  "vertex_loss_rate": 0.2686,
+  "length_change": -0.2359,
+  "area_change": 0.0,
+  "important_feature_loss": 0
+ },
+ "recall": {
+  "core_highways": {
+   "expected_count": 2,
+   "matched_count": 2,
+   "missed": [],
+   "recall": 1.0
+  },
+  "railways": {
+   "expected_count": 1,
+   "matched_count": 1,
+   "missed": [],
+   "recall": 1.0
+  },
+  "metros": {
+   "expected_count": 1,
+   "matched_count": 1,
+   "missed": [],
+   "recall": 1.0
+  },
+  "bridges": {
+   "expected_count": 1,
+   "matched_count": 1,
+   "missed": [],
+   "recall": 1.0
+  },
+  "hubs": {
+   "expected_count": 4,
+   "matched_count": 4,
+   "missed": [],
+   "recall": 1.0
+  },
+  "category_expected": [
+   "highway.motorway",
+   "highway.trunk",
+   "railway.main",
+   "metro.line",
+   "bridge.major"
+  ],
+  "category_matched": [
+   "highway.motorway",
+   "highway.trunk",
+   "railway.main",
+   "metro.line",
+   "bridge.major"
+  ],
+  "category_missed": [],
+  "category_recall": 1.0,
+  "entity_recall": 1.0,
+  "entity_missed": [],
+  "geometry_verified": 0.0,
+  "overall_recall": 1.0
+ },
+ "topology": {
+  "lines": {
+   "components": 626,
+   "disconnected_rate": 0.2055,
+   "dangling_endpoints": 538,
+   "duplicate": 784
+  }
+ },
+ "gates": {
+  "dataset_gate": "PASS",
+  "generalization_gate": "PASS",
+  "map_gate": "PASS"
+ },
+ "blockers": {
+  "source_blockers": [],
+  "generalization_blockers": []
+ },
+ "final_duplicate_count": 0,
+ "stage_metrics": {
+  "raw_duplicate": 853,
+  "after_displacement_rollbacks": 0,
+  "final_exact_duplicate": 0
+ },
+ "scale": 100000
+}

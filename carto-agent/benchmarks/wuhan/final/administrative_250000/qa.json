@@ -1,0 +1,123 @@
+{
+ "map_id": "map_2c3b6da9daa1",
+ "map_name": "武汉市行政区划图",
+ "map_type": "administrative",
+ "region": "武汉市",
+ "scale": 10,
+ "crs": "WGS84 (EPSG:4326) 经纬度（源数据）",
+ "total_score": 934,
+ "grade": "S",
+ "status": "PASS",
+ "critical_errors": 0,
+ "major_errors": 0,
+ "minor_errors": 2,
+ "dimensions": {
+  "data_quality": {
+   "name": "A. 地理数据质量",
+   "score": 180,
+   "max": 200,
+   "weight": 0.35,
+   "issues": [
+    "A1位置 50/50 · A2属性 40/40 · A3几何 30/30 · A4完整 40/40 · A5元数据 20/20"
+   ]
+  },
+  "completeness": {
+   "name": "B. 数据数量与完整性",
+   "score": 100,
+   "max": 100,
+   "weight": 0.0,
+   "issues": [
+    "B1覆盖 30/30 · B2密度 30/30 · B3冗余 20/20 · B4有效率 20/20"
+   ]
+  },
+  "topology": {
+   "name": "C. 空间/拓扑/逻辑一致性",
+   "score": 92,
+   "max": 100,
+   "weight": 0.2,
+   "issues": [
+    "C1行政 30/30 · C2路网 30/30 · C3归属 12/20 · C4水系 20/20"
+   ]
+  },
+  "multi_source": {
+   "name": "D. 多源一致性与时效性",
+   "score": 80,
+   "max": 80,
+   "weight": 0.0,
+   "issues": [
+    "D1空间 30/30 · D2时间 25/25 · D3来源 25/25"
+   ]
+  },
+  "generalization": {
+   "name": "E. 地图综合与多尺度表达",
+   "score": 172,
+   "max": 180,
+   "weight": 0.15,
+   "issues": [
+    "E1选取 25/25 · E2简化 25/25 · E3聚合 25/25 · E4合并 15/15 · E5移位 25/25 · E6夸张 20/20 · E7坍缩 12/20 · E8多尺度 25/25"
+   ]
+  },
+  "symbol_visual": {
+   "name": "F. 符号系统与视觉层级",
+   "score": 92,
+   "max": 100,
+   "weight": 0.1,
+   "issues": [
+    "F符号 35/35 · 层级 25/25 · 色彩 12/20 · 图层关系 20/20"
+   ]
+  },
+  "label": {
+   "name": "G. 注记与冲突处理",
+   "score": 80,
+   "max": 80,
+   "weight": 0.1,
+   "issues": [
+    "G碰撞 40/40 · 完整 40/40"
+   ]
+  },
+  "thematic": {
+   "name": "H. 专题信息质量",
+   "score": 70,
+   "max": 70,
+   "weight": 0.0,
+   "issues": [
+    "H专题逻辑 25/25 · 覆盖 25/25 · 一致性 20/20"
+   ]
+  },
+  "layout": {
+   "name": "I. 地图整饰与版式",
+   "score": 50,
+   "max": 50,
+   "weight": 0.1,
+   "issues": [
+    "I整饰 50/50"
+   ]
+  },
+  "fact": {
+   "name": "J. 事实与语义正确性",
+   "score": 40,
+   "max": 40,
+   "weight": 0.0,
+   "issues": [
+    "J事实 25/25 · 官方一致 15/15"
+   ]
+  }
+ },
+ "issues": {
+  "critical": [],
+  "major": [],
+  "minor": [
+   "E7 坍缩：缺少小面要素的点符号坍缩层",
+   "F 色彩：使用 35 种颜色，建议主色≤5"
+  ],
+  "suggestion": []
+ },
+ "missing_features": [],
+ "priority": [
+  "C2 E7 坍缩：缺少小面要素的点符号坍缩层",
+  "C2 F 色彩：使用 35 种颜色，建议主色≤5"
+ ],
+ "thresholds": {
+  "min_pass": 850
+ }
+}

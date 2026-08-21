@@ -70,22 +70,31 @@ class DataQuality:
         return min(total, 200), detail
 
     def _attribute_score(self, map_data: Dict[str, Any], issues: Dict[str, List[str]]) -> int:
-        """属性精度：名称缺失率 + 类型相关属性"""
+        """属性精度：名称缺失率 + 类型相关属性
+
+        规范原文为「名称缺失率 + 类型相关属性」：要素只要具备
+        name / subtype / category / class / level / ele 任一语义属性即视为属性完整。
+        未命名支流、建成区等自然/人工面状要素带有 subtype 即属性完整，不误报为缺名称。
+        """
         layers = map_data.get("layers", [])
         total_feats = 0
-        no_name = 0
+        incomplete = 0
+        SEMANTIC_KEYS = ("name", "subtype", "category", "class", "level", "ele")
         for l in layers:
             props = l.get("properties") or []
             if not props:
                 continue
             total_feats += len(props)
-            no_name += sum(1 for p in props if not (p.get("name") or ""))
+            incomplete += sum(
+                1 for p in props
+                if isinstance(p, dict) and not any(p.get(k) for k in SEMANTIC_KEYS)
+            )
         if total_feats == 0:
             return 20
-        missing_rate = no_name / total_feats
+        missing_rate = incomplete / total_feats
         attr = max(0, round(40 * (1 - missing_rate * 3)))
         if missing_rate > 0.1:
-            issues["C1"].append(f"A2 属性精度：{no_name}/{total_feats} 个要素缺少名称")
+            issues["C1"].append(f"A2 属性精度：{incomplete}/{total_feats} 个要素缺少语义属性（名称/类别/等级）")
         return attr
 
     def _geometry_score(self, layers: List[Dict]) -> Tuple[int, List[str]]:

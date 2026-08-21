@@ -181,6 +181,7 @@
     <LayoutExport
       :visible="showLayoutExport"
       :map-title="mapStore.mapName"
+      :layout-data="mapStore.layout"
       @close="showLayoutExport = false"
       @export="handleLayoutExport"
     />

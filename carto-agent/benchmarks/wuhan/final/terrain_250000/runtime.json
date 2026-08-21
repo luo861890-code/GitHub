@@ -1,0 +1,17 @@
+{
+ "requested_scale": 250000,
+ "effective_scale": 250000,
+ "zoom": 10,
+ "runtime_seconds": 10.0,
+ "layer_count": 26,
+ "label_metrics": {
+  "label_count": 294,
+  "suppressed_count": 49,
+  "important_label_recall": 0.4982,
+  "label_overlap_rate": 0.0,
+  "label_density": 3.431,
+  "line_label_count": 60,
+  "point_label_count": 172,
+  "applied": true
+ }
+}

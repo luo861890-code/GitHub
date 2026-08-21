@@ -50,19 +50,24 @@ class MapQAService:
         details: Dict[str, List[str]] = {}
         for name, evaluator in self.GROUPS:
             if name == "symbol_label":
-                fg_score, fg_detail = evaluator.evaluate(map_data, issues)
-                raw_scores["symbol_visual"] = min(fg_score, 100)
-                raw_scores["label"] = max(0, fg_score - raw_scores["symbol_visual"])
-                details["symbol_visual"] = fg_detail[:1]
-                details["label"] = fg_detail[1:] or ["G注记得分已计入"]
+                # 符号视觉（F）与注记（G）分别评估，避免“余数拆分”失真
+                f_score, f_detail = evaluator._symbol_score(map_data, issues)
+                g_score, g_detail = evaluator._label_score(map_data, issues)
+                raw_scores["symbol_visual"] = min(f_score, 100)
+                raw_scores["label"] = min(g_score, 80)
+                details["symbol_visual"] = f_detail[:1]
+                details["label"] = g_detail[:1]
             elif name == "layout_thematic_fact":
-                hii_score, hii_detail = evaluator.evaluate(map_data, issues)
-                raw_scores["thematic"] = min(hii_score, 70)
-                raw_scores["layout"] = min(max(0, hii_score - 70), 50)
-                raw_scores["fact"] = max(0, hii_score - 70 - raw_scores["layout"])
-                details["thematic"] = hii_detail[0:1]
-                details["layout"] = hii_detail[1:2] or ["I整饰"]
-                details["fact"] = hii_detail[2:3] or ["J事实"]
+                # 专题（H）/整饰（I）/事实（J）分别评估，避免余数拆分失真
+                h_score, h_detail = evaluator._thematic(map_data, issues)
+                i_score, i_detail = evaluator._layout(map_data, issues)
+                j_score, j_detail = evaluator._fact(map_data, issues)
+                raw_scores["thematic"] = min(h_score, 70)
+                raw_scores["layout"] = min(i_score, 50)
+                raw_scores["fact"] = min(j_score, 40)
+                details["thematic"] = h_detail[:1]
+                details["layout"] = i_detail[:1]
+                details["fact"] = j_detail[:1]
             else:
                 score, d = evaluator.evaluate(map_data, issues)
                 raw_scores[name] = score

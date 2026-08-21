@@ -37,9 +37,21 @@ class GeneralizationQuality:
         total += simp
 
         # ---- E3 聚合 25：同名道路分段（可聚合性） ----
+        # 仅统计道路图层；边界/水系/铁路多要素同名属正常结构，不计入聚合性判定。
+        ROAD_HINT = ("道路", "高速", "公路", "国道", "省道", "干道", "快速路", "环线", "匝道")
         seg_groups: Dict[str, int] = {}
         for l in layers:
             if l.get("type") not in ("polyline", "line"):
+                continue
+            lname = l.get("name") or ""
+            meta = l.get("metadata") or {}
+            subtype = (l.get("properties") or [{}])[0].get("subtype") or ""
+            if not (any(k in lname for k in ROAD_HINT)
+                    or "道路" in str(meta.get("subgroup") or meta.get("group") or "")
+                    or subtype in ("motorway", "motorway_link", "trunk", "trunk_link",
+                                   "primary", "primary_link", "secondary", "secondary_link",
+                                   "tertiary", "tertiary_link", "residential", "service",
+                                   "unclassified")):
                 continue
             for p in (l.get("properties") or []):
                 nm = p.get("name") or ""

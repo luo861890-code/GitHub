@@ -37,15 +37,18 @@ C3 Suggestion（保留扩展位）
 
 ## 四、当前四类地图验收基线（2026-08）
 
-| 地图 | 总分 | 等级 | 状态 | C0 | C1 | C2 |
-|---|--:|--:|---|--:|--:|--:|
-| 行政区划图 | 834 | B | CONDITIONAL_PASS | 0 | 4 | 7 |
-| 交通图 | 823 | B | CONDITIONAL_PASS | 0 | 4 | 7 |
-| 旅游图 | 805 | B | PASS | 0 | 5 | 7 |
-| 地势图 | 828 | B | CONDITIONAL_PASS | 0 | 5 | 6 |
+最终验收基线（2026-08-21，16 组 Benchmark 实测，见 FINAL_BENCHMARK_REPORT.md）：
 
-主要共性问题：要素名称缺失（A2）、道路分段过多（C2/E3）、色彩数量偏多（F）、整饰项缺失（I）。
-通过线：行政/交通/地势 850，旅游 800。
+| 地图 | 1:500k | 1:250k | 1:100k | 1:25k | 等级 | 状态 | Critical | duplicate | recall |
+|---|--:|--:|--:|--:|---|--:|--:|--:|--:|
+| 行政区划图 | 934 | 934 | 934 | 922 | S | PASS | 0 | 0 | 1.0 |
+| 交通图 | 923 | 920 | 920 | 918 | S | PASS | 0 | 0 | 1.0 |
+| 旅游图 | 929 | 927 | 927 | 926 | S | PASS | 0 | 0 | 1.0 |
+| 地势图 | 900 | 900 | 900 | 894 | S/A | PASS | 0 | 0 | 1.0 |
+
+通过线：行政/交通/地势 850，旅游 800（当前全部达标）。
+早期问题（要素名称缺失 A2、道路分段过多 C2/E3、整饰缺失 I）已在收尾会话修复：
+A2 计入 subtype/category 等语义属性、C2/E3 仅统计道路图层、metadata 补全整饰项。
 
 ## 五、使用方式
 
@@ -61,12 +64,12 @@ GET /api/maps/{map_id}/qa
 
 ## 六、后续（规范 Phase 1-6）
 
-Phase 1 数据质量底座（CRS/几何/拓扑/完整性/元数据）→ 已实现基础版
+Phase 1 数据质量底座（CRS/几何/拓扑/完整性/元数据）→ 已实现（CRSManager + DataQualityEngine + 10 数据集 metadata）
 Phase 2 四类地图数据模型 → 数据清单已建立（`qa/metrics.py` THEMATIC_EXPECTED）
-Phase 3 尺度综合 → 已实现选取/简化/聚合/移位/夸张/坍缩/多尺度评估；米制 tolerance 综合待接入
-Phase 4 LabelEngine → 已有碰撞率评估，候选放置/避让引擎待建
+Phase 3 尺度综合 → 已实现选取/简化/聚合/位移/夸张/坍缩/多尺度评估，米制 tolerance 已接入（CRSManager）
+Phase 4 LabelEngine → 已实现点/线注记候选放置、碰撞消解、格网容量、线注记旋转角与边界保护（曲线注记 PARTIAL）
 Phase 5 MapQA → 已完成（本规范）
-Phase 6 Agent 闭环（Generate→Check→Repair→Recheck）→ 待接入自动返工
+Phase 6 Agent 闭环（Generate→Check→Repair→Recheck）→ 待接入自动返工（自动修复闭环未实现）
 
 新增专题（人口/土地利用/夜间灯光等）时，仅需在 `qa/metrics.py` 添加 `CartographicProfile` 与权重，无需重设计验图逻辑。
 
@@ -87,7 +90,7 @@ Phase 6 Agent 闭环（Generate→Check→Repair→Recheck）→ 待接入自动
 
 | 地图 | 总分 | 等级 | 状态 | 说明 |
 |---|--:|--:|---|--|
-| 行政区划图 | 834 | B | CONDITIONAL_PASS | 边界为主，道路/POI 精简 |
-| 交通图 | 817 | B | CONDITIONAL_PASS | 含 67 座主要桥梁独立层 |
-| 旅游图 | 800 | B | PASS | POI 按 P0-P3 分级 |
-| 地势图 | 828 | B | CONDITIONAL_PASS | DEM/等高线/山峰 |
+| 行政区划图 | 922-934 | S | PASS | 边界为主，道路/POI 精简，13 区 recall=1.0 |
+| 交通图 | 918-923 | S | PASS | 含 67 座主要桥梁独立层，category/entity recall=1.0 |
+| 旅游图 | 926-929 | S | PASS | POI 按 P0-P3 分级，核心景点 recall=1.0 |
+| 地势图 | 894-900 | S/A | PASS | DEM/等高线/山峰，计曲线 recall=1.0 |

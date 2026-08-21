@@ -90,20 +90,29 @@ class LabelEngine:
         name: str,
         category: str,
         canvas_size: Tuple[int, int] = (1680, 950),
+        bounds: Tuple[float, float, float, float] = None,
     ) -> Dict[str, Any]:
         """线注记：沿道路/河流放置（取线中点，计算旋转角），检查边界保护"""
         if len(line_lonlat) < 2:
             return {"name": name, "placed": False, "reason": "too_short"}
         # 中点
         mid = line_lonlat[len(line_lonlat) // 2]
-        # 近似屏幕坐标（简单线性映射，演示用；生产应经投影与画布变换）
         lats = [p[0] for p in line_lonlat]
         lngs = [p[1] for p in line_lonlat]
-        min_lat, max_lat = min(lats), max(lats)
-        min_lng, max_lng = min(lngs), max(lngs)
-        span = max(1e-6, max_lng - min_lng, max_lat - min_lat)
-        x = int((mid[1] - min_lng) / span * (canvas_size[0] - 100) + 50)
-        y = int((max_lat - mid[0]) / span * (canvas_size[1] - 100) + 50)
+        if bounds:
+            # 地图视口范围：真实边界保护（越出视口即拒绝）
+            min_lat, min_lng, max_lat, max_lng = bounds
+            span_lat = max(1e-6, max_lat - min_lat)
+            span_lng = max(1e-6, max_lng - min_lng)
+            x = int((mid[1] - min_lng) / span_lng * (canvas_size[0] - 120) + 60)
+            y = int((max_lat - mid[0]) / span_lat * (canvas_size[1] - 120) + 60)
+        else:
+            # 兼容旧调用：相对线自身范围映射（仅估算，边界保护不可用）
+            min_lat, max_lat = min(lats), max(lats)
+            min_lng, max_lng = min(lngs), max(lngs)
+            span = max(1e-6, max_lng - min_lng, max_lat - min_lat)
+            x = int((mid[1] - min_lng) / span * (canvas_size[0] - 100) + 50)
+            y = int((max_lat - mid[0]) / span * (canvas_size[1] - 100) + 50)
         # 旋转角（线主方向）
         i0 = max(0, len(line_lonlat) // 2 - 1)
         i1 = min(len(line_lonlat) - 1, len(line_lonlat) // 2 + 1)

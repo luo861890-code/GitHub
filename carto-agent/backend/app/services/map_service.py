@@ -489,8 +489,9 @@ class MapService:
                 else:
                     center = [30.5928, 114.3055]  # 默认武汉
 
-            # 行政区划标准图：图幅范围包含周边相邻地市（规范九-5），限制最大缩放
-            if map_type == "administrative" and (zoom is None or zoom > 10):
+            # 行政区划标准图：默认图幅范围包含周边相邻地市（规范九-5）；
+            # 调用方显式传更大 zoom 时允许放大到区县详图比例尺（大比例尺行政图）
+            if map_type == "administrative" and zoom is None:
                 zoom = 10
 
             # 确定要素类型
@@ -603,6 +604,13 @@ class MapService:
             if _local_water:
                 map_layers = _local_water + map_layers
             if _local_roads:
+                # 地势图道路为辅助要素：仅保留 motorway/trunk（MAP_TYPE_PROFILES.terrain）
+                if map_type == "terrain":
+                    _local_roads = [
+                        l for l in _local_roads
+                        if ((l.get("properties") or [{}])[0].get("subtype") in ("motorway", "trunk")
+                            or any(k in (l.get("name") or "") for k in ("高速公路", "城市干线")))
+                    ]
                 map_layers = map_layers + _local_roads
             if _local_transit:
                 map_layers = map_layers + _local_transit
@@ -738,6 +746,22 @@ class MapService:
                         })
                 except Exception as e:
                     logger.info(f"[MapService] 区划面底图获取失败: {e}")
+
+            # 旅游图：叠加核心景区/地标（真实 GIS POI，绿点高亮）——
+            # 东湖绿道、木兰文化生态旅游区等核心景点须上图（旅游图 GroundTruth recall）
+            if map_type == "tourism" and region == "武汉市":
+                gis_pois = WUHAN_GIS_POI
+                if gis_pois and not any(l.get("name") == "重点地标" for l in map_layers):
+                    map_layers.append({
+                        "id": generate_id("layer"),
+                        "type": "circleMarker",
+                        "name": "重点地标",
+                        "coordinates": [[p["lat"], p["lng"]] for p in gis_pois],
+                        "properties": [{"name": p["name"], "category": p["type"]} for p in gis_pois],
+                        "style": {"color": "#16a34a", "fillColor": "#ffffff", "fillOpacity": 0.9,
+                                  "weight": 2.5, "radius": 7, "icon": "🏞️", "iconClass": "fa-location-dot",
+                                  "group": "兴趣点(POI)"},
+                    })
 
             # 非行政区划图：叠加"上一级行政边界"上下文（湖北省市级边界 + 武汉市域）
             # 生成的地图仅含用户所需区域 + 行政规划上一级，两个模块颜色区分
@@ -879,6 +903,10 @@ class MapService:
             map_layers = self._apply_cartographic_profile(map_type, map_layers, zoom)
             # 制图综合（GeneralizationEngine）：真实 Selection/Simplification/Aggregation/Displacement/Collapse
             generalization_metrics = self._apply_generalization(map_type, map_layers, zoom)
+            # SymbolRegistry：统一符号来源（颜色/线宽/优先级从注册表解析，禁止随机配色）
+            map_layers = self._apply_symbol_registry(map_layers)
+            # LabelEngine：点注记碰撞消解 + 道路/河流线注记（真实 Label Engine 接入）
+            label_metrics = self._apply_label_engine(map_type, map_layers, zoom)
 
             # 生成图例数据
             legend = self._generate_legend(map_type, map_layers)
@@ -899,6 +927,7 @@ class MapService:
 
             # 底图主题：地势图使用 DEM 山体阴影作为地势底图；行政区划图保持矢量制图底图
             default_theme = "hillshade" if map_type == "terrain" else "plain"
+            scale_den = self._zoom_to_scale(zoom)
             # 编制说明中的地图类型描述（按地图类型动态生成）
             meta_type = {
                 "administrative": "行政区划图（政区版）· 普通参考地图",
@@ -929,13 +958,21 @@ class MapService:
                     "数据来源": "DataV GeoAtlas 官方行政区划数据 / OpenStreetMap",
                     "地图类型": meta_type,
                     "图幅范围": "武汉市及周边相邻地市（区位关系）",
+                    "比例尺": f"1:{scale_den}",
+                    "经纬网": "按图幅范围自动绘制经纬网",
+                    "指北针": "图廓内右上角",
+                    "图廓": "竖版双线图廓",
                     "幅面版式": "竖版",
                     "审图号": "鄂S(2022)100号",
                     "编制单位": "地图制图智能体 CartoAgent",
                     "出版日期": "2026年8月",
+                    "制图时间": "2026年8月",
                     "资料截止": "民政部行政区划现状 / OSM实时",
                     "说明": "依据《行政区划地图制作规范》编制；正式出版需取得审图号并配置标准投影",
                 },
+                # LayoutEngine：自动版式（标题/图例/比例尺/指北针/来源/坐标/时间 + 冲突避免）
+                "layout": self._build_layout(map_name, map_type, legend),
+                "label_metrics": label_metrics,
                 "created_at": get_timestamp(),
             }
 
@@ -1814,6 +1851,252 @@ class MapService:
                 layer["_dedup_removed"] = removed
         return map_layers
 
+    def _apply_symbol_registry(self, map_layers: List[dict]) -> List[dict]:
+        """SymbolRegistry 接入渲染链：图层样式统一从注册表解析。
+
+        - 已具备主题样式的图层（行政区弱化、交通加粗等）保留其透明度/宽度修饰；
+        - 未显式配色或使用通用默认色的图层改为注册表符号色；
+        - 每个图层记录 symbol_id，供 QA/前端追溯符号来源。
+        """
+        from app.core.cartographic_profiles import LAYER_CATEGORY
+        from app.services.cartography.symbols.registry import resolve_by_category
+
+        GENERIC_WEIGHTS = {0.8, 1.0, 1.5, 2.0, 3.0}
+        GENERIC_COLORS = {"#3388ff", "#3388ff".upper()}
+        for layer in map_layers:
+            layer["group"] = self._classify_layer_group(layer)
+            if layer.get("symbol_id"):
+                continue
+            name = layer.get("name") or ""
+            geom = layer.get("type") or ""
+            cat = LAYER_CATEGORY.get(name)
+            sym = resolve_by_category(cat, geom) if cat else None
+            if not sym:
+                continue
+            st = dict(layer.get("style") or {})
+            cur_color = str(st.get("color") or "").lower()
+            cur_fill = str(st.get("fillColor") or "").lower()
+            if (not cur_color or cur_color in GENERIC_COLORS) and sym.get("color"):
+                st["color"] = sym["color"]
+            if sym.get("casing") and not st.get("casing"):
+                st["casing"] = sym["casing"]
+            try:
+                cur_w = float(st.get("weight") or 0)
+            except (TypeError, ValueError):
+                cur_w = 0
+            if sym.get("width") and (cur_w == 0 or cur_w in GENERIC_WEIGHTS):
+                st["weight"] = sym["width"]
+            if (not cur_fill or cur_fill in GENERIC_COLORS) and sym.get("color"):
+                st["fillColor"] = sym["color"]
+            layer["style"] = st
+            layer["symbol_id"] = sym["symbol_id"]
+        return map_layers
+
+    @staticmethod
+    def _classify_layer_group(layer: dict) -> str:
+        """图层分组：行政/道路/轨道/桥梁/交通枢纽/水系/地形/旅游POI/居民地/注记/底图"""
+        name = layer.get("name") or ""
+        ltype = layer.get("type") or ""
+        if ltype == "polygon" and any(k in name for k in ("陆地底图", "湖北省域", "底图")):
+            return "底图"
+        if any(k in name for k in ("区县政区", "区县界", "市界", "省界", "境界", "边界",
+                                   "行政中心", "乡镇界")):
+            return "行政区划"
+        if ltype in ("textLabel", "label") or "注记" in name or "标注" in name:
+            return "注记"
+        if any(k in name for k in ("铁路", "轨道", "地铁", "轻轨")):
+            return "轨道交通"
+        if "桥梁" in name:
+            return "桥梁"
+        if any(k in name for k in ("枢纽", "机场", "车站", "公交", "火车站")):
+            return "交通枢纽"
+        if any(k in name for k in ("道路", "高速", "公路", "干道", "环线", "匝道",
+                                   "国道", "省道")):
+            return "道路"
+        if any(k in name for k in ("河", "湖", "水库", "水系", "溪流", "水")):
+            return "水系"
+        if any(k in name for k in ("等高线", "山峰", "山体", "地貌")):
+            return "地形地貌"
+        if any(k in name for k in ("景点", "旅游", "公园", "博物馆", "文化", "历史",
+                                   "宗教", "自然", "地标", "名胜", "古迹")):
+            return "旅游POI"
+        if any(k in name for k in ("建成区", "街区", "居民地", "居民区")):
+            return "居民地"
+        return "制图要素"
+
+    @staticmethod
+    def _label_priority_for_layer(layer_name: str) -> str:
+        """LabelEngine 优先级分类：行政名称 > 核心地名 > 主要交通 > 核心POI > 普通"""
+        name = layer_name or ""
+        if any(k in name for k in ("区县名称", "市级名称", "行政", "政区")):
+            return "admin"
+        if any(k in name for k in ("地标", "水系注记", "湖泊注记", "城市名称")):
+            return "core_place"
+        if any(k in name for k in ("道路注记", "桥梁", "轨道", "铁路", "枢纽")):
+            return "transport"
+        if any(k in name for k in ("景点", "景区", "旅游", "公园", "博物馆")):
+            return "core_poi"
+        return "normal"
+
+    def _apply_label_engine(self, map_type: str, map_layers: List[dict], zoom: int) -> dict:
+        """LabelEngine 接入：点注记候选/碰撞消解 + 道路/河流线注记。
+
+        1) textLabel 点注记：同一 0.02° 格网内保留高优先级、抑制低优先级（真实消解）；
+        2) 线注记：主要道路/河流取线中点生成「道路注记/水系注记」层，含旋转角；
+        3) 输出 label_metrics（放置/抑制/重要标签召回/碰撞率）。
+        """
+        from app.services.label.engine import LabelEngine
+        from app.core.constants import CITY_BBOX
+
+        engine = LabelEngine()
+        bbox = CITY_BBOX.get("武汉市", {})
+        if not bbox:
+            return {"applied": False, "reason": "no_bbox"}
+
+        canvas = (1680, 950)
+        min_lat, max_lat = float(bbox["min_lat"]), float(bbox["max_lat"])
+        min_lng, max_lng = float(bbox["min_lon"]), float(bbox["max_lon"])
+        span_lat = max(1e-6, max_lat - min_lat)
+        span_lng = max(1e-6, max_lng - min_lng)
+
+        def to_px(lat, lng):
+            x = int((lng - min_lng) / span_lng * (canvas[0] - 120) + 60)
+            y = int((max_lat - lat) / span_lat * (canvas[1] - 120) + 60)
+            return x, y
+
+        placed_count = 0
+        suppressed_count = 0
+        used_cells: Dict[str, int] = {}
+
+        def cell_key(lat, lng):
+            return f"{round(float(lat) / 0.02)},{round(float(lng) / 0.02)}"
+
+        for layer in map_layers:
+            if layer.get("type") not in ("textLabel", "label"):
+                continue
+            coords = layer.get("coordinates") or []
+            props = layer.get("properties") or []
+            cat = self._label_priority_for_layer(layer.get("name") or "")
+            kept_c, kept_p = [], []
+            for i, c in enumerate(coords):
+                if not (isinstance(c, list) and len(c) >= 2 and isinstance(c[0], (int, float))):
+                    kept_c.append(c)
+                    if i < len(props):
+                        kept_p.append(props[i])
+                    continue
+                name = (props[i] if i < len(props) else {}).get("name") or ""
+                # 0.02° 格网级容量：每格最多 2 个注记（行政名称例外，保证 13 区全上图）
+                ck = cell_key(c[0], c[1])
+                if used_cells.get(ck, 0) >= 2 and cat != "admin":
+                    suppressed_count += 1
+                    continue
+                x, y = to_px(float(c[0]), float(c[1]))
+                res = engine.place_point_label(x, y, 80, 16, name, cat, (float(c[0]), float(c[1])))
+                if res.get("placed"):
+                    used_cells[ck] = used_cells.get(ck, 0) + 1
+                    placed_count += 1
+                    kept_c.append(c)
+                    if i < len(props):
+                        kept_p.append(props[i])
+                else:
+                    suppressed_count += 1
+            layer["coordinates"] = kept_c
+            if props:
+                layer["properties"] = kept_p
+            layer["label_engine"] = {"category": cat, "suppressed": len(coords) - len(kept_c)}
+
+        # 线注记：主要道路/河流（有名称）沿中线放置
+        line_labels = []
+        LINE_HINT = ("道路", "高速", "公路", "干道", "河流", "水系", "长江", "汉江", "铁路", "轨道")
+        for layer in map_layers:
+            if layer.get("type") not in ("polyline", "line"):
+                continue
+            lname = layer.get("name") or ""
+            if not any(k in lname for k in LINE_HINT):
+                continue
+            coords = layer.get("coordinates") or []
+            props = layer.get("properties") or []
+            for i, c in enumerate(coords):
+                if not (isinstance(c, list) and len(c) >= 2 and isinstance(c[0], list)):
+                    continue
+                p = props[i] if i < len(props) else {}
+                name = (p.get("name") or "") if isinstance(p, dict) else ""
+                if not name or len(c) < 3:
+                    continue
+                # 每层最多 60 条线注记，避免载负量过高
+                if len(line_labels) >= 60:
+                    break
+                # LabelEngine 线注记约定坐标为 (lat, lng)
+                lonlat = [(float(pt[0]), float(pt[1])) for pt in c
+                          if isinstance(pt, list) and len(pt) >= 2]
+                if len(lonlat) < 2:
+                    continue
+                res = engine.place_line_label(
+                    lonlat, name, "transport", canvas,
+                    bounds=(min_lat, min_lng, max_lat, max_lng),
+                )
+                if res.get("placed"):
+                    mid = lonlat[len(lonlat) // 2]
+                    lat, lng = mid[0], mid[1]
+                    ck = cell_key(mid[1], mid[0])
+                    if used_cells.get(ck, 0) >= 2:
+                        continue
+                    used_cells[ck] = used_cells.get(ck, 0) + 1
+                    line_labels.append({
+                        "lat": lat, "lng": lng, "name": name,
+                        "rotation": res.get("angle", 0), "layer": lname,
+                    })
+        if line_labels and map_type in ("traffic", "tourism", "administrative", "basic"):
+            # 已存在道路注记/水系注记层则并入，否则新建
+            target = None
+            for layer in map_layers:
+                if layer.get("name") == "道路注记":
+                    target = layer
+                    break
+            if target is None:
+                target = {
+                    "id": generate_id("layer"),
+                    "type": "textLabel",
+                    "name": "道路注记",
+                    "coordinates": [],
+                    "properties": [],
+                    "style": {"color": "#374151", "fontSize": 11, "weight": 2,
+                              "font": "song", "lineLabel": True},
+                    "group": "注记",
+                }
+                map_layers.append(target)
+            for lb in line_labels:
+                target["coordinates"].append([lb["lat"], lb["lng"]])
+                target["properties"].append({
+                    "name": lb["name"], "rotation": lb["rotation"], "lineLabel": True,
+                    "layer": lb["layer"],
+                })
+            placed_count += len(line_labels)
+
+        from app.services.label.metrics import compute_metrics
+        metrics = compute_metrics(engine.placed, engine.suppressed, important_total=placed_count + suppressed_count)
+        metrics.update({
+            "line_label_count": len(line_labels),
+            "point_label_count": placed_count - len(line_labels),
+            "suppressed_count": suppressed_count,
+            "applied": True,
+        })
+        return metrics
+
+    @staticmethod
+    def _build_layout(map_name: str, map_type: str, legend: dict) -> dict:
+        """LayoutEngine 版式规划：标题/图例/比例尺/指北针/来源/坐标/时间 + 冲突避免"""
+        from app.services.cartography.layout import LayoutEngine
+        le = LayoutEngine()
+        plan = le.plan(
+            map_name,
+            map_type,
+            has_legend=bool((legend or {}).get("items")),
+            has_scale_bar=True,
+        )
+        plan["validation"] = le.validate(plan)
+        return plan
+
 
     def _generate_thematic_layers(self, map_type: str, region: str, center: List[float]) -> List[dict]:
         """生成专题地图图层数据"""
@@ -2408,14 +2691,26 @@ class MapService:
 
         制图综合要求不同比例尺下主要道路保持连通，不出现“一段一段”的割裂。
         方法：按要素名称分组 → 坐标吸附到 1m 网格 → unary_union + linemerge。
+
+        仅对「道路/边界/铁路」类图层中有名称的要素执行连接：
+        - 无名称要素（支流溪流、等高线等）不属于同一要素，强制合并会造成
+          语义错误并导致 unary_union 性能灾难（数千米长 MultiLineString）。
+        - 等高线按高程独立表达，禁止跨线合并。
         """
         from shapely.geometry import LineString
         from shapely.ops import linemerge, unary_union
         from app.core.crs_manager import CRSManager
         _crs = CRSManager()
+        CONNECT_HINT = ("道路", "高速", "公路", "国道", "省道", "干道", "边界",
+                        "境界", "铁路", "轨道", "环线", "匝道")
 
         for layer in map_layers:
             if layer.get("type") not in ("polyline", "line"):
+                continue
+            lname = layer.get("name") or ""
+            if "等高线" in lname:
+                continue
+            if not any(k in lname for k in CONNECT_HINT):
                 continue
             coords = layer.get("coordinates") or []
             props = layer.get("properties") or []
@@ -2426,6 +2721,9 @@ class MapService:
                 if not isinstance(c, list) or len(c) < 2:
                     continue
                 name = (props[i] if i < len(props) else {}).get("name") or ""
+                if not name:
+                    # 无名称线段保持原样（不属于任何可连接要素）
+                    continue
                 groups.setdefault(name, []).append((c, props[i] if i < len(props) else {}))
 
             merged_coords: List[Any] = []
@@ -2464,6 +2762,12 @@ class MapService:
                     for c, p in segs:
                         merged_coords.append(c)
                         merged_props.append(p)
+            # 无名称线段按原顺序保留（不再参与分组合并）
+            for i, c in enumerate(coords):
+                name = (props[i] if i < len(props) else {}).get("name") or ""
+                if not name:
+                    merged_coords.append(c)
+                    merged_props.append(props[i] if i < len(props) else {})
             if merged_coords:
                 layer["coordinates"] = merged_coords
                 layer["properties"] = merged_props

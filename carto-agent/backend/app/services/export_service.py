@@ -300,7 +300,21 @@ class ExportService:
         """按布局参数渲染带整饰的地图PNG（供“布局导出”使用）"""
         if not _HAS_PIL:
             return self._png_placeholder("服务器缺少 Pillow 依赖，无法渲染 PNG")
-        layout = layout or {}
+        # LayoutEngine 计划作为默认值：未显式传 layout 时使用后端版式计划
+        if not layout:
+            plan = (map_data.get("layout") or {}).get("layout") or {}
+            layout = {
+                "showTitle": "title" in plan,
+                "showLegend": "legend" in plan,
+                "showScaleBar": "scale_bar" in plan,
+                "showNorthArrow": "north_arrow" in plan,
+                "title": (map_data.get("layout") or {}).get("map_name")
+                         or map_data.get("name") or "",
+                "legendPosition": "topright" if (plan.get("legend") or {}).get("anchor") == "right" else "topright",
+                "scaleBarPosition": "bottomleft" if (plan.get("scale_bar") or {}).get("anchor") == "left" else "bottomleft",
+            }
+        else:
+            layout = dict(layout)
 
         # ========== 页面尺寸 ==========
         page_sizes_mm = {

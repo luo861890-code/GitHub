@@ -5,6 +5,7 @@
 > 矢量编辑（绘制、节点编辑、撤销重做、属性编辑、保存回写）。
 
 > 📖 **结构与模块详解见 [docs/项目结构说明.md](docs/项目结构说明.md)**
+> 📚 **全部文档索引见 [docs/README.md](docs/README.md)**
 
 ## 目录结构（整理后）
 
@@ -13,9 +14,9 @@ carto-agent/
 ├── backend/                 # 后端服务（FastAPI）
 │   ├── app/
 │   │   ├── api/             # API 路由层（chat / maps / knowledge / settings）
-│   │   ├── core/            # 配置、常量、异常、KG 本体
+│   │   ├── core/            # 配置、常量、CRS、制图Profile、KG 本体、交通参考
 │   │   ├── models/          # Pydantic 数据模型 / Schema
-│   │   ├── services/        # 业务服务（agent / llm / map / geo / kg / osm ...）
+│   │   ├── services/        # 业务服务（agent/llm/map/geo/kg/osm/qa/generalization/label/cartography…）
 │   │   └── utils/           # 通用工具（geometry 几何函数等）
 │   ├── data/
 │   │   ├── geo/             # 本地地理数据（GeoJSON，数据流水线生成）
@@ -45,13 +46,9 @@ carto-agent/
 │       └── tsconfig*.json
 ├── data/                    # 运行数据（maps.json / sessions.json / kg/）
 │   └── *.bak / *backup*     # 数据恢复备份（maps.json.bak 等）
+├── benchmarks/              # 四类地图 × 四尺度最终 Benchmark（16 组，JSON）
 ├── docs/                    # 文档与长期规划
-├── tools/                   # 运维工具（启动 / 补丁 / 测试）
-│   ├── start_server.py             # 常规启动
-│   ├── start_server_noproxy.py     # 清代理启动（OSM 抓取）
-│   ├── patch_def.py                # 一次性补丁
-│   ├── fix_system.py               # 系统修复脚本
-│   └── test_map_gen.py             # 接口冒烟测试
+├── tools/                   # 运维/开发工具（详见 tools/README.md）
 ├── experiments/             # 开发/实验脚本（KG 决策数据、GeoToken 实验）
 └── output/                  # 导出/调试产物（debug/）
 ```
@@ -88,9 +85,32 @@ npm run dev
 - **多 LLM**：Ollama（本地）/ 通义千问 / OpenAI / DeepSeek / 智谱 GLM（运行时切换）
 - **知识图谱增强**：Neo4j（不可用时自动降级内存模式），提供制图约束与样式推荐
 - **数据源**：DataV GeoAtlas 行政区划 + OSM（Overpass）路网水系 + 本地精确数据
+- **CRS / 投影**：CRSManager（pyproj 真实 4326/3857/4547 转换），米制几何简化/缓冲/距离
+- **制图综合**：GeneralizationEngine（选取/简化/聚合/位移/坍缩/夸张 + 多尺度规则 + 要素召回 + 拓扑门禁）
+- **统一符号**：SymbolRegistry（15 类符号，禁止 LLM 随机配色）
+- **注记引擎**：LabelEngine（点/线注记候选、碰撞消解、格网容量、线注记旋转角与边界保护）
+- **自动版式**：LayoutEngine（标题/图例/比例尺/指北针/来源/坐标/时间 + 冲突避免）
+- **自动验收**：MapQAService 1000 分制（十项指标 A-J、Critical 门槛、四类地图专项权重）
+- **16 组 Benchmark**：行政/交通/旅游/地势 × 1:500k/1:250k/1:100k/1:25k 全部 PASS（详见 docs/audit/FINAL_BENCHMARK_REPORT.md）
 - **载负量控制**：按比例尺分级显隐图层、大图层要素抽稀
 - **矢量编辑**：点/线/面绘制、节点拖拽、复制/简化、属性编辑、撤销重做、保存回写
 - **多格式导出**：GeoJSON / SVG / PNG
+
+## 地图质量与验收
+
+```bash
+# 16 组最终 Benchmark（行政/交通/旅游/地势 × 四尺度）
+python tools/run_final_benchmark.py
+
+# 从 Benchmark 输出评分汇总
+python tools/audit.py --benchmark
+
+# 单图专家验收（如交通图 1:100k）
+python tools/audit.py --map traffic --scale 100000
+```
+
+当前 16 组结果：行政区划图 922-934、交通图 918-923、旅游图 926-929、
+地势图 894-900，全部 PASS、Critical=0、核心要素 recall=1.0。
 
 ## 数据流水线（backend/scripts/）
 

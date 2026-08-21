@@ -73,19 +73,24 @@ class GeneralizationEngine:
             if l.get("type") != "polyline":
                 continue
             coords = l.get("coordinates") or []
-            kept = []
+            kept_idx = []
             seen = set()
-            for c in coords:
+            for i, c in enumerate(coords):
                 if not (isinstance(c, (list, tuple)) and c and isinstance(c[0], (list, tuple))):
-                    kept.append(c)
+                    kept_idx.append(i)
                     continue
                 key = repr([(round(float(p[0]), 4), round(float(p[1]), 4)) for p in c])
                 rkey = repr([(round(float(p[0]), 4), round(float(p[1]), 4)) for p in reversed(c)])
                 if key not in seen and rkey not in seen:
                     seen.add(key)
-                    kept.append(c)
-            if len(kept) != len(coords):
-                l["coordinates"] = kept
+                    seen.add(rkey)
+                    kept_idx.append(i)
+            if len(kept_idx) != len(coords):
+                l["coordinates"] = [coords[i] for i in kept_idx]
+                props = l.get("properties") or []
+                if props and len(props) == len(coords):
+                    l["properties"] = [props[i] for i in kept_idx]
+        self._sync_props(out_layers)
         after_counts = self._counts(out_layers)
         # 去重后剩余 exact/reverse duplicate（按图层内统计，应=0；跨图层同坐标不同图层非重复）
         final_dup = sum(
@@ -124,6 +129,22 @@ class GeneralizationEngine:
             "layers": out_layers,
             "metrics": metrics,
         }
+
+    @staticmethod
+    def _sync_props(layers: List[Dict]) -> None:
+        """防御性对齐：coordinates 与 properties 数量不一致时截断/补齐。
+
+        坐标与属性必须一一对应，防止属性缺失误报与图例错位。
+        """
+        for l in layers:
+            coords = l.get("coordinates") or []
+            props = l.get("properties") or []
+            if not props or len(props) == len(coords):
+                continue
+            if len(props) > len(coords):
+                l["properties"] = props[:len(coords)]
+            else:
+                l["properties"] = props + [{}] * (len(coords) - len(props))
 
     def _gate_layers(self, checks: Dict[str, Any], final_dup: int = 0):
         """三层 gate 解耦：dataset / generalization / map（错误来源可追踪）"""
@@ -330,14 +351,24 @@ class GeneralizationEngine:
             layer["duplicate_removed"] = len(exact_idx)
             lines = [{"coordinates": c, "importance": 1.0 if cat in ("motorway", "trunk_road") else 0.5}
                      for c in new_coords if isinstance(c, list) and c and isinstance(c[0], list)]
-        if len(lines) >= 2:
+        # 位移（平行符号冲突消解）仅对可控规模的图层执行：
+        # 线数过多时逐对距离计算为 O(n²)，大图层（如基础图居民区道路）会退化；
+        # 制图实践中位移只用于主要道路的符号冲突，次要道路做选取/简化即可。
+        DISPLACE_LIMIT = 600
+        if 2 <= len(lines) <= DISPLACE_LIMIT:
             lines = self.displacement.resolve_parallel(lines, rule.displacement_distance_m(cat))
             new_coords = [l["coordinates"] for l in lines]
             self._displacement_rollbacks += self.displacement.last_rollback_count
+        else:
+            layer["displacement_skipped"] = len(lines)
 
         layer["coordinates"] = new_coords
         if props and len(props) == n:
-            layer["properties"] = [props[i] for i in range(n) if i not in removed_idx]
+            trimmed = [props[i] for i in range(n) if i not in removed_idx]
+            if exact_idx:
+                # 重复线去除后属性同步裁剪（保证 props/coords 一一对应）
+                trimmed = [p for i, p in enumerate(trimmed) if i not in exact_idx]
+            layer["properties"] = trimmed
         return layer
 
     def _generalize_pois(self, layer: Dict, cat: str, rule) -> Dict:

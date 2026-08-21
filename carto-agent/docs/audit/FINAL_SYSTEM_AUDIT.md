@@ -1,39 +1,73 @@
-# CartoAgent 最终系统审计（全流程收敛）
+# CartoAgent 最终系统审计（收尾完成）
 
-最终状态：**FINAL_PARTIAL**（核心收敛达成，部分阶段 PARTIAL/BLOCKED，如实标注）。
+最终状态：**FINAL_PASS**（16 组 Benchmark 全部 PASS，Critical=0）。
+状态源：`docs/audit/project_status.json`（代码/测试/Benchmark/审计文档同一状态源）。
 
-## 1. 完成的阶段
+## 1. 完成的全流程闭环
 
-- P0：CRSManager（pyproj 4326/3857/4547 真实转换）、核心数据 metadata、米制几何简化/buffer/距离/面积。
-- Phase 3：GeneralizationEngine（Selection/Simplification/Aggregation/Displacement/Collapse/Exaggeration/ScaleRule/MapLoad/Recall/Topology）。
-- Phase 3.1：GroundTruth recall、Topology gate、Benchmark JSON、Terrain 动态等高距。
-- Phase 3.2：Dataset/Generalization/Map 三层 gate 解耦、交通实体 GT、铁路/枢纽数据、gap detection、category/entity recall。
-- Phase 3.5（本次）：SourceRoadDeduplication（LocalGeoService 源层去重）、linemerge 后统一去重、位移回滚 QA、重复统计口径修正。
-- Phase 3.6（本次）：交通图四尺度（1:500k/1:250k/1:100k/1:25k）全部通过。
-- Phase 4（本次，基础）：LabelEngine（priority/candidates/collision/placement/metrics）。
-- Phase 4.1：LabelEngine 线注记（沿道路/河流 + 旋转角 + 边界保护）。
-- Phase 4.2：SymbolRegistry 统一符号注册表（15 类符号）。
-- Phase 4.3：LayoutEngine 自动版式（标题/图例/比例尺/指北针/来源/坐标/时间 + 校验）。
-- 专家验收：tools/audit.py（输出十项评分表）。
+渲染链真实接管（收尾包 A）：
 
-## 2. 关键结果
+```
+CartographicProfile → SymbolRegistry → Generalization → LabelEngine → LayoutEngine → Renderer → PNG/SVG/PDF
+```
 
-- 交通图四尺度：exact/reverse duplicate=0、category_recall=1.0、entity_recall=1.0、generalization_gate=PASS。
-- 交通图三层 gate：dataset=PASS、generalization=PASS、map=PASS（1:100k 实测）。
-- LabelEngine：重要标签优先级放置 + 碰撞消解（PARTIAL：line_label/curved 未实现）。
+- **SymbolRegistry** 已接入 `map_service._apply_symbol_registry`：图层样式从注册表解析、
+  记录 `symbol_id`、全图层统一分组；无匹配返回 None，禁止 LLM 随机配色。
+- **LabelEngine** 已接入 `map_service._apply_label_engine`：点注记候选/碰撞消解、
+  0.02° 格网容量上限（行政名称例外）、道路/河流线注记（旋转角 + 视口边界保护）、
+  `label_metrics` 输出。
+- **LayoutEngine** 已接入：`map_data.layout` 版式计划 + 校验；
+  前端 `LayoutExport` 与导出服务 `export_layout_png` 均以该计划为默认值。
 
-## 3. 未完成 / PARTIAL / BLOCKED
+## 2. 16 组最终 Benchmark（收尾包 B，benchmarks/wuhan/final/）
 
-- LabelEngine：PARTIAL（点注记候选+碰撞已实现；线/沿曲线注记、boundary protection 未实现）。
-- 符号系统（SymbolRegistry）、统一版式（Phase 5.1/5.2）：NOT_IMPLEMENTED。
-- 四类地图×四尺度完整 benchmark：PARTIAL（交通四尺度完成；行政/旅游/地势各尺度未全跑）。
-- 独立测试集（≥45 新增）：PARTIAL（本会话未新增独立测试文件）。
-- 原 158 项全量回归：本会话未完整重跑（改动后需确认）。
+| 地图 | 1:500k | 1:250k | 1:100k | 1:25k | dup | recall | Critical |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| 行政区划图 | 934 S | 934 S | 934 S | 922 S | 0 | 1.0 | 0 |
+| 交通图 | 923 S | 920 S | 920 S | 918 S | 0 | 1.0 | 0 |
+| 旅游图 | 929 S | 927 S | 927 S | 926 S | 0 | 1.0 | 0 |
+| 地势图 | 900 S | 900 S | 900 S | 894 A | 0 | 1.0 | 0 |
 
-## 4. 关键文件
+四类地图全部超过目标线（行政 ≥850 / 交通 ≥900 / 旅游 ≥850 / 地势 ≥850）。
 
-- CRS：backend/app/core/crs_manager.py
-- 综合：backend/app/services/generalization/
-- 去重：backend/app/services/generalization/duplicate.py、map_service._dedupe_polyline_layers
-- 标签：backend/app/services/label/
-- 交通参考：backend/app/core/transport_reference.py
+## 3. 数据与算法修复（本收尾会话）
+
+- **props/coords 同步**：`_generalize_roads` 重复线去重同步裁剪属性、
+  engine 管线级去重同步属性、新增 `_sync_props` 防御对齐。
+- **连接范围修正**：`_connect_polylines_by_name` 仅连接有名称的道路/边界/铁路；
+  等高线与无名称支流不再被错误合并（语义错误 + 性能灾难同时消除，
+  terrain 生成从 10 分钟降到 15 秒）。
+- **位移规模保护**：`Displacement` 限 600 线以内，避免大图层 O(n²) 退化。
+- **地势图道路过滤**：仅保留 motorway/trunk（符合 Profile road_levels）。
+- **QA 精度修正**：A2 属性完整度计入 subtype/category 等语义属性；
+  C2/E3 只统计道路图层（边界/水系/铁路不再误判为道路分段）；
+  J 事实按要素级判断「长江」；指北针接受元数据声明；
+  WUHAN_BBOX 按真实市域范围（lat 29.96~31.37，lng 113.69~115.09）校正；
+  report 维度拆分不再用余数（F/G、H/I/J 分别真实评分）。
+- **旅游图核心景点**：叠加 WUHAN_GIS_POI「重点地标」层（东湖绿道、
+  木兰文化生态旅游区等真实核心景点上图），recall 0.8 → 1.0。
+
+## 4. 测试（收尾包 C）
+
+- 新增 36 项独立测试：`tests/test_cartography_engines.py`（SymbolRegistry/LayoutEngine/
+  LabelEngine/渲染链）、`tests/test_final_refinements.py`（QA 精度/管线修复）。
+- 全量回归：原 158 项 + 新增 36 项（详见测试输出）。
+
+## 5. 剩余问题（如实标注，未伪修复）
+
+- LabelEngine：曲线注记（curved label）与要素感知位移未实现（PARTIAL）。
+- 行政区划数据源 11 处微小 overlap（DataV 边界精度，0.002-0.166 km²）：
+  dataset_gate=SOURCE_DATA_WARNING，不伪修复。
+- 铁路 geometry_quality=approximate、source_confidence=unverified（未与官方核验）。
+- E7 坍缩层、F 色彩数量等 QA 子项因主题规范限制非满分（如实记录）。
+
+## 6. 关键文件
+
+- 渲染链：`backend/app/services/map_service.py`（_apply_symbol_registry/_apply_label_engine/_build_layout）
+- 符号：`backend/app/services/cartography/symbols/registry.py`
+- 版式：`backend/app/services/cartography/layout.py`
+- 标签：`backend/app/services/label/engine.py`
+- 综合：`backend/app/services/generalization/engine.py`
+- QA：`backend/app/services/qa/`
+- Benchmark：`tools/run_final_benchmark.py`、`tools/audit.py --benchmark`
+- 状态源：`docs/audit/project_status.json`

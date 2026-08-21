@@ -95,5 +95,41 @@ def resolve_symbol(category: str, feature_class: str = "") -> Optional[Dict[str,
     return get_symbol(sid) if sid else None
 
 
+def resolve_by_category(category: str, geometry: str = "") -> Optional[Dict[str, Any]]:
+    """按 CartographicProfile 的 LAYER_CATEGORY 类别解析符号。
+
+    geometry 取值：polyline/line → 线符号；polygon/area → 面符号；
+    circleMarker/marker/point → 点符号。
+    无匹配返回 None（禁止随机配色）。
+    """
+    mapping = {
+        "admin_boundary": "boundary.city",
+        "district_boundary": "boundary.district",
+        "street_boundary": "boundary.district",
+        "motorway": "road.motorway",
+        "trunk_road": "road.trunk",
+        "primary_road": "road.primary",
+        "secondary_road": "road.secondary",
+        "minor_road": "road.minor",
+        "metro": "metro.line",
+        "railway": "railway.main",
+        "bridge": "bridge.major",
+        "transit_station": "hub.transport",
+        "major_water": None,   # 水系按几何类型细分（线=河流，面=湖泊）
+        "minor_water": "water.river",
+        "core_poi": "poi.attraction",
+        "contour_major": "terrain.contour",
+        "contour_minor": "terrain.contour",
+        "peak": "terrain.peak",
+    }
+    sid = mapping.get(category)
+    if category in ("major_water",):
+        if geometry in ("polygon", "area"):
+            sid = "water.lake"
+        else:
+            sid = "water.river"
+    return get_symbol(sid) if sid else None
+
+
 def list_symbols() -> Dict[str, Dict[str, Any]]:
     return {k: dict(v) for k, v in SYMBOLS.items()}

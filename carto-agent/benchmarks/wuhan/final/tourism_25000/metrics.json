@@ -1,0 +1,49 @@
+{
+ "map_load": {
+  "point_density": 0.081,
+  "line_density": NaN,
+  "polygon_density": NaN,
+  "label_density": 0.0109,
+  "collision_density": 0.0001,
+  "map_load_score": 30.4,
+  "feature_counts": {
+   "point": 694,
+   "line": 11808,
+   "polygon": 847,
+   "label": 93
+  }
+ },
+ "data_loss": {
+  "feature_loss_rate": 0.0,
+  "vertex_loss_rate": 0.2999,
+  "length_change": -0.1913,
+  "area_change": 0.0,
+  "important_feature_loss": 0
+ },
+ "recall": {
+  "core_attractions": {
+   "expected_count": 10,
+   "matched_count": 10,
+   "missed": [],
+   "recall": 1.0
+  },
+  "overall_recall": 1.0
+ },
+ "topology": {},
+ "gates": {
+  "dataset_gate": "PASS",
+  "generalization_gate": "PASS",
+  "map_gate": "PASS"
+ },
+ "blockers": {
+  "source_blockers": [],
+  "generalization_blockers": []
+ },
+ "final_duplicate_count": 0,
+ "stage_metrics": {
+  "raw_duplicate": 788,
+  "after_displacement_rollbacks": 0,
+  "final_exact_duplicate": 0
+ },
+ "scale": 25000
+}

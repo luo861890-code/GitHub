@@ -10,8 +10,9 @@ from typing import Any, Dict, List, Tuple
 
 from app.utils.geometry import _ring_area_km2
 
-# 武汉市域近似范围（仅用于越界/归属检测，勿用于精确空间分析）
-WUHAN_BBOX = {"min_lat": 29.8, "max_lat": 31.3, "min_lng": 113.8, "max_lng": 115.2}
+# 武汉市域近似范围（由 wuhan_districts.geojson 实测：
+# lat 29.969~31.361，lng 113.702~115.082；仅用于越界/归属检测，勿用于精确空间分析）
+WUHAN_BBOX = {"min_lat": 29.96, "max_lat": 31.37, "min_lng": 113.69, "max_lng": 115.09}
 WUHAN_DISTRICT_COUNT = 13
 WUHAN_DISTRICTS = {
     "江岸区", "江汉区", "硚口区", "汉阳区", "武昌区", "青山区",

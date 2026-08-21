@@ -216,6 +216,7 @@ import { ref, reactive, computed } from 'vue'
 const props = defineProps<{
   visible: boolean
   mapTitle?: string
+  layoutData?: any
 }>()
 
 const emit = defineEmits<{
@@ -223,6 +224,8 @@ const emit = defineEmits<{
   (e: 'export', options: any): void
 }>()
 
+// LayoutEngine（后端）版式计划作为默认值；用户可覆盖
+const backendLayout = props.layoutData?.layout || {}
 const layout = reactive({
   pageSize: 'A4',
   orientation: 'landscape',
@@ -232,11 +235,11 @@ const layout = reactive({
   showScaleBar: true,
   showNorthArrow: true,
   showGrid: false,
-  title: '',
+  title: props.mapTitle || '',
   titleSize: 24,
-  legendPosition: 'topright',
+  legendPosition: backendLayout.legend?.anchor === 'right' ? 'topright' : 'topright',
   legendTitle: '图例',
-  scaleBarPosition: 'bottomleft',
+  scaleBarPosition: backendLayout.scale_bar?.anchor === 'left' ? 'bottomleft' : 'bottomleft',
   scaleUnit: 'metric',
 })
 

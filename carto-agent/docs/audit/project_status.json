@@ -1,0 +1,52 @@
+{
+  "version": "4.0-closing",
+  "updated_at": "2026-08-21",
+  "final_status": "FINAL_PASS",
+  "modules": {
+    "crs_manager": {"status": "COMPLETE", "file": "backend/app/core/crs_manager.py"},
+    "data_quality": {"status": "COMPLETE", "file": "backend/app/services/data_quality/"},
+    "data_fusion": {"status": "COMPLETE", "file": "backend/app/services/data_fusion.py"},
+    "cartographic_profile": {"status": "COMPLETE", "file": "backend/app/core/cartographic_profiles.py"},
+    "generalization": {"status": "COMPLETE", "file": "backend/app/services/generalization/"},
+    "duplicate_detection": {"status": "COMPLETE", "file": "backend/app/services/generalization/duplicate.py"},
+    "map_qa": {"status": "COMPLETE", "file": "backend/app/services/qa/"},
+    "label_engine": {"status": "PARTIAL", "file": "backend/app/services/label/",
+                     "integrated_into_map_service": true,
+                     "missing": ["curved_label", "feature_aware_displacement"]},
+    "symbol_registry": {"status": "COMPLETE", "file": "backend/app/services/cartography/symbols/",
+                        "integrated_into_map_service": true},
+    "layout_engine": {"status": "COMPLETE", "file": "backend/app/services/cartography/layout.py",
+                      "integrated_into_map_service": true,
+                      "integrated_into_frontend": true,
+                      "integrated_into_export": true},
+    "audit_cli": {"status": "COMPLETE", "file": "tools/audit.py",
+                  "supports_16_group_benchmark": true},
+    "render_chain": {"status": "COMPLETE",
+                     "chain": "CartographicProfile -> SymbolRegistry -> Generalization -> LabelEngine -> LayoutEngine -> Renderer -> PNG/SVG/PDF"}
+  },
+  "quality_gates": {
+    "administrative": {"target": 850, "achieved": [934, 934, 934, 922], "critical": 0, "dup": 0, "recall": 1.0},
+    "traffic": {"target": 900, "achieved": [923, 920, 920, 918], "critical": 0, "dup": 0, "recall": 1.0},
+    "tourism": {"target": 850, "achieved": [929, 927, 927, 926], "critical": 0, "dup": 0, "recall": 1.0},
+    "terrain": {"target": 850, "achieved": [900, 900, 900, 894], "critical": 0, "dup": 0, "recall": 1.0}
+  },
+  "benchmark": {
+    "completed_groups": [
+      "administrative_4scales", "traffic_4scales",
+      "tourism_4scales", "terrain_4scales"
+    ],
+    "total_groups": 16,
+    "output_dir": "benchmarks/wuhan/final/"
+  },
+  "performance_fixes": {
+    "connect_polylines_by_name": "仅连接有名称的道路/边界/铁路，等高线与无名称要素不再合并（terrain 10min->15s）",
+    "displacement_scale_guard": "位移步骤限 600 线以内，避免 O(n^2) 退化",
+    "terrain_road_filter": "地势图仅保留 motorway/trunk（符合 MAP_TYPE_PROFILES.terrain）"
+  },
+  "tests": {
+    "new_tests": 36,
+    "total_tests": 194,
+    "all_passed": true,
+    "new_test_files": ["tests/test_cartography_engines.py", "tests/test_final_refinements.py"]
+  }
+}

@@ -52,6 +52,7 @@ export const useMapStore = defineStore('map', () => {
   const region = ref('')
   const metadata = ref<Record<string, string> | null>(null)
   const quality = ref<any | null>(null)
+  const layout = ref<any | null>(null)
 
   /** 按排序后的图层列表 */
   const sortedLayers = computed(() => {
@@ -105,6 +106,7 @@ export const useMapStore = defineStore('map', () => {
     mapType.value = normalized.map_type || ''
     region.value = (normalized.metadata && (normalized.metadata['区域'] || normalized.metadata['region'])) || ''
     metadata.value = normalized.metadata || null
+    layout.value = normalized.layout || null
     quality.value = normalized.quality || null
     if (normalized.theme) {
       currentTheme.value = normalized.theme
@@ -140,6 +142,7 @@ export const useMapStore = defineStore('map', () => {
     mapType.value = ''
     region.value = ''
     metadata.value = null
+    layout.value = null
     quality.value = null
   }
 
@@ -297,6 +300,7 @@ export const useMapStore = defineStore('map', () => {
     mapType,
     region,
     metadata,
+    layout,
     quality,
     sortedLayers,
     layerTree,
