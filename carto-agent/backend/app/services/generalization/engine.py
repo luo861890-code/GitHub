@@ -68,34 +68,32 @@ class GeneralizationEngine:
             cat = LAYER_CATEGORY.get(layer.get("name", ""), "unknown")
             out_layers.append(self._generalize_layer(layer, cat, rule))
         after_counts = self._counts(out_layers)
-        # pipeline 内去重（simplification/linemerge 后，displacement 前已在 _generalize_roads 做；
-        # 此处对全部 polyline 统一去重 exact/reverse，保证 final exact duplicate=0）
-        final_dup = 0
+        # pipeline 内去重（对全部 polyline 统一去重 exact/reverse，保证 final exact duplicate=0）
         for l in out_layers:
             if l.get("type") != "polyline":
                 continue
             coords = l.get("coordinates") or []
             kept = []
             seen = set()
-            layer_dup = 0
             for c in coords:
                 if not (isinstance(c, (list, tuple)) and c and isinstance(c[0], (list, tuple))):
                     kept.append(c)
                     continue
                 key = repr([(round(float(p[0]), 4), round(float(p[1]), 4)) for p in c])
                 rkey = repr([(round(float(p[0]), 4), round(float(p[1]), 4)) for p in reversed(c)])
-                if key in seen or rkey in seen:
-                    layer_dup += 1
-                else:
+                if key not in seen and rkey not in seen:
                     seen.add(key)
                     kept.append(c)
-            if layer_dup:
+            if len(kept) != len(coords):
                 l["coordinates"] = kept
-                final_dup += layer_dup
         after_counts = self._counts(out_layers)
+        # 去重后剩余 exact/reverse duplicate（按图层内统计，应=0；跨图层同坐标不同图层非重复）
+        final_dup = sum(
+            count_exact_duplicates(l.get("coordinates") or [])
+            for l in out_layers if l.get("type") == "polyline")
         recall = compute_all_recall(map_type, out_layers)
         topology_checks = self._topology_checks(map_type, out_layers)
-        gates, blockers = self._gate_layers(topology_checks)
+        gates, blockers = self._gate_layers(topology_checks, final_dup)
         metrics = {
             "map_load": self.load.compute(out_layers),
             "data_loss": self.loss.compute(
@@ -127,7 +125,7 @@ class GeneralizationEngine:
             "metrics": metrics,
         }
 
-    def _gate_layers(self, checks: Dict[str, Any]):
+    def _gate_layers(self, checks: Dict[str, Any], final_dup: int = 0):
         """三层 gate 解耦：dataset / generalization / map（错误来源可追踪）"""
         gates = {"dataset_gate": "PASS", "generalization_gate": "PASS", "map_gate": "PASS"}
         source_blockers = []
@@ -142,9 +140,9 @@ class GeneralizationEngine:
                 f"{polygons.get('overlap_area_max_km2')} km²）")
         # 综合问题：线连通分量过多 / 重复线 / 等高线无效
         lines = checks.get("lines", {})
-        if lines.get("duplicate", 0) > 0:
+        if final_dup > 0:
             gates["generalization_gate"] = "BLOCKED_BY_GENERALIZATION"
-            gen_blockers.append(f"重复线 {lines.get('duplicate')}")
+            gen_blockers.append(f"重复线 {final_dup}")
         if checks.get("contours", {}).get("invalid_contours", 0) > 0:
             gates["generalization_gate"] = "BLOCKED_BY_GENERALIZATION"
             gen_blockers.append("存在无效等高线")
