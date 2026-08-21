@@ -1,0 +1,83 @@
+{
+ "map_load": {
+  "point_density": 0.0,
+  "line_density": NaN,
+  "polygon_density": NaN,
+  "label_density": 0.0109,
+  "collision_density": 0.0001,
+  "map_load_score": 30.1,
+  "feature_counts": {
+   "point": 0,
+   "line": 6522,
+   "polygon": 847,
+   "label": 93
+  }
+ },
+ "data_loss": {
+  "feature_loss_rate": 0.0,
+  "vertex_loss_rate": 0.2697,
+  "length_change": -0.2314,
+  "area_change": 0.0,
+  "important_feature_loss": 0
+ },
+ "recall": {
+  "core_highways": {
+   "expected_count": 2,
+   "matched_count": 0,
+   "missed": [
+    "高速公路",
+    "主干道"
+   ],
+   "recall": 0.0
+  },
+  "railways": {
+   "expected_count": 1,
+   "matched_count": 0,
+   "missed": [
+    "铁路"
+   ],
+   "recall": 0.0
+  },
+  "metros": {
+   "expected_count": 1,
+   "matched_count": 1,
+   "missed": [],
+   "recall": 1.0
+  },
+  "bridges": {
+   "expected_count": 1,
+   "matched_count": 1,
+   "missed": [],
+   "recall": 1.0
+  },
+  "hubs": {
+   "expected_count": 4,
+   "matched_count": 0,
+   "missed": [
+    "武汉站",
+    "汉口站",
+    "武昌站",
+    "武汉天河国际机场"
+   ],
+   "recall": 0.0
+  },
+  "overall_recall": 0.4
+ },
+ "topology": {
+  "polygons": {
+   "overlap_count": 619,
+   "invalid_count": 0,
+   "gap_count": 0
+  },
+  "lines": {
+   "components": 560,
+   "disconnected_rate": 0.3204,
+   "dangling_endpoints": 573,
+   "duplicate": 246
+  }
+ },
+ "topology_gate": {
+  "status": "FAIL",
+  "critical_errors": 2
+ }
+}

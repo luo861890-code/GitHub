@@ -877,6 +877,8 @@ class MapService:
             map_layers = self._connect_polylines_by_name(map_layers)
             # 应用 Cartographic Profile（主题-数据-尺度约束矩阵）：按图类型过滤/提取/分级
             map_layers = self._apply_cartographic_profile(map_type, map_layers, zoom)
+            # 制图综合（GeneralizationEngine）：真实 Selection/Simplification/Aggregation/Displacement/Collapse
+            generalization_metrics = self._apply_generalization(map_type, map_layers, zoom)
 
             # 生成图例数据
             legend = self._generate_legend(map_type, map_layers)
@@ -919,6 +921,7 @@ class MapService:
                 "layers": map_layers,
                 "legend": legend,
                 "quality": quality,
+                "generalization_metrics": generalization_metrics,
                 # 编制说明（规范3.7：坐标系/投影/数据来源/资料截止）
                 "metadata": {
                     "坐标系": "WGS84 (EPSG:4326) 经纬度（源数据）",
@@ -1697,6 +1700,35 @@ class MapService:
             "group": "交通要素",
         }
 
+    @staticmethod
+    def _zoom_to_scale(zoom: int) -> int:
+        """前端 WebMercator zoom → 近似比例尺分母（用于制图综合尺度）"""
+        if zoom is None:
+            return 250_000
+        if zoom < 9:
+            return 1_000_000
+        if zoom <= 10:
+            return 250_000
+        if zoom <= 12:
+            return 100_000
+        return 25_000
+
+    def _apply_generalization(
+        self, map_type: str, map_layers: List[dict], zoom: int
+    ) -> Dict[str, Any]:
+        """调用 GeneralizationEngine 做真实制图综合，返回 metrics"""
+        try:
+            from app.services.generalization import GeneralizationEngine
+            engine = GeneralizationEngine()
+            scale = self._zoom_to_scale(zoom)
+            result = engine.generalize(map_type, map_layers, scale)
+            # 用综合后的图层替换（就地修改 map_layers 引用）
+            map_layers[:] = result["layers"]
+            return result.get("metrics", {})
+        except Exception as e:
+            logger.info(f"[MapService] 制图综合失败（保留原图层）: {e}")
+            return {"error": str(e)}
+
 
     def _generate_thematic_layers(self, map_type: str, region: str, center: List[float]) -> List[dict]:
         """生成专题地图图层数据"""
@@ -2294,6 +2326,8 @@ class MapService:
         """
         from shapely.geometry import LineString
         from shapely.ops import linemerge, unary_union
+        from app.core.crs_manager import CRSManager
+        _crs = CRSManager()
 
         for layer in map_layers:
             if layer.get("type") not in ("polyline", "line"):
@@ -2331,10 +2365,14 @@ class MapService:
                         if g.geom_type != "LineString" or len(g.coords) < 2:
                             continue
                         merged_coords.append([[y, x] for x, y in g.coords])
+                        # 保留原始属性（如等高线 ele/index），附加合并标记与米制长度
+                        base_prop = dict(segs[0][1]) if segs and isinstance(segs[0][1], dict) else {}
+                        length_m = _crs.length_meters([(x, y) for x, y in g.coords])
                         merged_props.append({
+                            **base_prop,
                             "name": name,
                             "merged": True,
-                            "length_km": round(g.length * 111.0, 2),
+                            "length_km": round(length_m / 1000.0, 2),
                         })
                 except Exception:
                     # 合并失败时保留原线段

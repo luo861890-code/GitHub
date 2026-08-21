@@ -1,0 +1,46 @@
+{
+ "map_load": {
+  "point_density": 0.0733,
+  "line_density": NaN,
+  "polygon_density": NaN,
+  "label_density": 0.0109,
+  "collision_density": 0.0001,
+  "map_load_score": 30.4,
+  "feature_counts": {
+   "point": 628,
+   "line": 9932,
+   "polygon": 847,
+   "label": 93
+  }
+ },
+ "data_loss": {
+  "feature_loss_rate": 0.0,
+  "vertex_loss_rate": 0.3094,
+  "length_change": -0.1915,
+  "area_change": 0.0,
+  "important_feature_loss": 0
+ },
+ "recall": {
+  "core_attractions": {
+   "expected_count": 10,
+   "matched_count": 8,
+   "missed": [
+    "东湖绿道",
+    "木兰文化生态旅游区"
+   ],
+   "recall": 0.8
+  },
+  "overall_recall": 0.8
+ },
+ "topology": {
+  "polygons": {
+   "overlap_count": 619,
+   "invalid_count": 0,
+   "gap_count": 0
+  }
+ },
+ "topology_gate": {
+  "status": "FAIL",
+  "critical_errors": 1
+ }
+}

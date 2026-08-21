@@ -1,0 +1,46 @@
+{
+ "map_load": {
+  "point_density": 0.0301,
+  "line_density": NaN,
+  "polygon_density": NaN,
+  "label_density": 0.0328,
+  "collision_density": 0.0053,
+  "map_load_score": 30.8,
+  "feature_counts": {
+   "point": 258,
+   "line": 28385,
+   "polygon": 847,
+   "label": 281
+  }
+ },
+ "data_loss": {
+  "feature_loss_rate": 0.1455,
+  "vertex_loss_rate": 0.7063,
+  "length_change": -0.402,
+  "area_change": 0.0,
+  "important_feature_loss": 0
+ },
+ "recall": {
+  "index_contours": {
+   "expected_count": 1,
+   "matched_count": 1,
+   "missed": [],
+   "recall": 1.0
+  },
+  "overall_recall": 1.0
+ },
+ "topology": {
+  "polygons": {
+   "overlap_count": 619,
+   "invalid_count": 0,
+   "gap_count": 0
+  },
+  "contours": {
+   "invalid_contours": 0
+  }
+ },
+ "topology_gate": {
+  "status": "FAIL",
+  "critical_errors": 1
+ }
+}
