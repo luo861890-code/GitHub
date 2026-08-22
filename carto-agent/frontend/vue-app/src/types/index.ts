@@ -48,6 +48,9 @@ export interface MapData {
   legend?: LegendData
   quality?: QualityReport
   metadata?: Record<string, string>
+  layout?: any
+  label_metrics?: any
+  generalization_metrics?: any
 }
 
 export interface MapSummary {
