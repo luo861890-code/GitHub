@@ -69,9 +69,10 @@ class LabelEngine:
         name: str,
         category: str,
         latlng: Tuple[float, float],
+        priority: int = None,
     ) -> Dict[str, Any]:
         """点注记：尝试各候选位置，无冲突则放置，否则降级（缩小/隐藏低优先级）"""
-        prio = label_priority(category)
+        prio = priority if priority is not None else label_priority(category)
         for ox, oy in CANDIDATES["point"]:
             if not self.collision.conflict(x + ox, y + oy, w, h):
                 self.collision.add(x + ox, y + oy, w, h, {"name": name, "prio": prio})
@@ -91,6 +92,7 @@ class LabelEngine:
         category: str,
         canvas_size: Tuple[int, int] = (1680, 950),
         bounds: Tuple[float, float, float, float] = None,
+        priority: int = None,
     ) -> Dict[str, Any]:
         """线注记：沿道路/河流放置（取线中点，计算旋转角），检查边界保护"""
         if len(line_lonlat) < 2:
@@ -113,15 +115,22 @@ class LabelEngine:
             span = max(1e-6, max_lng - min_lng, max_lat - min_lat)
             x = int((mid[1] - min_lng) / span * (canvas_size[0] - 100) + 50)
             y = int((max_lat - mid[0]) / span * (canvas_size[1] - 100) + 50)
-        # 旋转角（线主方向）
-        i0 = max(0, len(line_lonlat) // 2 - 1)
-        i1 = min(len(line_lonlat) - 1, len(line_lonlat) // 2 + 1)
+        # 旋转角（沿线主方向，取中点前后 ±2 点平滑斜率，
+        # 避免局部小折角导致文字方向抖动，规范 §五/§六）
+        _half = len(line_lonlat) // 2
+        i0 = max(0, _half - 2)
+        i1 = min(len(line_lonlat) - 1, _half + 2)
         p0, p1 = line_lonlat[i0], line_lonlat[i1]
         angle = math.degrees(math.atan2(p1[1] - p0[1], p1[0] - p0[0]))
+        # 字头朝上：90°<angle<270° 时翻转 180°，保证从左向右可读（规范 §六）
+        if angle > 90:
+            angle -= 180
+        elif angle < -90:
+            angle += 180
         # 边界保护：距画布边缘至少 20px
         if x < 20 or y < 20 or x > canvas_size[0] - 20 or y > canvas_size[1] - 20:
             return {"name": name, "placed": False, "reason": "out_of_bounds", "position": (x, y)}
-        prio = label_priority(category)
+        prio = priority if priority is not None else label_priority(category)
         self.placed.append({"name": name, "category": category, "priority": prio,
                             "position": (x, y), "angle": angle, "line_label": True,
                             "suppressed": False})

@@ -1175,7 +1175,7 @@ function addTextLabelLayer(layer: MapLayer, style: any) {
   // features 型注记图层
   if (layer.features && Array.isArray(layer.features) && layer.features.length > 0) {
     const group = L.layerGroup()
-    const _zf = Math.min(2.2, Math.max(0.7, Math.pow(1.12, (map?.getZoom?.() ?? 12) - 12)))
+    const _zf = Math.min(2.2, Math.max(0.55, Math.pow(1.12, (map?.getZoom?.() ?? 12) - 12)))
     layer.features.forEach((feat: any) => {
       if (!feat || !feat.coordinates || !validLatLng(feat.coordinates)) return
       const featStyle = feat.style || style
@@ -1187,9 +1187,10 @@ function addTextLabelLayer(layer: MapLayer, style: any) {
         icon: L.divIcon({
           className: 'text-label-icon',
           html: `<div style="
-            color: ${featStyle.color || style.color || '#1a1a1a'};
-            font-size: ${Math.max(9, Math.round((featStyle.fontSize || style.fontSize || 13) * _zf))}px;
-            font-weight: ${featStyle.fontWeight || style.fontWeight || 'normal'};
+            color: ${feat.properties?.color || featStyle.color || style.color || '#1a1a1a'};
+            font-size: ${Math.max(8, Math.round((featStyle.fontSize || style.fontSize || 13) * _zf))}px;
+            font-weight: ${feat.properties?.weight || featStyle.fontWeight || style.fontWeight || 'normal'};
+            font-style: ${feat.properties?.font === 'italic' ? 'italic' : 'normal'};
             text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff;
             white-space: nowrap;
             text-align: center;
@@ -1215,15 +1216,16 @@ function addTextLabelLayer(layer: MapLayer, style: any) {
     const text = prop.name || layer.name || ''
     if (!text) return
     if (prop.min_zoom && (map?.getZoom?.() ?? 12) < prop.min_zoom) return
-    const _zf = Math.min(2.2, Math.max(0.7, Math.pow(1.12, (map?.getZoom?.() ?? 12) - 12)))
+    const _zf = Math.min(2.2, Math.max(0.55, Math.pow(1.12, (map?.getZoom?.() ?? 12) - 12)))
     
     const marker = L.marker(coord, {
       icon: L.divIcon({
         className: 'text-label-icon',
         html: `<div style="
-          color: ${style.color || '#1a1a1a'};
-          font-size: ${Math.max(9, Math.round((style.fontSize || 13) * _zf))}px;
-          font-weight: ${style.fontWeight || 'normal'};
+          color: ${prop.color || style.color || '#1a1a1a'};
+          font-size: ${Math.max(8, Math.round((style.fontSize || 13) * _zf))}px;
+          font-weight: ${prop.weight || style.fontWeight || 'normal'};
+          font-style: ${prop.font === 'italic' ? 'italic' : 'normal'};
           text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff;
           white-space: nowrap;
           text-align: center;

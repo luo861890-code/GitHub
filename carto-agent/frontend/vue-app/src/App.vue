@@ -95,8 +95,9 @@ onMounted(async () => {
 <style>
 :root {
   --header-height: 56px;
-  --chat-width: 360px;
-  --layer-panel-width: 280px;
+  /* 面板宽度随视口自适应，保证地图区域不被压缩消失 */
+  --chat-width: min(360px, 26vw);
+  --layer-panel-width: min(280px, 20vw);
   --toolbar-width: 50px;
   /* 紫罗兰淡紫色调 - 整体偏浅色，透明度合理下调 */
   --color-primary: #a78bfa;
@@ -158,7 +159,8 @@ body {
   flex-direction: row;
   height: calc(100vh - var(--header-height));
   position: relative;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .left-toolbar {
@@ -170,6 +172,7 @@ body {
 
 .map-area {
   flex: 1;
+  min-width: 360px;
   position: relative;
   overflow: hidden;
 }

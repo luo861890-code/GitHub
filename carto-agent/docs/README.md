@@ -26,6 +26,7 @@
 | [audit/FINAL_BENCHMARK_REPORT.md](audit/FINAL_BENCHMARK_REPORT.md) | 16 组最终 Benchmark 明细 |
 | [audit/FINAL_MAP_QA_REPORT.md](audit/FINAL_MAP_QA_REPORT.md) | 四类地图 QA 门槛与维度分 |
 | [audit/FINAL_REMAINING_ISSUES.md](audit/FINAL_REMAINING_ISSUES.md) | 剩余问题（PARTIAL / 数据源限制，如实标注） |
+| [audit/LABEL_SPEC_IMPLEMENTATION.md](audit/LABEL_SPEC_IMPLEMENTATION.md) | 地图注记规范落地说明（优先级/字体字号字色/字向/尺度范围） |
 
 ## 架构参考
 

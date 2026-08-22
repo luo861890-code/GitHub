@@ -16,6 +16,13 @@ CartographicProfile → SymbolRegistry → Generalization → LabelEngine → La
 - **LabelEngine** 已接入 `map_service._apply_label_engine`：点注记候选/碰撞消解、
   0.02° 格网容量上限（行政名称例外）、道路/河流线注记（旋转角 + 视口边界保护）、
   `label_metrics` 输出。
+- **注记规范（Label Specification）** 已落地：`backend/app/core/label_spec.py` 集中定义
+  P0-P3 优先级（100/80/50/20）、字体层级（P0 黑体粗 20px/800、P1 半粗 15px/700、
+  P2 常规 12px/500、P3 小号 10px/400）、字色层级（行政深灰黑/水系蓝/山峰棕褐）、
+  尺度范围（scale_range）、注记对象完整字段（label_id/feature_type/anchor/font/size/
+  weight/color/scale_range/visibility）；线注记角度取沿线 ±2 点平滑方向并归一化
+  [-90,90] 防倒置；质量指标含 P0 保留率（priority_preservation）与越界率
+  （out_of_bounds_rate，目标 P0 保留 100%、越界率 <1%）。
 - **LayoutEngine** 已接入：`map_data.layout` 版式计划 + 校验；
   前端 `LayoutExport` 与导出服务 `export_layout_png` 均以该计划为默认值。
 

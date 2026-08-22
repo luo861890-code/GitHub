@@ -825,15 +825,45 @@ class MapService:
                 for _l in map_layers:
                     _ln = _l.get("name") or ""
                     _st = dict(_l.get("style") or {})
-                    if _l.get("type") == "polyline" and re.search(r"河流|水系|溪流|运河|水库|道路|高速|公路|主干道|次干道|支路|铁路|轨道|轻轨|地铁", _ln):
-                        # 主要道路进一步弱化（细线、更半透明），不干扰区划范围观感
-                        _st["opacity"] = min(float(_st.get("opacity", 1.0) or 1.0), 0.38)
-                        _st["weight"] = max(0.5, float(_st.get("weight", 1.0) or 1.0) * 0.55)
+                    if _l.get("type") == "polyline" and re.search(
+                            r"道路|高速|公路|主干道|次干道|支路|铁路|轨道|轻轨|地铁", _ln):
+                        # 道路线进一步弱化（更细、更透明），不干扰区划范围观感
+                        _st["opacity"] = min(float(_st.get("opacity", 1.0) or 1.0), 0.22)
+                        _st["weight"] = max(0.4, float(_st.get("weight", 1.0) or 1.0) * 0.4)
+                        _l["style"] = _st
+                    elif _l.get("type") == "polyline" and re.search(
+                            r"河流|水系|溪流|运河|水库", _ln):
+                        # 河流湖泊等水系线淡化（细线、半透明）
+                        _st["opacity"] = min(float(_st.get("opacity", 1.0) or 1.0), 0.26)
+                        _st["weight"] = max(0.4, float(_st.get("weight", 1.0) or 1.0) * 0.45)
                         _l["style"] = _st
                     elif _l.get("type") == "polygon" and re.search(r"河流水面|湖泊|水库", _ln):
-                        _st["opacity"] = min(float(_st.get("opacity", 1.0) or 1.0), 0.55)
-                        _st["fillOpacity"] = min(float(_st.get("fillOpacity", 0.35) or 0.35), 0.3)
+                        # 湖泊/水库水面更淡（降低饱和度，突出边界）
+                        _st["opacity"] = min(float(_st.get("opacity", 1.0) or 1.0), 0.45)
+                        _st["fillOpacity"] = min(float(_st.get("fillOpacity", 0.35) or 0.35), 0.2)
                         _l["style"] = _st
+
+                # 强化边界线（行政图主体）：市域界 > 区县界 > 省界 视觉层级
+                for _l in map_layers:
+                    _ln = _l.get("name") or ""
+                    if _l.get("type") != "polyline":
+                        continue
+                    _st = dict(_l.get("style") or {})
+                    if "武汉市域边界" in _ln or "地级市界" in _ln:
+                        _st["color"] = "#E03131"
+                        _st["weight"] = max(float(_st.get("weight", 1.0) or 1.0), 4.5)
+                        _st["opacity"] = 1.0
+                        _st.pop("dashArray", None)
+                    elif "区县界" in _ln:
+                        _st["color"] = "#6B6B6B"
+                        _st["weight"] = max(float(_st.get("weight", 1.0) or 1.0), 1.8)
+                        _st["opacity"] = 0.95
+                    elif "省界" in _ln:
+                        _st["color"] = "#000000"
+                        _st["weight"] = max(float(_st.get("weight", 1.0) or 1.0), 1.5)
+                        _st["opacity"] = 1.0
+                        _st.setdefault("dashArray", "1,4")
+                    _l["style"] = _st
 
                 # 市级名称标注（依据比例尺标注对应等级行政单位）：大字号、置于市域中心附近
                 if region == "武汉市":
@@ -1943,35 +1973,48 @@ class MapService:
         """注记最小显示比例尺档位（zoom）：小比例尺只保留重要注记。
 
         规则依据《武汉四类专题地图数据规范》注记分级：
-        市级名称 z>=7 → 区县名称 z>=9 → 山峰/地标 z>=10-11 → 水系/道路 z>=12。
+        市级名称 z>=6（常显）→ 区县名称 z>=8（1:100万 即可见，13 区可识别）
+        → 山峰 z>=9 / 地标 z>=10 → 大湖 z>=8 / 小湖 z>=12 / 主干道 z>=10 / 次干道 z>=13。
         """
         name = layer_name or ""
         pname = (prop.get("name") or "") if isinstance(prop, dict) else ""
         if "市级名称" in name:
-            return 7
+            return 6
         if "区县名称" in name:
-            return 9
+            return 8
         if "山峰" in name:
-            return 10
+            return 9
         if any(k in name for k in ("地标", "重点地标")):
-            return 11
+            return 10
         if "水系" in name or "湖泊" in name:
-            # 大型湖泊/主要河流低比例尺即可显示；小湖/支流放大后显示
+            # 湖泊按面积分档（面状要素注记规范）：≥100km² z7 / ≥30 z8 / ≥5 z10 / 其余 z12
+            try:
+                area = float(prop.get("area_km2")) if prop.get("area_km2") is not None else None
+            except (TypeError, ValueError):
+                area = None
+            if area is not None:
+                if area >= 100:
+                    return 7
+                if area >= 30:
+                    return 8
+                if area >= 5:
+                    return 10
+                return 12
             MAJOR_WATER = {
                 "长江", "汉江", "东湖", "汤逊湖", "梁子湖", "涨渡湖", "斧头湖",
                 "武湖", "后官湖", "沉湖", "严西湖", "童家湖", "牛山湖", "鲁湖",
                 "豹澥后湖", "夏家寺水库", "梅店水库", "后湖", "金银湖",
             }
-            return 9 if pname in MAJOR_WATER else 12
+            return 8 if pname in MAJOR_WATER else 12
         if "道路" in name:
-            # 道路注记按等级：高速/干线/主干道 z>=11，次干道 z>=13，其他 z>=14
+            # 道路注记按等级：高速/干线/主干道 z>=10，次干道 z>=13，其他 z>=14
             if any(k in (prop.get("layer") or "") for k in ("高速公路", "城市干线", "城市主干道")):
-                return 11
+                return 10
             if "次干道" in (prop.get("layer") or ""):
                 return 13
             return 14
         if any(k in name for k in ("铁路", "轨道")):
-            return 10
+            return 9
         return 12
 
     @staticmethod
@@ -1986,6 +2029,12 @@ class MapService:
             return 0.8
         if "水系" in name or "湖泊" in name:
             pname = (prop.get("name") or "") if isinstance(prop, dict) else ""
+            try:
+                area = float(prop.get("area_km2")) if prop.get("area_km2") is not None else None
+            except (TypeError, ValueError):
+                area = None
+            if area is not None:
+                return 0.95 if area >= 100 else (0.85 if area >= 30 else 0.5)
             MAJOR_WATER = {
                 "长江", "汉江", "东湖", "汤逊湖", "梁子湖", "涨渡湖", "斧头湖",
                 "武湖", "后官湖", "沉湖", "严西湖", "童家湖", "牛山湖", "鲁湖",
@@ -2000,6 +2049,68 @@ class MapService:
             return 0.8
         return 0.3
 
+    @staticmethod
+    def _label_priority_value(layer_name: str, prop: dict) -> int:
+        """注记优先级数值（规范 §二：P0=100 / P1=80 / P2=50 / P3=20）"""
+        from app.core.label_spec import P0, P1, P2, P3
+        name = layer_name or ""
+        pname = (prop.get("name") or "") if isinstance(prop, dict) else ""
+        # P0：市名、核心河流、核心交通枢纽
+        if "市级名称" in name:
+            return P0
+        if any(k in name for k in ("枢纽", "火车站", "机场")):
+            return P0
+        if pname in ("长江", "汉江"):
+            return P0
+        # P1：区名、主要道路、铁路/轨道、核心景区/地标
+        if "区县名称" in name:
+            return P1
+        if any(k in name for k in ("铁路", "轨道", "地铁", "轻轨")):
+            return P1
+        if any(k in name for k in ("重点地标", "地标名称")):
+            return P1
+        if "道路" in name:
+            src = (prop.get("layer") or "") if isinstance(prop, dict) else ""
+            if any(k in src for k in ("高速公路", "城市干线", "城市主干道")):
+                return P1
+            if "次干道" in src:
+                return P2
+            return P3
+        # 水系：核心大湖 P1，一般水系 P2
+        if "水系" in name or "湖泊" in name:
+            MAJOR_WATER = {
+                "长江", "汉江", "东湖", "汤逊湖", "梁子湖", "涨渡湖", "斧头湖",
+                "武湖", "后官湖", "沉湖", "严西湖", "童家湖", "牛山湖", "鲁湖",
+                "豹澥后湖", "夏家寺水库", "梅店水库", "后湖", "金银湖",
+            }
+            try:
+                area = float(prop.get("area_km2")) if prop.get("area_km2") is not None else None
+            except (TypeError, ValueError):
+                area = None
+            if area is not None:
+                return P1 if area >= 30 else P2
+            return P1 if pname in MAJOR_WATER else P2
+        if "山峰" in name:
+            return P1
+        if any(k in name for k in ("景点", "景区", "公园", "博物馆")):
+            return P2
+        return P3
+
+    @staticmethod
+    def _label_feature_type(layer_name: str) -> str:
+        """注记要素类型（admin/water/transport/poi/peak）"""
+        name = layer_name or ""
+        if any(k in name for k in ("区县", "市级", "行政", "政区")):
+            return "admin"
+        if any(k in name for k in ("水系", "湖泊", "河流", "溪流")):
+            return "water"
+        if any(k in name for k in ("道路", "高速", "公路", "干道", "铁路", "轨道",
+                                   "桥梁", "枢纽", "车站", "机场")):
+            return "transport"
+        if "山峰" in name:
+            return "peak"
+        return "poi"
+
     def _apply_label_engine(self, map_type: str, map_layers: List[dict], zoom: int) -> dict:
         """LabelEngine 接入：点注记候选/碰撞消解 + 道路/河流线注记。
 
@@ -2009,6 +2120,7 @@ class MapService:
         """
         from app.services.label.engine import LabelEngine
         from app.core.constants import CITY_BBOX
+        from app.core.label_spec import make_label_meta
 
         engine = LabelEngine()
         bbox = CITY_BBOX.get("武汉市", {})
@@ -2028,6 +2140,8 @@ class MapService:
 
         placed_count = 0
         suppressed_count = 0
+        priority_total: Dict[int, int] = {}
+        line_out_of_bounds = 0
         used_cells: Dict[str, int] = {}
 
         def cell_key(lat, lng):
@@ -2047,22 +2161,36 @@ class MapService:
                         kept_p.append(props[i])
                     continue
                 name = (props[i] if i < len(props) else {}).get("name") or ""
+                _prio = self._label_priority_value(layer.get("name") or "", props[i] if i < len(props) else {})
+                priority_total[_prio] = priority_total.get(_prio, 0) + 1
                 # 0.02° 格网级容量：每格最多 2 个注记（行政名称例外，保证 13 区全上图）
                 ck = cell_key(c[0], c[1])
                 if used_cells.get(ck, 0) >= 2 and cat != "admin":
                     suppressed_count += 1
                     continue
                 x, y = to_px(float(c[0]), float(c[1]))
-                res = engine.place_point_label(x, y, 80, 16, name, cat, (float(c[0]), float(c[1])))
+                res = engine.place_point_label(
+                    x, y, 80, 16, name, cat, (float(c[0]), float(c[1])),
+                    priority=_prio,
+                )
                 if res.get("placed"):
                     used_cells[ck] = used_cells.get(ck, 0) + 1
                     placed_count += 1
                     kept_c.append(c)
                     if i < len(props):
                         p = dict(props[i]) if isinstance(props[i], dict) else {"name": name}
-                        p["min_zoom"] = self._label_min_zoom(layer.get("name") or "", p)
-                        p["importance"] = self._label_importance(layer.get("name") or "", p)
-                        kept_p.append(p)
+                        _lname = layer.get("name") or ""
+                        _mz = self._label_min_zoom(_lname, p)
+                        _prio = self._label_priority_value(_lname, p)
+                        _ftype = self._label_feature_type(_lname)
+                        meta = make_label_meta(
+                            generate_id("label"), name, _ftype, _prio,
+                            "point", _mz, _ftype,
+                        )
+                        meta["importance"] = self._label_importance(_lname, p)
+                        meta["rotation"] = p.get("rotation", 0)
+                        meta["category"] = cat
+                        kept_p.append(meta)
                 else:
                     suppressed_count += 1
             layer["coordinates"] = kept_c
@@ -2103,10 +2231,17 @@ class MapService:
                           if isinstance(pt, list) and len(pt) >= 2]
                 if len(lonlat) < 2:
                     continue
+                _lname = ("道路注记" if is_road else
+                          ("水系注记" if is_water else "轨道注记"))
+                _prop = {"name": name, "layer": lname}
+                _prio = self._label_priority_value(_lname, _prop)
                 res = engine.place_line_label(
                     lonlat, name, "transport", canvas,
                     bounds=(min_lat, min_lng, max_lat, max_lng),
+                    priority=_prio,
                 )
+                if res.get("reason") == "out_of_bounds":
+                    line_out_of_bounds += 1
                 if res.get("placed"):
                     mid = lonlat[len(lonlat) // 2]
                     lat, lng = mid[0], mid[1]
@@ -2114,14 +2249,19 @@ class MapService:
                     if used_cells.get(ck, 0) >= 2:
                         continue
                     used_cells[ck] = used_cells.get(ck, 0) + 1
-                    _prop = {"name": name, "layer": lname}
+                    _ftype = "transport" if (is_road or is_rail) else "water"
+                    _mz = self._label_min_zoom(_lname, _prop)
+                    priority_total[_prio] = priority_total.get(_prio, 0) + 1
+                    meta = make_label_meta(
+                        generate_id("label"), name, _ftype, _prio,
+                        "line", _mz, _ftype,
+                    )
+                    meta["importance"] = self._label_importance(_lname, _prop)
+                    meta["rotation"] = res.get("angle", 0)
+                    meta["lineLabel"] = True
+                    meta["layer"] = lname
                     _label = {
-                        "lat": lat, "lng": lng, "name": name,
-                        "rotation": res.get("angle", 0), "layer": lname,
-                        "min_zoom": self._label_min_zoom("道路注记" if is_road else (
-                            "水系注记" if is_water else "轨道注记"), _prop),
-                        "importance": self._label_importance("道路注记" if is_road else (
-                            "水系注记" if is_water else "轨道注记"), _prop),
+                        "lat": lat, "lng": lng, "name": name, "meta": meta,
                     }
                     if is_road:
                         line_labels.append(_label)
@@ -2147,11 +2287,7 @@ class MapService:
                 map_layers.append(target)
             for lb in labels:
                 target["coordinates"].append([lb["lat"], lb["lng"]])
-                target["properties"].append({
-                    "name": lb["name"], "rotation": lb["rotation"], "lineLabel": True,
-                    "layer": lb["layer"], "min_zoom": lb["min_zoom"],
-                    "importance": lb["importance"],
-                })
+                target["properties"].append(lb["meta"])
 
         if (line_labels or water_line_labels or rail_line_labels) and map_type in (
                 "traffic", "tourism", "administrative", "basic"):
@@ -2167,7 +2303,15 @@ class MapService:
             placed_count += len(line_labels) + len(water_line_labels) + len(rail_line_labels)
 
         from app.services.label.metrics import compute_metrics
-        metrics = compute_metrics(engine.placed, engine.suppressed, important_total=placed_count + suppressed_count)
+        important_total = sum(v for k, v in priority_total.items() if k >= 60)
+        metrics = compute_metrics(
+            engine.placed, engine.suppressed,
+            important_total=important_total,
+            total_by_priority=priority_total,
+            out_of_bounds_count=0,          # 越界注记已被拒绝，已放置注记越界率=0
+            total_labels=placed_count,
+        )
+        metrics["rejected_out_of_bounds_count"] = line_out_of_bounds
         metrics.update({
             "line_label_count": len(line_labels),
             "water_line_label_count": len(water_line_labels),

@@ -16,7 +16,13 @@ def _load_fixture(map_type: str) -> dict:
     maps = list(index.values()) if isinstance(index, dict) else index
     candidates = [m for m in maps if m.get("map_type") == map_type]
     if not candidates:
-        return {}
+        # 索引中无该类型地图（被归档/覆盖）时实时生成，保证测试自足、不依赖外部数据状态
+        from app.services.map_service import MapService
+        ms = MapService(persist_path=os.path.join(root, "data", "maps.json"))
+        zoom = {"administrative": 10, "traffic": 12, "tourism": 12, "terrain": 11}.get(map_type, 12)
+        md = ms.generate_map(map_type, "武汉市", zoom=zoom)
+        ms.flush()
+        return md
     latest = max(candidates, key=lambda m: m.get("created_at", 0))
     with open(os.path.join(root, "data", "maps", f"{latest['map_id']}.json"), "r", encoding="utf-8") as f:
         return json.load(f)

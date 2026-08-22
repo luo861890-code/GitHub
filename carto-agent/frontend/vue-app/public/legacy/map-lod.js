@@ -385,11 +385,11 @@ MapPanel.prototype._lodVisible = function(layerData, zoom) {
     if (t === "polyline" && _nm === "轨道交通线路") return _z >= 9;
     // ---- 注记 ----
     if (t === "textLabel") {
-        if (_nm === "水系注记") return _z >= 9;
-        if (_nm === "市级名称标注") return _z >= 7;
-        if (_nm === "区县名称标注") return _z >= 9;
-        if (_nm === "山峰注记") return _z >= 10;
-        if (_nm === "地标名称" || _nm === "重点地标") return _z >= 11;
+        if (_nm === "水系注记") return _z >= 7;
+        if (_nm === "市级名称标注") return _z >= 6;
+        if (_nm === "区县名称标注") return _z >= 8;
+        if (_nm === "山峰注记") return _z >= 9;
+        if (_nm === "地标名称" || _nm === "重点地标") return _z >= 10;
         if (_nm === "道路注记") return _z >= 10;
         if (_nm === "轨道注记") return _z >= 9;
         return true;

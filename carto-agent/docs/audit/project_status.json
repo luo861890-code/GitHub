@@ -10,8 +10,9 @@
     "generalization": {"status": "COMPLETE", "file": "backend/app/services/generalization/"},
     "duplicate_detection": {"status": "COMPLETE", "file": "backend/app/services/generalization/duplicate.py"},
     "map_qa": {"status": "COMPLETE", "file": "backend/app/services/qa/"},
-    "label_engine": {"status": "PARTIAL", "file": "backend/app/services/label/",
+    "label_engine": {"status": "COMPLETE", "file": "backend/app/services/label/",
                      "integrated_into_map_service": true,
+                     "spec": "backend/app/core/label_spec.py",
                      "missing": ["curved_label", "feature_aware_displacement"]},
     "symbol_registry": {"status": "COMPLETE", "file": "backend/app/services/cartography/symbols/",
                         "integrated_into_map_service": true},
@@ -44,9 +45,10 @@
     "terrain_road_filter": "地势图仅保留 motorway/trunk（符合 MAP_TYPE_PROFILES.terrain）"
   },
   "tests": {
-    "new_tests": 36,
-    "total_tests": 194,
+    "new_tests": 48,
+    "total_tests": 206,
     "all_passed": true,
-    "new_test_files": ["tests/test_cartography_engines.py", "tests/test_final_refinements.py"]
+    "new_test_files": ["tests/test_cartography_engines.py", "tests/test_final_refinements.py",
+                       "tests/test_label_spec.py"]
   }
 }

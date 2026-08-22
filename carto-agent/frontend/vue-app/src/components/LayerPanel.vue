@@ -728,8 +728,8 @@ function exportLayerGeoJSON() {
 
 <style scoped>
 .layer-panel {
-  width: 280px;
-  min-width: 280px;
+  width: var(--layer-panel-width, 280px);
+  min-width: var(--layer-panel-width, 280px);
   display: flex;
   flex-direction: column;
   background: var(--color-surface);

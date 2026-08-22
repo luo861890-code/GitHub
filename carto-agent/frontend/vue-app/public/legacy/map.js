@@ -774,19 +774,24 @@ class MapPanel {
                         if (this._labelNames && this._labelNames.has(label)) return;
                         if (!this._labelNames) this._labelNames = new Set();
                         this._labelNames.add(label);
-                        const labelColor = style.color || "#1a1a1a";
-                        // 字号随缩放级别自适应：基准zoom=12，每+1级字号×1.12，限制0.7~2.2倍且最小9px
+                        const labelColor = prop.color || style.color || "#1a1a1a";
+                        // 字号随缩放级别自适应：基准zoom=12，每+1级字号×1.12，限制0.55~2.2倍且最小8px
                         const zoomFactor = Math.pow(1.12, this.map.getZoom() - 12);
-                        const itemFontSize = Math.max(9, Math.round(getFontSize(idx) * Math.min(2.2, Math.max(0.7, zoomFactor))));
+                        const itemFontSize = Math.max(8, Math.round(getFontSize(idx) * Math.min(2.2, Math.max(0.55, zoomFactor))));
                         let rot = (prop.rotation !== undefined) ? prop.rotation : (style.rotation || 0);
                         // 字头朝上：旋转角归一化到[-90,90]，避免文字倒置
                         rot = ((rot + 90) % 180 + 180) % 180 - 90;
-                        const labelFont = style.font || "normal";
+                        const labelFont = prop.font || style.font || "normal";
                         let fontCss = "";
-                        if (labelFont === "black") fontCss = "font-family:'SimHei','Microsoft YaHei',sans-serif;font-weight:700;";
+                        if (labelFont === "black") fontCss = "font-family:'SimHei','Microsoft YaHei',sans-serif;";
                         else if (labelFont === "song") fontCss = "font-family:'SimSun','宋体','NSimSun',serif;";
-                        else if (labelFont === "bold") fontCss = "font-weight:700;";
-                        else if (labelFont === "italic") fontCss = "font-style:italic;";
+                        else if (labelFont === "italic") fontCss = "font-family:'SimSun','宋体','NSimSun',serif;font-style:italic;";
+                        // 字重层级（规范 §十六）：P0 800 / P1 700 / P2 500 / P3 400
+                        const _labelWeight = prop.weight ||
+                            ((labelFont === "black" || labelFont === "bold") ? 700 : 400);
+                        fontCss += "font-weight:" + _labelWeight + ";";
+                        // 高德式水系注记：白色描边光晕（halo），保证水面/陆地交界可读
+                        if (prop.halo) fontCss += "text-shadow:0 0 2px #fff,0 0 2px #fff,0 0 2px #fff;";
                         const isCentered = style.center === true;
                         const cp = this.map.latLngToContainerPoint([parseFloat(pt[0]), parseFloat(pt[1])]);
                         // 文本碰撞检测（防重叠）：中心区县名注记与红点/已放置注记冲突时，

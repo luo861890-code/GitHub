@@ -303,7 +303,8 @@ class LocalGeoService:
                             if name and a2 >= 1.0:
                                 c0 = sum(p[0] for p in r2) / len(r2)
                                 c1 = sum(p[1] for p in r2) / len(r2)
-                                labels.append({"coords": [c0, c1], "name": name})
+                                labels.append({"coords": [c0, c1], "name": name,
+                                               "area_km2": round(a2, 2)})
                     else:
                         if is_river_body:
                             river_bodies.append((ring, name))
@@ -312,7 +313,8 @@ class LocalGeoService:
                         if name and area >= 1.0:
                             c0 = sum(p[0] for p in ring) / len(ring)
                             c1 = sum(p[1] for p in ring) / len(ring)
-                            labels.append({"coords": [c0, c1], "name": name})
+                            labels.append({"coords": [c0, c1], "name": name,
+                                           "area_km2": round(area, 2)})
 
         # 湖泊质量处理：
         # 1) 低点数(<=8)多边形做 Chaikin 平滑，消除"蓝色直线"角形观感；
@@ -534,7 +536,8 @@ class LocalGeoService:
             layers.append({
                 "id": generate_id("layer"), "type": "textLabel", "name": "水系注记",
                 "coordinates": [l["coords"] for l in labels],
-                "properties": [{"name": l["name"], "rotation": 0} for l in labels],
+                "properties": [{"name": l["name"], "rotation": 0,
+                                "area_km2": l.get("area_km2")} for l in labels],
                 "style": {"color": "#1e3a8a", "fontSize": 12, "weight": 2, "font": "song"},
             })
         # 湖岸线（河湖连通性吸附用）：入湖河口/出湖河源端点吸附到最近湖岸
