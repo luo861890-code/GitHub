@@ -226,7 +226,79 @@ async function submit() {
 
 function onGeoFile(e: Event) {
   const input = e.target as HTMLInputElement
-  geoFile.value = input.files?.[0] || null
+  const files = input.files ? Array.from(input.files) : []
+  if (!files.length) {
+    geoFile.value = null
+    return
+  }
+  // 多文件（SHP 场景：.shp/.dbf/.shx/.prj）→ 前端打包为 zip 上传；单文件直接传
+  if (files.length > 1) {
+    void packShpZip(files)
+  } else {
+    geoFile.value = files[0]
+  }
+}
+
+/** 浏览器端极简 zip 打包（store 无压缩），用于 SHP 多文件场景 */
+function crc32(data: Uint8Array): number {
+  let crc = 0xffffffff
+  for (let i = 0; i < data.length; i++) {
+    crc ^= data[i]
+    for (let j = 0; j < 8; j++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1))
+  }
+  return (crc ^ 0xffffffff) >>> 0
+}
+
+async function packShpZip(files: File[]) {
+  try {
+    const items: { name: string; data: Uint8Array }[] = []
+    for (const f of files) {
+      items.push({ name: f.name, data: new Uint8Array(await f.arrayBuffer()) })
+    }
+    const enc = new TextEncoder()
+    const parts: BlobPart[] = []
+    const central: BlobPart[] = []
+    let offset = 0
+    for (const it of items) {
+      const nameBytes = enc.encode(it.name)
+      const crc = crc32(it.data)
+      const size = it.data.length
+      const lfh = new DataView(new ArrayBuffer(30))
+      lfh.setUint32(0, 0x04034b50, true)
+      lfh.setUint16(4, 20, true)
+      lfh.setUint32(14, crc, true)
+      lfh.setUint32(18, size, true)
+      lfh.setUint32(22, size, true)
+      lfh.setUint16(26, nameBytes.length, true)
+      parts.push(lfh.buffer, nameBytes, it.data)
+      const cdh = new DataView(new ArrayBuffer(46))
+      cdh.setUint32(0, 0x02014b50, true)
+      cdh.setUint16(4, 20, true)
+      cdh.setUint16(6, 20, true)
+      cdh.setUint32(16, crc, true)
+      cdh.setUint32(20, size, true)
+      cdh.setUint32(24, size, true)
+      cdh.setUint16(28, nameBytes.length, true)
+      cdh.setUint32(42, offset, true)
+      central.push(cdh.buffer, nameBytes)
+      offset += 30 + nameBytes.length + size
+    }
+    const eocd = new DataView(new ArrayBuffer(22))
+    eocd.setUint32(0, 0x06054b50, true)
+    eocd.setUint16(8, items.length, true)
+    eocd.setUint16(10, items.length, true)
+    let centralSize = 0
+    for (const c of central) centralSize += (c as ArrayBuffer).byteLength
+    eocd.setUint32(12, centralSize, true)
+    eocd.setUint32(16, offset, true)
+    parts.push(...central, eocd.buffer)
+    const zipBlob = new Blob(parts, { type: 'application/zip' })
+    const shpName = files.find((f) => /\.shp$/i.test(f.name))?.name || files[0].name
+    geoFile.value = new File([zipBlob], shpName.replace(/\.shp$/i, '') + '_shp.zip', { type: 'application/zip' })
+  } catch (err: any) {
+    alert('SHP 文件打包失败: ' + (err.message || err))
+    geoFile.value = null
+  }
 }
 
 function onRasterFile(e: Event) {
@@ -278,7 +350,7 @@ async function submitRaster() {
 
 async function submitGeo() {
   if (!geoFile.value) {
-    alert('请选择 GeoJSON 文件')
+    alert('请选择地理数据文件（GeoJSON / SHP）')
     return
   }
   const mapId = mapStore.currentMapId
@@ -286,7 +358,7 @@ async function submitGeo() {
     alert('当前没有地图，请先生成地图')
     return
   }
-  const name = geoName.value.trim() || geoFile.value.name.replace(/\.(geojson|json)$/i, '')
+  const name = geoName.value.trim() || geoFile.value.name.replace(/\.(geojson|json|zip|shp)$/i, '')
   geoImporting.value = true
   geoResult.value = null
   try {

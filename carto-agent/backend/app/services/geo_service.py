@@ -172,8 +172,8 @@ class GeoService:
                     "name": "湖北省域",
                     "coordinates": [main_ring],
                     "properties": [{"name": "湖北省域", "subtype": "province"}],
-                    "style": {"fillColor": "#FBF7EF", "fillOpacity": 0.35,
-                              "color": "#C9D4E0", "weight": 0.8, "opacity": 0.7},
+                    "style": {"fillColor": "#F5F5F5", "fillOpacity": 0.5,
+                              "color": "#C9C9C9", "weight": 1, "opacity": 0.8},
                 })
                 break
         for feat in wuhan_face0:
@@ -194,6 +194,7 @@ class GeoService:
                 break
         # 1) 周边地市面：湖北省地市面中剔除武汉，极浅米黄底图（突出武汉主体）
         surr_rings = []
+        surr_props = []
         for feat in prov_cities:
             props = feat.get("properties", {})
             if str(props.get("adcode", "")) == str(wuhan_adcode):
@@ -204,15 +205,22 @@ class GeoService:
                 if not sig_rings:
                     sig_rings = [max(rings, key=_ring_area_km2)]
                 surr_rings.extend(sig_rings)
+                # 每个环记录对应地市属性（name/adcode），保证属性表有完整数据
+                surr_props.extend([{
+                    "name": props.get("name", ""),
+                    "subtype": "city_surrounding",
+                    "adcode": props.get("adcode", ""),
+                } for _ in sig_rings])
         if surr_rings:
             layers.append({
                 "id": generate_id("layer"),
                 "type": "polygon",
                 "name": "周边地市",
                 "coordinates": surr_rings,
+                "properties": surr_props,
                 # 湖北省周边地市（上一级行政模块）：米黄色面 + 浅色轮廓与武汉市白色主体区分
                 "style": {"fillColor": SURROUNDING_CITY_FILL, "fillOpacity": 0.5,
-                          "color": "#E3D5C0", "weight": 0.8, "opacity": 0.7},
+                          "color": "#C9C9C9", "weight": 1, "opacity": 0.9},
             })
             # 湖北省市级边界线（上一级行政边界）：棕色实线，与武汉市红色市域界区分
             layers.append({
@@ -221,7 +229,7 @@ class GeoService:
                 "name": "湖北周边城市边界",
                 "coordinates": surr_rings,
                 "properties": [{"name": "湖北省周边城市边界", "subtype": "boundary", "admin_level": 6} for _ in surr_rings],
-                "style": {"color": "#B08968", "weight": 1.4, "opacity": 0.9},
+                "style": {"color": "#A07850", "weight": 1.6, "opacity": 0.9},
             })
         # 1.5) 武汉市域主边界：红色粗实线 #FF0000 4px（GIS叠加风格，视觉突出主边界）
         wuhan_face = [f for f in prov_cities

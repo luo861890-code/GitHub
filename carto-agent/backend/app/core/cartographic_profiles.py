@@ -71,6 +71,41 @@ def scale_state(category: str, zoom: int) -> str:
     return SCALE_MATRIX.get(category, {}).get(level, "show")
 
 
+# ============ partial 尺度取舍（C8） ============
+# 类别 → 各尺度 partial 时"按 importance 取前 K"（K 越大显示越多）
+PARTIAL_TOP_K: Dict[str, Dict[str, int]] = {
+    "street_boundary": {"1_250K": 8},
+    "street_name": {"1_250K": 8},
+    "secondary_road": {"1_1M": 6},
+    "minor_road": {"1_100K": 12},
+    "minor_water": {"1_250K": 10},
+    "normal_poi": {"1_250K": 10},
+    "service_poi": {"1_100K": 12},
+    "contour_major": {"1_1M": 6},
+    "contour_minor": {"1_250K": 10},
+    "peak": {"1_1M": 5},
+    "transit_station": {"1_1M": 6},
+}
+
+
+def partial_top_k(category: str, zoom: int, default: int = 8) -> int:
+    """partial 状态下的"取前 K 重要要素"参数（C8）。"""
+    level = scale_for_zoom(zoom)
+    return PARTIAL_TOP_K.get(category, {}).get(level, default)
+
+
+def resolve_scale_behavior(category: str, zoom: int):
+    """返回要素在某尺度的显示行为：
+    "show" / "hide" / ("partial", top_k)，供综合层统一取舍。
+    """
+    state = scale_state(category, zoom)
+    if state == "show":
+        return "show"
+    if state == "hide":
+        return "hide"
+    return ("partial", partial_top_k(category, zoom))
+
+
 # ============ 旅游 POI 分级（P0-P3） ============
 # 图层名/类别关键字 → (等级, importance 权重, 说明)
 TOURISM_POI_LEVELS: Dict[str, tuple] = {

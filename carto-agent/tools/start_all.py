@@ -12,13 +12,13 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import path_utils  # noqa: E402
 import process_utils  # noqa: E402
 
-BACKEND_CWD = os.path.join(ROOT, "backend")
-FRONTEND_CWD = os.path.join(ROOT, "frontend", "vue-app")
-PY = r"D:\python\py3.12.8\python.exe"
-NODE = r"D:\node.js\node.exe"
-NPM_CLI = r"D:\node.js\node_modules\npm\bin\npm-cli.js"
+BACKEND_CWD = path_utils.backend_dir()
+FRONTEND_CWD = path_utils.frontend_dir()
+PY = path_utils.find_python()
+NPM = path_utils.find_node()
 
 
 def start_all(with_watch: bool = False):
@@ -31,13 +31,13 @@ def start_all(with_watch: bool = False):
             print(f"已停止旧进程 {key}: {pid}")
 
     backend_pid = process_utils.spawn(
-        [PY, "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info"],
+        PY + ["-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info"],
         BACKEND_CWD,
         os.path.join(BACKEND_CWD, "runtime", "server_out.log"),
         os.path.join(BACKEND_CWD, "runtime", "server_err.log"),
     )
     frontend_pid = process_utils.spawn(
-        [NODE, NPM_CLI, "run", "dev", "--", "--host", "127.0.0.1"],
+        NPM + ["run", "dev", "--", "--host", "127.0.0.1"],
         FRONTEND_CWD,
         os.path.join(FRONTEND_CWD, "dev.log"),
         os.path.join(FRONTEND_CWD, "dev.err.log"),

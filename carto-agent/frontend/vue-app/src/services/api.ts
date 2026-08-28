@@ -110,7 +110,7 @@ class ApiService {
     return this.request('POST', `/api/chat/sessions/${sessionId}/messages`, { message })
   }
 
-  async streamMessage(sessionId: string, message: string, callbacks: StreamCallbacks, signal?: AbortSignal) {
+  async streamMessage(sessionId: string, message: string, callbacks: StreamCallbacks, signal?: AbortSignal, mapId?: string | null) {
     const fullUrl = this.baseUrl + `/api/chat/sessions/${sessionId}/stream`
     const response = await fetch(fullUrl, {
       method: 'POST',
@@ -118,7 +118,7 @@ class ApiService {
         'Content-Type': 'application/json',
         Accept: 'text/event-stream',
       },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, map_id: mapId || undefined }),
       signal,
     })
 
@@ -277,8 +277,32 @@ class ApiService {
     return this.request('POST', `/api/maps/${mapId}/export`, params)
   }
 
+  /** 导出二进制文件（shp zip 等）：后端直接返回附件流，不走 JSON 解析 */
+  async exportMapBinary(mapId: string, format: string): Promise<Blob> {
+    const response = await fetch(this.baseUrl + `/api/maps/${mapId}/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/zip' },
+      body: JSON.stringify({ format }),
+      credentials: 'omit' as RequestCredentials,
+    })
+    if (!response.ok) {
+      let msg = `导出失败 (${response.status})`
+      try {
+        const j = await response.json()
+        msg = j.message || j.detail || msg
+      } catch { /* 非 JSON 响应 */ }
+      throw new Error(msg)
+    }
+    return response.blob()
+  }
+
   async getMapQuality(mapId: string) {
     return this.request('GET', `/api/maps/${mapId}/quality`)
+  }
+
+  /** 地图几何质量清洗（deep=true 额外修复政区重叠/碎面/行政中心吸附） */
+  async cleanupMap(mapId: string, deep = true) {
+    return this.request('POST', `/api/maps/${mapId}/cleanup`, { deep })
   }
 
   /** 地图质量验收报告（1000 分制） */
@@ -332,6 +356,11 @@ class ApiService {
 
   async getThemes() {
     return this.request('GET', '/api/settings/map/themes')
+  }
+
+  /** 实证驱动评估统计（任务完成率/端到端延迟/规范性5分制） */
+  async getEvaluation() {
+    return this.request('GET', '/api/chat/evaluation')
   }
 }
 

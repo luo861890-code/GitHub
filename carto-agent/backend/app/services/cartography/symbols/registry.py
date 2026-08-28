@@ -1,68 +1,61 @@
 # -*- coding: utf-8 -*-
-"""SymbolRegistry：统一制图符号注册表（颜色/线宽/填充/优先级/尺度范围）
+"""SymbolRegistry：统一制图符号注册表（颜色/线宽/填充/优先级/尺度范围/形状）
 
 所有要素符号从注册表取，LLM 不得随机生成颜色。每个符号含 symbol_id / geometry /
-color / width / casing / priority / scale_range。
+color / width / casing / priority / scale_range / shape（点符号形状语义）。
+颜色统一取自《cartographic_standards》国标式色系，保持单一来源。
 """
 from typing import Any, Dict, Optional
+
+from app.core.cartographic_standards import GB_COLORS
+
+
+def _sym(
+    symbol_id: str,
+    geometry: str,
+    color_key: str,
+    width: float,
+    priority: int,
+    scale_range: list,
+    casing: Optional[str] = None,
+    shape: str = "",
+) -> Dict[str, Any]:
+    """构造符号记录，颜色从国标色系取。"""
+    return {
+        "symbol_id": symbol_id,
+        "geometry": geometry,
+        "color": GB_COLORS.get(color_key, "#888888"),
+        "color_key": color_key,
+        "width": width,
+        "casing": casing,
+        "priority": priority,
+        "scale_range": scale_range,
+        "shape": shape,
+    }
 
 
 SYMBOLS: Dict[str, Dict[str, Any]] = {
     # 行政
-    "boundary.province": {"symbol_id": "boundary.province", "geometry": "line",
-                          "color": "#000000", "width": 1.2, "casing": None, "priority": 90,
-                          "scale_range": [25000, 1000000]},
-    "boundary.city": {"symbol_id": "boundary.city", "geometry": "line",
-                      "color": "#E03131", "width": 3.0, "casing": None, "priority": 95,
-                      "scale_range": [25000, 1000000]},
-    "boundary.district": {"symbol_id": "boundary.district", "geometry": "line",
-                          "color": "#8A8A8A", "width": 1.2, "casing": None, "priority": 85,
-                          "scale_range": [25000, 1000000]},
+    "boundary.province": _sym("boundary.province", "line", "boundary_national", 1.2, 90, [25000, 1000000]),
+    "boundary.city": _sym("boundary.city", "line", "boundary_city", 3.0, 95, [25000, 1000000]),
+    "boundary.district": _sym("boundary.district", "line", "boundary_district", 1.2, 85, [25000, 1000000]),
     # 交通
-    "road.motorway": {"symbol_id": "road.motorway", "geometry": "line",
-                      "color": "#C2410C", "width": 4.0, "casing": "#7C2D12", "priority": 80,
-                      "scale_range": [25000, 1000000]},
-    "road.trunk": {"symbol_id": "road.trunk", "geometry": "line",
-                   "color": "#D97706", "width": 3.2, "casing": "#92400E", "priority": 75,
-                   "scale_range": [25000, 1000000]},
-    "road.primary": {"symbol_id": "road.primary", "geometry": "line",
-                     "color": "#94A3B8", "width": 2.5, "casing": None, "priority": 70,
-                     "scale_range": [25000, 500000]},
-    "road.secondary": {"symbol_id": "road.secondary", "geometry": "line",
-                       "color": "#B9C4D0", "width": 2.0, "casing": None, "priority": 60,
-                       "scale_range": [25000, 250000]},
-    "road.minor": {"symbol_id": "road.minor", "geometry": "line",
-                   "color": "#D3DBE3", "width": 1.0, "casing": None, "priority": 40,
-                   "scale_range": [25000, 100000]},
-    "railway.main": {"symbol_id": "railway.main", "geometry": "line",
-                     "color": "#555555", "width": 2.0, "casing": None, "priority": 80,
-                     "scale_range": [25000, 1000000]},
-    "metro.line": {"symbol_id": "metro.line", "geometry": "line",
-                   "color": "#0066CC", "width": 2.5, "casing": None, "priority": 80,
-                   "scale_range": [25000, 1000000]},
-    "bridge.major": {"symbol_id": "bridge.major", "geometry": "line",
-                     "color": "#1E40AF", "width": 3.0, "casing": None, "priority": 90,
-                     "scale_range": [25000, 1000000]},
-    "hub.transport": {"symbol_id": "hub.transport", "geometry": "point",
-                      "color": "#D97706", "width": 2.0, "casing": None, "priority": 70,
-                      "scale_range": [25000, 1000000]},
+    "road.motorway": _sym("road.motorway", "line", "road_motorway", 4.0, 80, [25000, 1000000], casing="#7C2D12"),
+    "road.trunk": _sym("road.trunk", "line", "road_trunk", 3.2, 75, [25000, 1000000], casing="#92400E"),
+    "road.primary": _sym("road.primary", "line", "road_primary", 2.5, 70, [25000, 500000]),
+    "road.secondary": _sym("road.secondary", "line", "road_secondary", 2.0, 60, [25000, 250000]),
+    "road.minor": _sym("road.minor", "line", "road_minor", 1.0, 40, [25000, 100000]),
+    "railway.main": _sym("railway.main", "line", "railway", 2.0, 80, [25000, 1000000]),
+    "metro.line": _sym("metro.line", "line", "metro", 2.5, 80, [25000, 1000000]),
+    "bridge.major": _sym("bridge.major", "line", "road_motorway", 3.0, 90, [25000, 1000000]),
+    "hub.transport": _sym("hub.transport", "point", "transport_hub", 2.0, 70, [25000, 1000000], shape="square"),
     # 水系 / 自然
-    "water.river": {"symbol_id": "water.river", "geometry": "line",
-                    "color": "#2F7FD0", "width": 1.8, "casing": None, "priority": 50,
-                    "scale_range": [25000, 1000000]},
-    "water.lake": {"symbol_id": "water.lake", "geometry": "polygon",
-                   "color": "#1E90FF", "width": 0.8, "casing": None, "priority": 45,
-                   "scale_range": [25000, 1000000]},
+    "water.river": _sym("water.river", "line", "water_line", 1.8, 50, [25000, 1000000]),
+    "water.lake": _sym("water.lake", "polygon", "water_contour", 0.8, 45, [25000, 1000000]),
     # 旅游 / 地势
-    "poi.attraction": {"symbol_id": "poi.attraction", "geometry": "point",
-                       "color": "#DC2626", "width": 1.0, "casing": None, "priority": 50,
-                       "scale_range": [25000, 500000]},
-    "terrain.contour": {"symbol_id": "terrain.contour", "geometry": "line",
-                        "color": "#7A5230", "width": 1.0, "casing": None, "priority": 30,
-                        "scale_range": [25000, 500000]},
-    "terrain.peak": {"symbol_id": "terrain.peak", "geometry": "point",
-                     "color": "#7A5230", "width": 1.0, "casing": None, "priority": 40,
-                     "scale_range": [25000, 500000]},
+    "poi.attraction": _sym("poi.attraction", "point", "core_landmark", 1.0, 50, [25000, 500000], shape="star"),
+    "terrain.contour": _sym("terrain.contour", "line", "contour_index", 1.0, 30, [25000, 500000]),
+    "terrain.peak": _sym("terrain.peak", "point", "peak", 1.0, 40, [25000, 500000], shape="triangle"),
 }
 
 

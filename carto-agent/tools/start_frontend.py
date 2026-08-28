@@ -2,14 +2,17 @@
 """以无窗口方式启动前端 Vite 开发服务器（默认 http://127.0.0.1:5173）
 
 用法：python tools/start_frontend.py
-生成 frontend/vue-app/dev.pid 供停止/排查。
+生成 frontend/vue-app/dev.pid 供停止/排查。路径自动推导。
 """
 import os
 import subprocess
+import sys
 
-frontend = r"D:\AAA-Study\work\github\carto-agent\frontend\vue-app"
-node = r"D:\node.js\node.exe"
-npm_cli = r"D:\node.js\node_modules\npm\bin\npm-cli.js"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import path_utils
+
+frontend = path_utils.frontend_dir()
+npm_cmd = path_utils.find_node()
 
 CREATE_NO_WINDOW = 0x08000000
 DETACHED = 0x00000008 | 0x00000200
@@ -22,7 +25,7 @@ env["PYTHONUNBUFFERED"] = "1"
 out = open(os.path.join(frontend, "dev.log"), "wb", buffering=0)
 err = open(os.path.join(frontend, "dev.err.log"), "wb", buffering=0)
 p = subprocess.Popen(
-    [node, npm_cli, "run", "dev", "--", "--host", "127.0.0.1"],
+    npm_cmd + ["run", "dev", "--", "--host", "127.0.0.1"],
     cwd=frontend,
     stdout=out,
     stderr=err,

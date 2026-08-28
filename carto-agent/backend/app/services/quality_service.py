@@ -136,8 +136,10 @@ class QualityService:
                 continue  # 点/标注图层同位置属正常设计，跳过
             name = L.get("name", "")
             # 1) 境界线图层由政区面轮廓生成，与面共享几何属正常表达（界线=面轮廓），豁免；
-            # 2) 道路双层渲染（外层描边+内层芯线）共用同一坐标，属正常表达，豁免
-            if "界" in name or "省界" in name or "(外层)" in name or "(内层)" in name:
+            # 2) 道路双层渲染（外层描边+内层芯线）共用同一坐标，属正常表达，豁免；
+            # 3) 河流中心线图层复用源河流（主要河流/支流溪流）几何，属正常制图复用，豁免
+            if ("界" in name or "省界" in name or "(外层)" in name or "(内层)" in name
+                    or "河流中心线" in name):
                 continue
             for feat in L.get("features", []):
                 ring = feat.get("coordinates") or []

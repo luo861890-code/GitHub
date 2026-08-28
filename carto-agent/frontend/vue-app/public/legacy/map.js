@@ -419,7 +419,8 @@ class MapPanel {
                 if (t === "textLabel" || t === "label") return 650;
                 return 600;
             };
-            mapData.layers.sort((a, b) => layerZ(a) - layerZ(b));
+            // 对副本排序，避免原地重排 mapStore 传入的响应式数组引发 watcher 抖动
+            mapData.layers = [...mapData.layers].sort((a, b) => layerZ(a) - layerZ(b));
             this._layerOrder = mapData.layers.map(l => l.id);
             // 先重建全局 POI 预算保留集，再逐层渲染（多比例尺：先保留重要地标/建筑，其次次要）
             this._rebuildPoiKeep(mapData.layers);
@@ -752,6 +753,10 @@ class MapPanel {
                     const group = L.layerGroup();
                     const props = layerData.properties || [];
                     const fontSize = style.fontSize || 13;
+                    // 智能体可修改的注记语义（此前被忽略导致"改不动"）：
+                    // fontSizeScale=false → 固定字号；textDirection='horizontal' → 水平字列；
+                    // orientation='up' → 字头朝上（默认）；placement/priority 用于避让与载负。
+                    const fontSizeScale = style.fontSizeScale !== false;
                     // 注记数量上限（载负量控制）：单图层最多渲染300个标签，避免渲染撑爆
                     const MAX_LABELS = 300;
                     let _placedCount = 0;
@@ -775,12 +780,24 @@ class MapPanel {
                         if (!this._labelNames) this._labelNames = new Set();
                         this._labelNames.add(label);
                         const labelColor = prop.color || style.color || "#1a1a1a";
-                        // 字号随缩放级别自适应：基准zoom=12，每+1级字号×1.12，限制0.55~2.2倍且最小8px
-                        const zoomFactor = Math.pow(1.12, this.map.getZoom() - 12);
-                        const itemFontSize = Math.max(8, Math.round(getFontSize(idx) * Math.min(2.2, Math.max(0.55, zoomFactor))));
-                        let rot = (prop.rotation !== undefined) ? prop.rotation : (style.rotation || 0);
-                        // 字头朝上：旋转角归一化到[-90,90]，避免文字倒置
-                        rot = ((rot + 90) % 180 + 180) % 180 - 90;
+                        // 字号：默认随缩放自适应；智能体设 fontSizeScale=false 时固定基准字号
+                        let itemFontSize = getFontSize(idx);
+                        if (fontSizeScale) {
+                            const zoomFactor = Math.pow(1.12, this.map.getZoom() - 12);
+                            itemFontSize = Math.max(8, Math.round(itemFontSize * Math.min(2.2, Math.max(0.55, zoomFactor))));
+                        } else {
+                            itemFontSize = Math.max(8, Math.round(itemFontSize));
+                        }
+                        // 旋转角：智能体设 textDirection='horizontal' 时固定水平，
+                        // 设 'vertical' 时启用竖排（writing-mode），否则沿要素方向且字头朝上
+                        // 【横向兜底】仅当显式 textDirection='vertical' 才竖排；其余（horizontal 或未设置）一律横向 rot=0
+                        const isVertical = style.textDirection === "vertical";
+                        let rot = 0;
+                        if (isVertical) {
+                            // 字头朝上：旋转角归一化到[-90,90]，避免文字倒置
+                            let _r = (prop.rotation !== undefined) ? prop.rotation : (style.rotation || 0);
+                            rot = ((_r + 90) % 180 + 180) % 180 - 90;
+                        }
                         const labelFont = prop.font || style.font || "normal";
                         let fontCss = "";
                         if (labelFont === "black") fontCss = "font-family:'SimHei','Microsoft YaHei',sans-serif;";
@@ -797,8 +814,12 @@ class MapPanel {
                         // 文本碰撞检测（防重叠）：中心区县名注记与红点/已放置注记冲突时，
                         // 先缩小字号（最小9px），仍冲突再轻微错开(右下4px)，保证可读
                         let labelFs = itemFontSize;
-                        let labelW = label.length * labelFs * 0.95 + 16;
-                        let labelH = labelFs + 10;
+                        // 竖排注记：宽高互换（单字宽≈字号，高=字数×字号）；横排按字符宽度估算
+                        const _labelWH = () => isVertical
+                            ? [labelFs + 14, label.length * labelFs * 1.1 + 10]
+                            : [label.length * labelFs * 0.95 + 16, labelFs + 10];
+                        let _wh0 = _labelWH();
+                        let labelW = _wh0[0], labelH = _wh0[1];
                         let ox = 0, oy = 0;
                         if (isCentered) {
                             const hit = (w, h) => {
@@ -812,8 +833,8 @@ class MapPanel {
                             };
                             while (labelFs > 9 && hit(labelW, labelH)) {
                                 labelFs -= 1;
-                                labelW = label.length * labelFs * 0.95 + 16;
-                                labelH = labelFs + 10;
+                                const _wh = _labelWH();
+                                labelW = _wh[0]; labelH = _wh[1];
                             }
                             if (hit(labelW, labelH)) { ox = 4; oy = 4; }
                             placed.push({ x: cp.x + ox, y: cp.y + oy, w: labelW, h: labelH });
@@ -835,6 +856,7 @@ class MapPanel {
                             className: "map-text-label",
                             html: '<span class="map-text-label-box" style="' + fontCss + 'font-size:' + labelFs +
                                 "px;border-color:" + labelColor + ";color:" + labelColor +
+                                (isVertical ? ";writing-mode:vertical-rl;text-orientation:mixed;letter-spacing:2px;" : "") +
                                 ";transform:translate(" + ox + "px," + oy + "px) rotate(" + rot + "deg);\">" +
                                 Utils.escapeHtml(label) + "</span>",
                             iconSize: isCentered ? [labelW, labelH] : null,
@@ -878,6 +900,24 @@ class MapPanel {
                             const _effSize = Math.max(14, Math.round(badgeSize * _dupFactor));
                             let m;
                             if (usePictoIcon) {
+                                const _prop0 = props[idx] || {};
+                                // 车站/交通枢纽：专业制图符号（火车站/高铁站=白底红环+中心点；机场=蓝色飞机）
+                                if (/站|枢纽|机场/.test((_prop0.subtype || "") + " " + (layerData.name || "") + " " + (_prop0.name || ""))) {
+                                    const _isAirport = /机场/.test(_prop0.subtype || "");
+                                    const _scolor = _isAirport ? "#2f6fd6" : "#d9381e";
+                                    const _ss = Math.max(20, Math.round((style.radius || 6) * 3.1 * zf));
+                                    const _inner = _isAirport
+                                        ? '<span style="font-size:' + Math.round(_ss * 0.6) + 'px;line-height:1;color:' + _scolor + ';">✈</span>'
+                                        : '<span style="display:block;width:' + Math.round(_ss * 0.32) + 'px;height:' + Math.round(_ss * 0.32) + 'px;border-radius:50%;background:' + _scolor + ';"></span>';
+                                    const icon = L.divIcon({
+                                        className: "carto-station-symbol",
+                                        html: '<span style="display:flex;align-items:center;justify-content:center;box-sizing:border-box;border-radius:50%;background:#ffffff;border:3px solid ' + _scolor + ';box-shadow:0 1px 3px rgba(0,0,0,.35);width:' + _ss + 'px;height:' + _ss + 'px;">' + _inner + '</span>',
+                                        iconSize: [_ss, _ss],
+                                        iconAnchor: [_ss / 2, _ss / 2],
+                                        popupAnchor: [0, -_ss / 2]
+                                    });
+                                    m = L.marker([parseFloat(pt[0]), parseFloat(pt[1])], { icon: icon });
+                                } else {
                                 const waterKind = (style.kind === "spring" || style.kind === "confluence" || style.kind === "to_lake" || style.kind === "to_sea") ? style.kind : null;
                                 // 市级行政中心：红色五角星★（规范三-1，正红#D82828）
                                 if (style.kind === "admin_city") {
@@ -904,12 +944,12 @@ class MapPanel {
                                 } else {
                                 // 象形符号徽章：白色圆底 + 分类色环 + 成套矢量图标(iconClass)/emoji（百度/高德风格）
                                 const iconInner = style.iconClass
-                                    ? '<i class="fa-solid ' + style.iconClass + '"></i>'
-                                    : (style.icon || "\ud83d\udccd");
+                                    ? '<i class="fa-solid ' + Utils.escapeHtml(style.iconClass) + '"></i>'
+                                    : Utils.escapeHtml(style.icon || "\ud83d\udccd");
                                 const icon = L.divIcon({
                                     className: "poi-marker",
                                     html: '<span class="poi-marker-badge" style="border-color:' +
-                                        (style.color || "#f59e0b") + ";width:" + _effSize + "px;height:" + _effSize +
+                                        Utils.escapeHtml(style.color || "#f59e0b") + ";width:" + _effSize + "px;height:" + _effSize +
                                         "px;font-size:" + Math.round(_effSize * 0.5) + 'px;">' +
                                         iconInner + "</span>",
                                     iconSize: [_effSize, _effSize],
@@ -917,6 +957,7 @@ class MapPanel {
                                     popupAnchor: [0, -_effSize / 2]
                                 });
                                 m = L.marker([parseFloat(pt[0]), parseFloat(pt[1])], { icon: icon });
+                                }
                                 }
                             } else {
                                 m = L.circleMarker([parseFloat(pt[0]), parseFloat(pt[1])], {
@@ -936,7 +977,7 @@ class MapPanel {
                                 this._poiMarkers.push({ x: _spt.x, y: _spt.y, w: _effSize, h: _effSize, name: poiName });
                             } catch (e) {}
                             const popupHtml = '<div style="font-size:13px;min-width:170px;">' +
-                                (style.icon ? '<span style="font-size:18px;">' + style.icon + '</span> ' : '') +
+                                (style.icon ? '<span style="font-size:18px;">' + Utils.escapeHtml(style.icon) + '</span> ' : '') +
                                 '<strong>' + Utils.escapeHtml(poiName) + '</strong>' +
                                 (prop.category ? '<br><span style="color:#666;">类型: ' + Utils.escapeHtml(prop.category) + '</span>' : '') +
                                 (prop.target ? '<br><span style="color:#0369a1;">汇入: ' + Utils.escapeHtml(prop.target) + '</span>' : '') +
@@ -967,7 +1008,7 @@ class MapPanel {
                                             holder.className = "wiki-box";
                                             let wikiHtml = "";
                                             if (d.image) {
-                                                wikiHtml += "<img class=\"wiki-img\" src=\"" + d.image +
+                                                wikiHtml += "<img class=\"wiki-img\" src=\"" + Utils.escapeHtml(d.image) +
                                                     "\" onerror=\"this.style.display='none'\" alt=\"百科图片\">";
                                             }
                                             wikiHtml += "<div class=\"wiki-text\">" + Utils.escapeHtml(d.extract || "暂无百科简介") + "</div>";
@@ -1003,7 +1044,7 @@ class MapPanel {
                         layer = L.marker([parseFloat(latlng[0]), parseFloat(latlng[1])]);
                         const prop = props[0] || {};
                         if (prop.name || layerData.popup) {
-                            layer.bindPopup(layerData.popup || '<strong>' + Utils.escapeHtml(prop.name || '') + '</strong>');
+                            layer.bindPopup(Utils.escapeHtml(layerData.popup || '') || '<strong>' + Utils.escapeHtml(prop.name || '') + '</strong>');
                         }
                     } else {
                         const group = L.layerGroup();
@@ -1161,7 +1202,7 @@ class MapPanel {
         if (!layer) return;
         // 添加弹窗（如果有）
         if (layerData.popup && layerData.type !== "marker") {
-            layer.bindPopup(layerData.popup);
+            layer.bindPopup(Utils.escapeHtml(layerData.popup));
         }
         // 添加tooltip
         if (layerData.name) {
@@ -2201,9 +2242,9 @@ class MapPanel {
                 div.innerHTML = `
                     <div class="layer-item-header">
                         <label class="layer-toggle" title="${Utils.escapeHtml((item.data.name || "") + (desc ? "（" + desc + "）" : ""))}">
-                            <input type="checkbox" ${item.visible ? "checked" : ""} data-layer-id="${layerId}">
+                            <input type="checkbox" ${item.visible ? "checked" : ""} data-layer-id="${Utils.escapeHtml(layerId)}">
                             ${this._symbologyIcon(item.data)}
-                            <span class="layer-color-dot" style="background:${color}"></span>
+                            <span class="layer-color-dot" style="background:${Utils.escapeHtml(color)}"></span>
                             <span class="layer-name">${Utils.escapeHtml(item.data.name || "未命名图层")}</span>
                         </label>
                         <div class="layer-item-actions">
@@ -2550,12 +2591,12 @@ class MapPanel {
                     <div class="style-section-title">色彩</div>
                     <div class="style-field">
                         <label>线条颜色</label>
-                        <input type="color" id="style-color" value="${style.color || "#3388ff"}">
+                        <input type="color" id="style-color" value="${Utils.escapeHtml(style.color || "#3388ff")}">
                     </div>
                     ${isPoly ? `
                     <div class="style-field">
                         <label>填充颜色</label>
-                        <input type="color" id="style-fillColor" value="${style.fillColor || "#4a90d9"}">
+                        <input type="color" id="style-fillColor" value="${Utils.escapeHtml(style.fillColor || "#4a90d9")}">
                     </div>` : ""}
                 </div>
                 <div class="style-section">
@@ -3052,7 +3093,7 @@ class MapPanel {
         const duration = Math.round(routeData.duration / 60);
         this.routeLayer.bindPopup(`
             <div style="font-size:13px;">
-                <strong>${routeData.profile_name || routeData.profile}</strong><br>
+                <strong>${Utils.escapeHtml(routeData.profile_name || routeData.profile || "")}</strong><br>
                 距离: ${distance} km<br>
                 预计时间: ${duration} 分钟
             </div>

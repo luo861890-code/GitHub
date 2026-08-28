@@ -1,9 +1,11 @@
-"""地图导出服务 - 支持GeoJSON、SVG、PNG格式导出
+"""地图导出服务 - 支持GeoJSON、SVG、PNG、SHP格式导出
 
 将内部地图数据结构转换为标准地理数据格式：
 - GeoJSON: 标准地理JSON格式，可被GIS工具直接导入
 - SVG: 矢量图形格式，适合打印和文档嵌入
 - PNG: 位图格式（服务端用 Pillow 按制图整饰规范渲染真实地图图片）
+- SHP(ZIP): ESRI Shapefile 格式（.shp/.shx/.dbf/.prj/.cpg），每个图层一个 shp，
+  多图层打包为 zip 下载；.dbf 承载图层属性表数据
 """
 from app.utils.logger import get_logger
 logger = get_logger(__name__)
@@ -13,15 +15,38 @@ import io
 import json
 import math
 import os
+import re
+import zipfile
 from typing import Optional, Any
 
 from app.core.exceptions import CartoAgentError
+
+try:
+    import shapefile as _shapefile
+    _HAS_PYSHP = True
+except Exception:  # pragma: no cover
+    _shapefile = None
+    _HAS_PYSHP = False
 
 try:
     from PIL import Image, ImageDraw, ImageFont
     _HAS_PIL = True
 except Exception:  # pragma: no cover
     _HAS_PIL = False
+
+
+def _xml_escape(value) -> str:
+    """将字符串转义为 SVG/XML 安全文本（防止注入）。"""
+    if value is None:
+        return ""
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
 
 
 def _load_font(size: int):
@@ -204,7 +229,7 @@ class ExportService:
                     if len(points) > 1:
                         svg_elements.append(
                             '<polyline points="' + " ".join(points) + '" fill="none" stroke="' +
-                            color + '" stroke-width="' + str(weight) + '" stroke-opacity="' + str(opacity) + '"/>'
+                            _xml_escape(color) + '" stroke-width="' + str(weight) + '" stroke-opacity="' + str(opacity) + '"/>'
                         )
 
         # 3. 图廓（外粗内细）
@@ -216,7 +241,7 @@ class ExportService:
         # 4. 图名（图廓上方居中）
         name = map_data.get("name", "") or ""
         svg_elements.append('<text x="%d" y="%d" text-anchor="middle" font-size="22" font-weight="bold" font-family="SimHei, sans-serif">%s</text>'
-                            % (width // 2, top - 20, name))
+                            % (width // 2, top - 20, _xml_escape(name)))
 
         # 5. 图例（右下角，行政区划规范顺序）
         if map_data.get("map_type") == "administrative":
@@ -280,7 +305,7 @@ class ExportService:
             f'width="{width}" height="{height}" viewBox="0 0 {width} {height}">\n'
             f'<rect width="{width}" height="{height}" fill="#f5f5f5"/>\n'
             f'<text x="{width // 2}" y="{height // 2}" text-anchor="middle" '
-            f'font-size="14" fill="#999">{title}（无地理数据）</text>\n'
+            f'font-size="14" fill="#999">{_xml_escape(title)}（无地理数据）</text>\n'
             f'</svg>'
         )
 
@@ -622,15 +647,168 @@ class ExportService:
             )
         ).decode("utf-8")
 
+    def export_shp_zip(self, map_data: dict) -> bytes:
+        """将地图导出为 ESRI Shapefile（zip 打包，每图层一个 shp 组）
+
+        每个图层生成 .shp/.shx/.dbf/.prj/.cpg 五个文件，写入 zip 的 layers/ 子目录。
+        - 几何：面(features) → POLYGON，线(coordinates) → POLYLINE，点 → POINT，注记 → POINT
+        - 属性表：features 的 properties 写入 .dbf；坐标型图层生成最小属性（layer 名）
+        - 投影：.prj 写 WGS84 (EPSG:4326)，内部坐标 [lat,lng] 在 shp 中按 [lng,lat] 写入
+        - 编码：.cpg 写 UTF-8，dbf 以 UTF-8 编码中文属性
+
+        Returns:
+            zip 文件字节流
+        """
+        if not _HAS_PYSHP:
+            raise CartoAgentError("shp 导出需要安装 pyshp：pip install pyshp")
+
+        layers = map_data.get("layers", [])
+        buf = io.BytesIO()
+        prj_wkt = (
+            'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",'
+            'SPHEROID["WGS_1984",6378137.0,298.257223563]],'
+            'PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]'
+        )
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for idx, layer in enumerate(layers):
+                layer_name = layer.get("name") or f"图层{idx + 1}"
+                safe = re.sub(r"[\\/:*?\"<>|\s]+", "_", layer_name).strip("_") or f"layer_{idx + 1}"
+                self._write_layer_shp(zf, safe, layer, prj_wkt)
+        buf.seek(0)
+        return buf.getvalue()
+
+    @staticmethod
+    def _write_layer_shp(zf: zipfile.ZipFile, name: str, layer: dict, prj_wkt: str) -> None:
+        """把单个图层写为 shp 组写入 zip"""
+        ltype = layer.get("type", "polyline")
+        features = layer.get("features") or []
+        coords = layer.get("coordinates") or []
+
+        # 判定几何类型并收集要素
+        if ltype in ("polygon", "area"):
+            shape_type = _shapefile.POLYGON
+            records = []
+            for f in features:
+                c = f.get("coordinates") or []
+                # features.coordinates 可能是单环 [[lat,lng],...] 或多环 [[[lat,lng],...],...]
+                rings = []
+                if c and isinstance(c[0], list):
+                    if isinstance(c[0][0], (int, float)):
+                        rings = [c]  # 单环
+                    elif isinstance(c[0][0], list):
+                        rings = c  # 多环
+                if rings:
+                    records.append({"geometry": "polygon", "rings": rings, "props": f.get("properties") or {}})
+            # 兼容 coordinates 形式的面（闭合环）
+            if not records:
+                props = layer.get("properties") or []
+                for i, c in enumerate(coords):
+                    if isinstance(c, list) and len(c) >= 4:
+                        records.append({
+                            "geometry": "polygon", "rings": [c],
+                            "props": props[i] if i < len(props) else {},
+                        })
+        elif ltype in ("polyline", "line"):
+            shape_type = _shapefile.POLYLINE
+            records = []
+            props = layer.get("properties") or []
+            for i, c in enumerate(coords):
+                if isinstance(c, list) and c and isinstance(c[0], list) and len(c) > 1:
+                    records.append({
+                        "geometry": "line", "pts": c,
+                        "props": props[i] if i < len(props) else {},
+                    })
+        else:
+            # point / circleMarker / marker / textLabel / label / 未知 → POINT
+            shape_type = _shapefile.POINT
+            records = []
+            props = layer.get("properties") or []
+            for i, c in enumerate(coords):
+                if isinstance(c, list) and len(c) >= 2 and isinstance(c[0], (int, float)):
+                    records.append({
+                        "geometry": "point", "pt": c,
+                        "props": props[i] if i < len(props) else {},
+                    })
+            for f in features:
+                c = f.get("coordinates") or []
+                if c and isinstance(c[0], (int, float)):
+                    records.append({"geometry": "point", "pt": c, "props": f.get("properties") or {}})
+
+        if not records:
+            return
+
+        # dbf 字段：优先用 features 属性字段，否则用最小字段
+        field_defs = []
+        sample_props = records[0].get("props") or {}
+        for k, v in sample_props.items():
+            if k in ("layer", "name", "type"):
+                continue
+            fname = re.sub(r"[^A-Za-z0-9_]", "_", str(k))[:10] or "fld"
+            if fname in [f[0] for f in field_defs]:
+                continue
+            if isinstance(v, bool):
+                field_defs.append((fname, "L", 1, 0))
+            elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                field_defs.append((fname, "N", 18, 4))
+            else:
+                field_defs.append((fname, "C", 254, 0))
+        for extra in ("name", "type"):
+            if extra not in [f[0] for f in field_defs]:
+                field_defs.append((extra, "C", 254, 0))
+
+        shp_buf, shx_buf, dbf_buf = io.BytesIO(), io.BytesIO(), io.BytesIO()
+        w = _shapefile.Writer(shape_type=shape_type, shp=shp_buf, shx=shx_buf, dbf=dbf_buf)
+        for fname, ftype, size, dec in field_defs:
+            w.field(fname, ftype, size, dec)
+
+        for rec in records:
+            geom = rec["geometry"]
+            props = dict(rec.get("props") or {})
+            props.setdefault("name", "")
+            props.setdefault("type", layer.get("name", ""))
+            if geom == "polygon":
+                # rings: 内部 [lat,lng] → shp [x=lng,y=lat]
+                rings = [[(float(p[1]), float(p[0])) for p in ring if isinstance(p, list) and len(p) >= 2] for ring in rec.get("rings") or []]
+                rings = [r for r in rings if len(r) >= 4]
+                if rings:
+                    w.poly(rings)
+                else:
+                    continue
+            elif geom == "line":
+                pts = [(float(p[1]), float(p[0])) for p in rec.get("pts") or [] if isinstance(p, list) and len(p) >= 2]
+                if len(pts) >= 2:
+                    w.line([pts])
+                else:
+                    continue
+            else:
+                p = rec.get("pt") or []
+                if len(p) >= 2 and isinstance(p[0], (int, float)):
+                    w.point(float(p[1]), float(p[0]))
+                else:
+                    continue
+            # dbf 记录（值与字段顺序对齐）
+            values = []
+            for fname, *_rest in field_defs:
+                v = props.get(fname)
+                values.append("" if v is None else v)
+            w.record(*values)
+
+        w.close()
+        zf.writestr(f"layers/{name}.shp", shp_buf.getvalue())
+        zf.writestr(f"layers/{name}.shx", shx_buf.getvalue())
+        zf.writestr(f"layers/{name}.dbf", dbf_buf.getvalue())
+        zf.writestr(f"layers/{name}.prj", prj_wkt)
+        zf.writestr(f"layers/{name}.cpg", "UTF-8")
+
     def export(self, map_data: dict, fmt: str = "geojson") -> str:
         """统一导出接口
 
         Args:
             map_data: 地图数据字典
-            fmt: 导出格式（geojson/svg/png）
+            fmt: 导出格式（geojson/svg/png/shp）
 
         Returns:
-            对应格式的字符串
+            对应格式的字符串（shp 返回 zip 字节流，需二进制传输）
 
         Raises:
             CartoAgentError: 不支持的格式
@@ -641,5 +819,7 @@ class ExportService:
             return self.export_svg(map_data)
         elif fmt == "png":
             return self.export_png(map_data)
+        elif fmt == "shp":
+            return self.export_shp_zip(map_data)
         else:
-            raise CartoAgentError(f"不支持的导出格式: {fmt}，支持: geojson, svg, png")
+            raise CartoAgentError(f"不支持的导出格式: {fmt}，支持: geojson, svg, png, shp")

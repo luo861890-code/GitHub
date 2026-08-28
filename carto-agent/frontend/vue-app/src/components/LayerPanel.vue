@@ -111,6 +111,9 @@
     <div v-if="mapStore.quality" class="quality-panel" ref="qualityPanelRef">
       <div class="quality-header">
         <i class="fa-solid fa-shield-halved"></i> 数据质量检测
+        <button class="quality-recheck" title="一键清洗几何硬伤" @click.stop="runCleanup">
+          <i class="fa-solid fa-broom"></i>
+        </button>
         <span class="quality-badge" :class="qualityFail > 0 ? 'warn' : 'ok'">
           {{ qualityFail > 0 ? qualityFail + ' 项异常' : '全部通过' }}
         </span>
@@ -144,9 +147,22 @@
       </div>
 
       <template v-for="item in filteredTree" :key="item.id">
-        <!-- 分组节点 -->
-        <div v-if="item.type === 'group'" class="layer-group">
-          <div class="group-header" @click="mapStore.toggleGroup(item.id)">
+        <!-- 分组节点（QGIS：整组显隐复选框 + 拖放目标） -->
+        <div v-if="item.type === 'group'" class="layer-group"
+          @dragover.prevent
+          @drop="onDropToGroup(item.id, $event)"
+        >
+          <div class="group-header" :class="{ 'drag-over': dragOverGroup === item.id }"
+            @click="mapStore.toggleGroup(item.id)">
+            <label class="layer-toggle group-toggle-box" @click.stop>
+              <input
+                type="checkbox"
+                :checked="groupVisible(item.id)"
+                @change="mapStore.toggleGroupVisible(item.id, ($event.target as HTMLInputElement).checked)"
+                :title="groupVisible(item.id) ? '隐藏整组' : '显示整组'"
+              />
+              <span class="custom-checkbox"></span>
+            </label>
             <i class="fa-solid group-toggle" :class="item.expanded ? 'fa-chevron-down' : 'fa-chevron-right'"></i>
             <i class="fa-solid fa-folder group-icon"></i>
             <span class="group-name">{{ item.name }}</span>
@@ -157,7 +173,12 @@
               v-for="child in item.children"
               :key="child.id"
               class="layer-item"
-              :class="{ selected: appStore.selectedLayerId === child.id }"
+              :class="{ selected: appStore.selectedLayerId === child.id, dragging: dragLayerId === child.id }"
+              draggable="true"
+              @dragstart="onDragStart(child.id, $event)"
+              @dragover.prevent
+              @drop="onDrop(child.id, $event)"
+              @dragend="onDragEnd"
               @click="selectLayer(child.id)"
               @contextmenu.prevent="showContextMenu($event, child.id)"
             >
@@ -171,7 +192,9 @@
               </label>
               <span class="layer-color" :style="getLayerColorStyle(child.data)"></span>
               <span class="layer-name">{{ child.data.name || '未命名图层' }}</span>
-              <span class="layer-type">{{ getLayerTypeLabel(child.data.type) }}</span>
+              <span class="layer-type" :class="{ 'ann-type': isAnnotationLayer(child.data) }">
+                {{ getLayerTypeLabel(child.data.type) }}
+              </span>
             </div>
           </div>
         </div>
@@ -180,7 +203,12 @@
         <div
           v-else
           class="layer-item"
-          :class="{ selected: appStore.selectedLayerId === item.id }"
+          :class="{ selected: appStore.selectedLayerId === item.id, dragging: dragLayerId === item.id }"
+          draggable="true"
+          @dragstart="onDragStart(item.id, $event)"
+          @dragover.prevent
+          @drop="onDrop(item.id, $event)"
+          @dragend="onDragEnd"
           @click="selectLayer(item.id)"
           @contextmenu.prevent="showContextMenu($event, item.id)"
         >
@@ -194,7 +222,9 @@
           </label>
           <span class="layer-color" :style="getLayerColorStyle(item.data)"></span>
           <span class="layer-name">{{ item.data.name || '未命名图层' }}</span>
-          <span class="layer-type">{{ getLayerTypeLabel(item.data.type) }}</span>
+          <span class="layer-type" :class="{ 'ann-type': isAnnotationLayer(item.data) }">
+            {{ getLayerTypeLabel(item.data.type) }}
+          </span>
         </div>
       </template>
     </div>
@@ -239,6 +269,32 @@
           class="opacity-slider"
         />
         <span class="opacity-value">{{ selectedLayerData.data.style?.weight || 3 }}px</span>
+      </div>
+      <!-- QGIS 式：图层级不透明度（作用于整个图层，含注记） -->
+      <div class="quick-style-row">
+        <label>图层透明度</label>
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.05"
+          :value="selectedLayerData.data.opacity ?? 1"
+          @input="updateLayerOpacity(parseFloat(($event.target as HTMLInputElement).value))"
+          class="opacity-slider"
+        />
+        <span class="opacity-value">{{ Math.round((selectedLayerData.data.opacity ?? 1) * 100) }}%</span>
+      </div>
+      <!-- 注记图层：文字方向（QGIS 标注设置） -->
+      <div v-if="isAnnotationLayer(selectedLayerData.data)" class="quick-style-row">
+        <label>文字方向</label>
+        <select
+          :value="selectedLayerData.data.style?.textDirection || 'horizontal'"
+          @change="updateStyle('textDirection', ($event.target as HTMLSelectElement).value)"
+          class="direction-select"
+        >
+          <option value="horizontal">水平横排</option>
+          <option value="vertical">竖排</option>
+        </select>
       </div>
       <button class="open-style-btn" @click="openStylePanel">
         <i class="fa-solid fa-sliders"></i>
@@ -445,7 +501,7 @@ function getLayerColorStyle(layer: MapLayer) {
   }
 }
 
-// 获取图层类型标签
+// 获取图层类型标签（注记图层显示 🏷️ 图标，QGIS 标注图层样式）
 function getLayerTypeLabel(type: LayerType): string {
   const labels: Record<string, string> = {
     polyline: '线',
@@ -455,10 +511,13 @@ function getLayerTypeLabel(type: LayerType): string {
     circleMarker: '点',
     marker: '点',
     point: '点',
-    textLabel: '标注',
-    label: '标注',
+    textLabel: '🏷️ 注记',
+    label: '🏷️ 注记',
+    text: '🏷️ 注记',
     heatmap: '热力',
     geojson: 'GeoJSON',
+    imageOverlay: '栅格',
+    raster: '栅格',
   }
   return labels[type] || type
 }
@@ -466,6 +525,103 @@ function getLayerTypeLabel(type: LayerType): string {
 // 判断是否为线图层
 function isLineLayer(type: LayerType): boolean {
   return type === 'polyline' || type === 'line'
+}
+
+// 是否为注记图层（textLabel/label 或名称含注记/标注）
+function isAnnotationLayer(layer: MapLayer): boolean {
+  const t = (layer.type || '').toLowerCase()
+  if (t === 'textlabel' || t === 'label' || t === 'text') return true
+  const n = layer.name || ''
+  return n.includes('注记') || n.includes('标注') || n.includes('名称')
+}
+
+/** 分组内是否全部可见（整组显隐复选框） */
+function groupVisible(groupId: string): boolean {
+  const children = mapStore.sortedLayers.filter((l) => l.group === groupId)
+  if (children.length === 0) return true
+  return children.every((l) => l.visible)
+}
+
+/** 图层级不透明度（QGIS 图层透明度） */
+function updateLayerOpacity(opacity: number) {
+  if (appStore.selectedLayerId) {
+    mapStore.setLayerOpacityValue(appStore.selectedLayerId, opacity)
+    refreshMapRender()
+  }
+}
+
+// ============ QGIS 式拖拽排序 / 拖入分组 ============
+const dragLayerId = ref<string | null>(null)
+const dragOverGroup = ref<string | null>(null)
+
+function onDragStart(layerId: string, e: DragEvent) {
+  dragLayerId.value = layerId
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', layerId)
+  }
+}
+
+function onDragEnd() {
+  dragLayerId.value = null
+  dragOverGroup.value = null
+}
+
+/** 拖放到目标图层上：把拖拽图层插入到目标图层的位置 */
+function onDrop(targetId: string, e: DragEvent) {
+  e.preventDefault()
+  const srcId = dragLayerId.value || e.dataTransfer?.getData('text/plain')
+  dragLayerId.value = null
+  dragOverGroup.value = null
+  if (!srcId || srcId === targetId) return
+  const src = mapStore.layerGroups[srcId]
+  const target = mapStore.layerGroups[targetId]
+  if (!src || !target) return
+  const srcOrder = src.order
+  const targetOrder = target.order
+  // 拖拽目标插入：src 放到 target 之前（若 src 原本在 target 之后，则放到 target 之后）
+  if (srcOrder > targetOrder) {
+    // 从后往前拖：直接放到 target 之后
+    const after = mapStore.sortedLayers
+      .filter((l) => l.order > targetOrder && l.order < srcOrder)
+      .sort((a, b) => a.order - b.order)
+    const insertAt = after.length > 0 ? after[0].order : targetOrder + 1
+    src.order = insertAt
+  } else {
+    // 从前往后拖：放到 target 之前
+    const before = mapStore.sortedLayers
+      .filter((l) => l.order < targetOrder && l.order > srcOrder)
+      .sort((a, b) => a.order - b.order)
+    const insertAt = before.length > 0 ? before[before.length - 1].order : targetOrder - 1
+    src.order = insertAt
+  }
+  // 统一重排为连续序号
+  mapStore.sortedLayers.forEach((l, i) => { l.order = i })
+  persistLayerOrder()
+  refreshMapRender()
+}
+
+/** 拖放到分组上：把图层移入该分组（放到组内末尾） */
+function onDropToGroup(groupId: string, e: DragEvent) {
+  e.preventDefault()
+  const srcId = dragLayerId.value || e.dataTransfer?.getData('text/plain')
+  dragLayerId.value = null
+  dragOverGroup.value = null
+  if (!srcId) return
+  const src = mapStore.layerGroups[srcId]
+  if (!src) return
+  const groupName = mapStore.layerGroups_meta[groupId]?.name || groupId
+  src.group = groupName
+  // 移到组内末尾
+  const inGroup = mapStore.sortedLayers.filter((l) => l.group === groupName)
+  const maxOrder = inGroup.length > 0 ? Math.max(...inGroup.map((l) => l.order)) : 0
+  src.order = maxOrder + 1
+  mapStore.sortedLayers.forEach((l, i) => { l.order = i })
+  if (mapStore.currentMapId) {
+    api.patchLayer(mapStore.currentMapId, srcId, { group: groupName }).catch(() => {})
+  }
+  persistLayerOrder()
+  refreshMapRender()
 }
 
 // 选中图层
@@ -665,6 +821,26 @@ async function runQualityCheck() {
     mapStore.setQuality(resp.data || resp)
   } catch (e: any) {
     alert('质检失败: ' + e.message)
+  }
+}
+
+const cleaning = ref(false)
+async function runCleanup() {
+  if (!mapStore.currentMapId) return
+  if (!confirm('执行深度质量清洗：修复政区重叠/碎面/退化几何/行政中心越界。清洗后地图数据将被更新。是否继续？')) return
+  cleaning.value = true
+  try {
+    const resp = await api.cleanupMap(mapStore.currentMapId, true)
+    const refreshed = await api.getMap(mapStore.currentMapId)
+    mapStore.setMapData(refreshed.data || refreshed)
+    // 刷新质量检测
+    const q = await api.getMapQuality(mapStore.currentMapId)
+    mapStore.setQuality(q.data || q)
+    alert((resp as any).message || '清洗完成')
+  } catch (e: any) {
+    alert('清洗失败: ' + e.message)
+  } finally {
+    cleaning.value = false
   }
 }
 
@@ -940,6 +1116,35 @@ function exportLayerGeoJSON() {
 /* 分组 */
 .layer-group {
   margin-bottom: 2px;
+}
+
+.group-header.drag-over {
+  background: rgba(139, 92, 246, 0.18);
+  outline: 2px dashed var(--color-primary);
+  outline-offset: -2px;
+}
+
+.layer-item.dragging {
+  opacity: 0.45;
+}
+
+.group-toggle-box {
+  margin-right: 2px;
+}
+
+.layer-type.ann-type {
+  background: rgba(139, 92, 246, 0.12);
+  color: var(--color-primary);
+}
+
+.direction-select {
+  flex: 1;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 3px 4px;
+  background: #fff;
+  outline: none;
 }
 
 .group-header {

@@ -96,7 +96,7 @@ class OllamaProvider(LLMProvider):
             data = response.json()
             return data.get("response", "")
         except Exception as e:
-            logger.info(f"[OllamaProvider] 生成失败: {e}")
+            logger.error(f"[OllamaProvider:{self.name}] 生成失败: {e}")
             return ""
 
     def chat(self, messages: List[dict]) -> str:
@@ -113,7 +113,7 @@ class OllamaProvider(LLMProvider):
             data = response.json()
             return data.get("message", {}).get("content", "")
         except Exception as e:
-            logger.info(f"[OllamaProvider] 对话失败: {e}")
+            logger.error(f"[OllamaProvider:{self.name}] 对话失败: {e}")
             return ""
 
     def is_available(self) -> bool:
@@ -174,7 +174,7 @@ class OpenAICompatibleProvider(LLMProvider):
             )
             return response.choices[0].message.content
         except Exception as e:
-            logger.info(f"[{self.name}] 对话失败: {e}")
+            logger.error(f"[{self.name}] 对话失败: {e}")
             return ""
 
     def chat_stream(self, messages: List[dict]) -> Generator[str, None, None]:
@@ -200,7 +200,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
         except Exception as e:
-            logger.info(f"[{self.name}] 流式对话失败: {e}")
+            logger.error(f"[{self.name}] 流式对话失败: {e}")
             yield f"[流式输出错误: {e}]"
 
     def is_available(self) -> bool:
@@ -352,7 +352,7 @@ class LLMService:
         try:
             return provider.generate(prompt, system_prompt)
         except Exception as e:
-            logger.info(f"[LLMService] generate调用异常: {e}")
+            logger.error(f"[LLMService:{self._current_provider}] generate调用异常: {e}")
             return ""
 
     def chat(self, messages: List[dict]) -> str:
@@ -371,7 +371,7 @@ class LLMService:
         try:
             return provider.chat(messages)
         except Exception as e:
-            logger.info(f"[LLMService] chat调用异常: {e}")
+            logger.error(f"[LLMService:{self._current_provider}] chat调用异常: {e}")
             return ""
 
     def chat_stream(self, messages: List[dict]) -> Generator[str, None, None]:

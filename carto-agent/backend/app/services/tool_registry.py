@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 from app.utils.logger import get_logger
 logger = get_logger(__name__)
 from typing import Dict, Any, List, Optional, Callable, Type
+import time
 from dataclasses import dataclass, field
 
 
@@ -1278,51 +1279,62 @@ class ToolRegistry:
         """
         results = {}
         errors = []
+        retries = []
+
+        def _run(tool_name: str, kwargs: Dict[str, Any], step_desc: str) -> None:
+            """带重试的工具调用：retryable 工具失败后自动重试一次（短暂退避）
+
+            对应申报书执行驱动"状态管理与错误处理（重试/切换备用接口/瓶颈回退）"。
+            """
+            tool = self._tools.get(tool_name)
+            if not tool:
+                errors.append(f"工具未注册: {tool_name}")
+                return
+            try:
+                retryable = bool(tool.definition.retryable)
+            except Exception:
+                retryable = True
+            max_attempts = 2 if retryable else 1
+            last_err = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    result = tool.execute(**kwargs)
+                    results[step_desc] = result
+                    return
+                except Exception as e:
+                    last_err = e
+                    if attempt < max_attempts:
+                        retries.append(f"{tool_name}[{step_desc}] 第{attempt}次失败，自动重试: {str(e)[:60]}")
+                        logger.info(f"[ToolRegistry] {tool_name} 执行失败，自动重试: {str(e)[:60]}")
+                        time.sleep(0.5)
+            errors.append(f"{step_desc}失败: {str(last_err)}")
 
         # 步骤1: 执行数据获取步骤
         for step in execution_plan.data_steps:
-            tool = self._tools.get("osm_fetch")
-            if tool:
-                try:
-                    result = tool.execute(
-                        bbox=step.get("bbox_city"),
-                        osm_tags=step.get("osm_tags", ""),
-                        layer_name=step.get("layer_name", ""),
-                    )
-                    results[f"data:{step.get('layer_name', 'unknown')}"] = result
-                except Exception as e:
-                    errors.append(f"数据获取失败({step.get('layer_name', '')}): {str(e)}")
+            _run("osm_fetch", {
+                "bbox": step.get("bbox_city"),
+                "osm_tags": step.get("osm_tags", ""),
+                "layer_name": step.get("layer_name", ""),
+            }, f"data:{step.get('layer_name', 'unknown')}")
 
         # 步骤2: 执行样式配置步骤
         for step in execution_plan.style_steps:
-            tool = self._tools.get("style_config")
-            if tool:
-                try:
-                    result = tool.execute(
-                        element_type=step.get("element_type", ""),
-                        kg_style=step.get("style", {}),
-                    )
-                    results[f"style:{step.get('element_type', 'unknown')}"] = result
-                except Exception as e:
-                    errors.append(f"样式配置失败({step.get('element_type', '')}): {str(e)}")
+            _run("style_config", {
+                "element_type": step.get("element_type", ""),
+                "kg_style": step.get("style", {}),
+            }, f"style:{step.get('element_type', 'unknown')}")
 
         # 步骤3: 执行渲染步骤
         for step in execution_plan.render_steps:
-            tool = self._tools.get("map_render")
-            if tool:
-                try:
-                    result = tool.execute(
-                        render_options=step,
-                    )
-                    results[f"render:{step.get('step', 'unknown')}"] = result
-                except Exception as e:
-                    errors.append(f"渲染步骤失败({step.get('step', '')}): {str(e)}")
+            _run("map_render", {
+                "render_options": step,
+            }, f"render:{step.get('step', 'unknown')}")
 
         success = len(errors) == 0
         summary = (
-            f"执行计划完成: {len(results)}个步骤成功, {len(errors)}个错误"
+            f"执行计划完成: {len(results)}个步骤成功, {len(errors)}个错误, {len(retries)}次自动重试"
             if success else
-            f"执行计划部分失败: {len(results)}个步骤成功, {len(errors)}个错误"
+            f"执行计划部分失败: {len(results)}个步骤成功, {len(errors)}个错误, {len(retries)}次自动重试"
         )
 
         logger.info(f"[ToolRegistry] execute_plan: {summary}")
@@ -1330,5 +1342,6 @@ class ToolRegistry:
             "success": success,
             "results": results,
             "errors": errors,
+            "retries": retries,
             "execution_summary": summary,
         }

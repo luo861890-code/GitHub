@@ -319,11 +319,12 @@ async def list_models(
 async def get_map_themes():
     """获取所有可用的地图底图主题"""
     try:
+        tk = settings.tianditu_key or ""
         themes = [
             {
                 "id": theme_id,
                 "name": info["name"],
-                "url": info["url"],
+                "url": info["url"].format(tk=tk) if "{tk}" in info["url"] else info["url"],
                 "attribution": info["attribution"],
             }
             for theme_id, info in MAP_THEMES.items()

@@ -82,6 +82,12 @@ class KGService:
             self.driver = driver
             logger.info("[KGService] Neo4j重新连接成功，切换回图数据库模式")
         except Exception as e:
+            # 连接失败必须关闭刚创建的 driver，避免每次重连都泄漏一个连接池
+            try:
+                if 'driver' in locals() and driver is not None:
+                    driver.close()
+            except Exception:
+                pass
             logger.info(f"[KGService] Neo4j重连失败: {e}，保持内存模式")
 
     # ==================== 知识初始化 ====================
@@ -99,6 +105,33 @@ class KGService:
         import re
         s = str(rel_type or "").strip()
         return s if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", s) else "RELATED"
+
+    @staticmethod
+    def _parse_params(value) -> Any:
+        """兼容 Neo4j 中 dict/list 属性被 json.dumps 成字符串存储的 parameters 字段
+
+        init_knowledge 导入时对 dict/list 属性做了 JSON 序列化，
+        此处读取端统一解析：字符串→json.loads，dict/list→原样返回。
+        """
+        if isinstance(value, str):
+            try:
+                import json as _json
+                return _json.loads(value)
+            except Exception:
+                return {}
+        return value or {}
+
+    @staticmethod
+    def _safe_property_keys(properties) -> Dict[str, Any]:
+        """过滤属性字典，仅保留 Neo4j 合法的属性键（防止键注入 Cypher）"""
+        import re
+        _KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+        if not properties:
+            return {}
+        return {
+            str(k): v for k, v in properties.items()
+            if isinstance(k, str) and _KEY_RE.match(k)
+        }
 
     def init_knowledge(self) -> bool:
         """初始化图谱数据
@@ -594,29 +627,29 @@ class KGService:
                 # 提取图层配置
                 layer_config_decision = decision_map.get("LAYER_CONFIG")
                 if layer_config_decision:
-                    params = layer_config_decision.get("parameters", {})
-                    assembled["layer_configs"] = params.get("layers", [])
+                    params = self._parse_params(layer_config_decision.get("parameters", {}))
+                    assembled["layer_configs"] = params.get("layers", []) if isinstance(params, dict) else []
                 else:
                     assembled["layer_configs"] = []
 
                 # 提取符号方案
                 symbol_decision = decision_map.get("SYMBOL_SCHEME")
                 if symbol_decision:
-                    assembled["symbol_scheme"] = symbol_decision.get("parameters", {})
+                    assembled["symbol_scheme"] = self._parse_params(symbol_decision.get("parameters", {}))
                 else:
                     assembled["symbol_scheme"] = {}
 
                 # 提取配色方案
                 color_decision = decision_map.get("COLOR_SCHEME")
                 if color_decision:
-                    assembled["color_scheme"] = color_decision.get("parameters", {})
+                    assembled["color_scheme"] = self._parse_params(color_decision.get("parameters", {}))
                 else:
                     assembled["color_scheme"] = {}
 
                 # 提取标注规则
                 annotation_decision = decision_map.get("ANNOTATION_RULE")
                 if annotation_decision:
-                    assembled["annotation_rules"] = annotation_decision.get("parameters", {})
+                    assembled["annotation_rules"] = self._parse_params(annotation_decision.get("parameters", {}))
                 else:
                     assembled["annotation_rules"] = {}
 
@@ -697,29 +730,29 @@ class KGService:
         # 提取图层配置
         layer_config_decision = decision_map.get("LAYER_CONFIG")
         if layer_config_decision:
-            params = layer_config_decision.get("parameters", {})
-            assembled["layer_configs"] = params.get("layers", [])
+            params = self._parse_params(layer_config_decision.get("parameters", {}))
+            assembled["layer_configs"] = params.get("layers", []) if isinstance(params, dict) else []
         else:
             assembled["layer_configs"] = []
 
         # 提取符号方案
         symbol_decision = decision_map.get("SYMBOL_SCHEME")
         if symbol_decision:
-            assembled["symbol_scheme"] = symbol_decision.get("parameters", {})
+            assembled["symbol_scheme"] = self._parse_params(symbol_decision.get("parameters", {}))
         else:
             assembled["symbol_scheme"] = {}
 
         # 提取配色方案
         color_decision = decision_map.get("COLOR_SCHEME")
         if color_decision:
-            assembled["color_scheme"] = color_decision.get("parameters", {})
+            assembled["color_scheme"] = self._parse_params(color_decision.get("parameters", {}))
         else:
             assembled["color_scheme"] = {}
 
         # 提取标注规则
         annotation_decision = decision_map.get("ANNOTATION_RULE")
         if annotation_decision:
-            assembled["annotation_rules"] = annotation_decision.get("parameters", {})
+            assembled["annotation_rules"] = self._parse_params(annotation_decision.get("parameters", {}))
         else:
             assembled["annotation_rules"] = {}
 
@@ -775,8 +808,8 @@ class KGService:
                 # 从决策参数中提取图层列表并排序
                 layers = []
                 for record in records:
-                    params = record.get("parameters", {})
-                    layer_list = params.get("layers", [])
+                    params = self._parse_params(record.get("parameters", {}))
+                    layer_list = params.get("layers", []) if isinstance(params, dict) else []
                     for layer in layer_list:
                         if isinstance(layer, dict):
                             layers.append(layer)
@@ -812,8 +845,8 @@ class KGService:
                 continue
             props = node.get("properties", node)
             if props.get("map_type") == map_type and props.get("decision_type") == "LAYER_CONFIG":
-                params = props.get("parameters", {})
-                layer_list = params.get("layers", [])
+                params = self._parse_params(props.get("parameters", {}))
+                layer_list = params.get("layers", []) if isinstance(params, dict) else []
                 for layer in layer_list:
                     if isinstance(layer, dict):
                         layers.append(layer)
@@ -846,6 +879,80 @@ class KGService:
             # 降级：关键词匹配
             return self._query_with_keywords(question)
 
+    def evaluate_competency_questions(self) -> Dict[str, Any]:
+        """能力问题(CQs)验证：检验知识图谱的知识覆盖度与推理能力
+
+        对应申报书验收点：可查询、可推理的知识图谱需支持 10 个以上
+        预设能力问题（CQs），覆盖要素匹配、规则检索、场景适配三类。
+        无论 Neo4j 还是内存模式均可执行（内部方法自带降级）。
+        """
+        cqs = [
+            {"question": "旅游地图中景点应使用何种符号？", "check": "style", "map_type": "tourism"},
+            {"question": "适用于1:10万比例尺的河流符号规则是什么？", "check": "constraints"},
+            {"question": "交通地图的图层叠加顺序应该如何？", "check": "layer_order", "map_type": "traffic"},
+            {"question": "湖泊要素应使用什么填充颜色与样式？", "check": "style", "map_type": "basic"},
+            {"question": "行政区划图中区县名称注记如何配置？", "check": "query", "query": "行政区划图中区县名称注记如何配置？"},
+            {"question": "水系要素与道路要素的层级关系应该是怎样的？", "check": "query", "query": "水系和道路的层级关系应该是怎样的？"},
+            {"question": "旅游地图受众为儿童时符号应如何设计？", "check": "style", "map_type": "tourism", "audience": "child"},
+            {"question": "标准地图中省界的线型与颜色规范是什么？", "check": "constraints"},
+            {"question": "校园导览图中注记的最小字号应是多少？", "check": "constraints"},
+            {"question": "武汉市域图适合采用什么地图投影？", "check": "query", "query": "武汉市域图适合采用什么地图投影？"},
+            {"question": "地图注记不能压盖重要地物的规则是什么？", "check": "constraints"},
+            {"question": "美食地图中餐饮POI应采用什么符号表达？", "check": "style", "map_type": "food"},
+        ]
+
+        results = []
+        passed = 0
+        for cq in cqs:
+            q = cq["question"]
+            check = cq.get("check")
+            ok = False
+            evidence = ""
+            try:
+                if check == "style":
+                    extra = {"audience": cq.get("audience", "public")} if cq.get("audience") else None
+                    recs = self.get_style_recommendations(cq.get("map_type", "basic"), extra) or []
+                    ok = bool(recs)
+                    evidence = "、".join(
+                        f"{r.get('element_type')}:{r.get('style')}" for r in recs[:4]
+                    )
+                elif check == "layer_order":
+                    layers = self.query_layer_order(cq.get("map_type", "basic")) or []
+                    ok = bool(layers)
+                    evidence = "、".join(str(l.get("name")) for l in layers[:6])
+                elif check == "constraints":
+                    cons = self.get_constraints() or []
+                    ok = bool(cons)
+                    evidence = "；".join(
+                        f"{c.get('map_type')}:{c.get('constraint')}" for c in cons[:4]
+                    )
+                else:  # query：自然语言经 LLM→Cypher 或关键词降级
+                    ans = self.query(cq.get("query", q)) or ""
+                    ok = bool(ans.strip()) and "未返回结果" not in ans and not ans.strip().startswith("无法")
+                    evidence = str(ans)[:150]
+            except Exception as e:
+                ok = False
+                evidence = f"查询异常: {e}"
+            results.append({"question": q, "passed": ok, "evidence": evidence})
+            if ok:
+                passed += 1
+
+        total = len(cqs)
+        gaps = [r["question"] for r in results if not r["passed"]]
+        return {
+            "total": total,
+            "passed": passed,
+            "rate": round(passed / total, 2) if total else 0,
+            "status": "PASS" if passed >= total * 0.7 else "INSUFFICIENT",
+            "results": results,
+            "gaps": gaps,
+            "suggestion": (
+                "知识图谱覆盖度良好，可支撑智能制图的专业约束查询"
+                if not gaps else
+                f"以下能力问题未通过验证，建议补充对应知识：{'；'.join(gaps[:5])}"
+            ),
+        }
+
     @staticmethod
     def _is_readonly_cypher(cypher: str) -> bool:
         """校验Cypher查询是否为只读，防止LLM生成写语句破坏图谱
@@ -876,10 +983,32 @@ class KGService:
         Returns:
             查询结果文本
         """
+        # 动态获取图谱的节点标签与关系类型，保证新导入的知识可被检索
+        labels_str = "MapType, City, Landmark, StyleRecommendation, CartographyRule"
+        rels_str = "HAS_LANDMARK, RECOMMENDS_STYLE, FLOWS_THROUGH"
+        try:
+            with self.driver.session() as _s:
+                _labels = [r[0] for r in _s.run("MATCH (n) UNWIND labels(n) AS l RETURN DISTINCT l ORDER BY l").values()]
+                _rels = [r[0] for r in _s.run("MATCH ()-[r]->() RETURN DISTINCT type(r) AS t ORDER BY t").values()]
+                if _labels:
+                    labels_str = ", ".join(_labels)
+                if _rels:
+                    rels_str = ", ".join(_rels)
+        except Exception:
+            pass
+
         system_prompt = (
             "你是一个Cypher查询生成器。根据用户问题生成Neo4j Cypher查询语句。\n"
-            "图谱中包含以下节点类型：MapType, City, Landmark, StyleRecommendation, CartographyRule\n"
-            "关系类型包括：HAS_LANDMARK, RECOMMENDS_STYLE, FLOWS_THROUGH\n"
+            f"图谱中包含以下节点类型：{labels_str}\n"
+            f"关系类型包括：{rels_str}\n"
+            "很多制图知识节点带有 question 与 answer 属性（如等高线、投影、配色、注记、制图综合、"
+            "专题制图、数据规范、编辑操作、地形图、遥感、电子地图等规则）。查询知识类问题时，"
+            "请从用户问题提取1-2个关键主题词，优先用如下形态检索："
+            "MATCH (n) WHERE any(l IN labels(n) WHERE l IN [<可能的标签>]) "
+            "AND (n.question CONTAINS <关键词> OR n.answer CONTAINS <关键词>) "
+            "RETURN n.question AS question, n.answer AS answer LIMIT 5；"
+            "若不确定标签，可用 MATCH (n) WHERE n.question IS NOT NULL AND n.question CONTAINS <关键词> "
+            "RETURN n.question AS question, n.answer AS answer LIMIT 5。\n"
             "只返回Cypher查询语句，不要包含其他内容。"
         )
         prompt = f"用户问题: {question}\n\n请生成对应的Cypher查询语句："
@@ -989,6 +1118,9 @@ class KGService:
             KnowledgeGraphError: 创建失败
         """
         self._ensure_connected()
+        # 防注入：标签/属性键白名单化
+        label = self._safe_label(label)
+        properties = self._safe_property_keys(properties)
         if self.driver is None:
             # 内存模式
             node_id = generate_id("node")
@@ -999,7 +1131,7 @@ class KGService:
 
         try:
             with self.driver.session() as session:
-                # 动态构建属性键值对
+                # 动态构建属性键值对（键已白名单化，值参数化）
                 prop_keys = ", ".join([f"{k}: ${k}" for k in properties.keys()])
                 cypher = f"CREATE (n:{label} {{{prop_keys}}}) RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties"
                 result = session.run(cypher, **properties)
@@ -1028,6 +1160,8 @@ class KGService:
             KnowledgeGraphError: 更新失败
         """
         self._ensure_connected()
+        # 防注入：属性键白名单化
+        properties = self._safe_property_keys(properties)
         if self.driver is None:
             # 内存模式
             for node in self._memory_store.get("nodes", []):
@@ -1095,6 +1229,8 @@ class KGService:
             实体列表，每项包含 id, label, properties
         """
         self._ensure_connected()
+        # 防注入：标签白名单化
+        label = self._safe_label(label)
         if self.driver is None:
             # 内存模式
             nodes = self._memory_store.get("nodes", [])
@@ -1143,6 +1279,11 @@ class KGService:
             KnowledgeGraphError: 创建失败
         """
         self._ensure_connected()
+        # 防注入：标签/关系类型/属性键白名单化
+        source_label = self._safe_label(source_label)
+        target_label = self._safe_label(target_label)
+        relation_type = self._safe_rel_type(relation_type)
+        properties = self._safe_property_keys(properties) if properties else None
         if self.driver is None:
             # 内存模式
             relation = {

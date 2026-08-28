@@ -41,6 +41,7 @@ export function normalizeMapData(data: MapData): MapData {
 }
 
 export const useMapStore = defineStore('map', () => {
+  ;(window as any).__MAPSTORE_GROUP_FIX__ = true
   const currentMapData = ref<MapData | null>(null)
   const currentMapId = ref<string | null>(null)
   const currentTheme = ref('amap_normal')
@@ -67,9 +68,11 @@ export const useMapStore = defineStore('map', () => {
     const ungrouped: any[] = []
     
     sortedLayers.value.forEach((item) => {
-      if (item.group && layerGroups_meta.value[item.group]) {
-        if (!groups[item.group]) groups[item.group] = []
-        groups[item.group].push(item)
+      // 分组来源：优先 layerGroups 条目的 group，兜底从图层数据本身取（兼容旧数据/旧 store）
+      const g = item.group || item.data?.group
+      if (g && layerGroups_meta.value[g]) {
+        if (!groups[g]) groups[g] = []
+        groups[g].push(item)
       } else {
         ungrouped.push(item)
       }
@@ -118,7 +121,8 @@ export const useMapStore = defineStore('map', () => {
         layerGroups.value[layer.id] = { 
           visible: layer.visible !== false,
           data: layer,
-          order: index
+          order: index,
+          group: layer.group,
         }
         // 恢复图层分组（后端持久化的 group 字段）
         if (layer.group && !layerGroups_meta.value[layer.group]) {
@@ -169,6 +173,42 @@ export const useMapStore = defineStore('map', () => {
       visibilityPersistTimers[layerId] = setTimeout(() => {
         api.setLayerVisible(mapId, layerId, visible).catch(() => {})
       }, 200)
+    }
+  }
+
+  /** QGIS 式：整组显隐 —— 切换分组下所有图层的可见性 */
+  function toggleGroupVisible(groupId: string, visible: boolean) {
+    sortedLayers.value.forEach((item) => {
+      if (item.group === groupId) {
+        layerGroups.value[item.id].visible = visible
+      }
+    })
+    if (currentMapId.value) {
+      const mapId = currentMapId.value
+      sortedLayers.value.forEach((item) => {
+        if (item.group === groupId) {
+          const timer = visibilityPersistTimers[item.id]
+          if (timer) clearTimeout(timer)
+          visibilityPersistTimers[item.id] = setTimeout(() => {
+            api.setLayerVisible(mapId, item.id, visible).catch(() => {})
+          }, 200)
+        }
+      })
+    }
+  }
+
+  /** QGIS 式：图层级不透明度（持久化到 layer.opacity） */
+  function setLayerOpacityValue(layerId: string, opacity: number) {
+    if (layerGroups.value[layerId]) {
+      layerGroups.value[layerId].data.opacity = opacity
+    }
+    if (currentMapId.value) {
+      const mapId = currentMapId.value
+      const timer = stylePersistTimers[layerId]
+      if (timer) clearTimeout(timer)
+      stylePersistTimers[layerId] = setTimeout(() => {
+        api.patchLayer(mapId, layerId, { opacity }).catch(() => {})
+      }, 350)
     }
   }
 
@@ -311,6 +351,8 @@ export const useMapStore = defineStore('map', () => {
     setRouteData,
     clearRoute,
     toggleLayer,
+    toggleGroupVisible,
+    setLayerOpacityValue,
     moveLayerUp,
     moveLayerDown,
     moveLayerToTop,

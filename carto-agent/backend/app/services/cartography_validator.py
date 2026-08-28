@@ -362,21 +362,47 @@ class CartographyValidator:
                             )
                             out_of_range_count += 1
 
+        # ---- D/B/C：点符号形状语义 + 符号注册表一致性（国标规范） ----
+        from app.core.cartographic_profiles import LAYER_CATEGORY
+        from app.core.cartographic_standards import FEATURE_SPEC
+        no_shape = 0
+        missing_symbol = 0
+        for layer in layers:
+            style = layer.get("style", {}) or {}
+            name = layer.get("name", "") or ""
+            cat = LAYER_CATEGORY.get(name)
+            ltype = layer.get("type", "")
+            # B6：点要素应具规范形状语义（圆/三角/方/星/十字/点）
+            if ltype in ("circleMarker", "marker", "point") and not style.get("shape"):
+                no_shape += 1
+            # C7：已知要素类别应挂接规范符号（symbol_id）
+            spec = FEATURE_SPEC.get(cat) if cat else None
+            if spec and spec.get("symbol") and not layer.get("symbol_id"):
+                missing_symbol += 1
+
         # 评分逻辑
         if total_params_checked == 0:
             # 没有可检查的样式参数，视为通过（可能使用默认样式）
-            return (85, issues)
-
-        # 按参数超标比例扣分
-        violation_ratio = out_of_range_count / total_params_checked
-        if violation_ratio == 0:
-            score = 100
-        elif violation_ratio <= 0.25:
             score = 85
-        elif violation_ratio <= 0.5:
-            score = 65
         else:
-            score = max(0, int(100 - violation_ratio * 100))
+            violation_ratio = out_of_range_count / total_params_checked
+            if violation_ratio == 0:
+                score = 100
+            elif violation_ratio <= 0.25:
+                score = 85
+            elif violation_ratio <= 0.5:
+                score = 65
+            else:
+                score = max(0, int(100 - violation_ratio * 100))
+
+        # 符号/形状规范性问题并入扣分
+        if no_shape:
+            issues.append(f"{no_shape} 个点要素缺少规范形状语义（圆/三角/方/星）")
+        if missing_symbol:
+            issues.append(f"{missing_symbol} 个要素未挂接规范符号(symbol_id)")
+        symbol_issues = no_shape + missing_symbol
+        if symbol_issues:
+            score = min(score, 75)
 
         return (score, issues)
 
@@ -571,7 +597,8 @@ class CartographyValidator:
         return score, issues
 
     def _check_annotation_quality(self, map_data: Dict) -> Tuple[int, List[str]]:
-        """注记质量：地标类地图是否含注记层，字号是否规范"""
+        """注记质量：地标类地图是否含注记层，字号是否规范，
+        注记密度是否超限，行政区划图是否有面状政区注记（A2/A1）。"""
         issues: List[str] = []
         map_type = map_data.get("map_type", "")
         layers = map_data.get("layers", []) or []
@@ -579,6 +606,39 @@ class CartographyValidator:
         if map_type in ("tourism", "traffic", "administrative") and not label_layers:
             issues.append("缺少注记图层（地标/区名注记）")
             return 50, issues
+
+        # A2：注记密度上限（按比例尺折算每屏上限，超限建议裁剪 P3/P2）
+        density_ok = True
+        zoom = map_data.get("zoom")
+        if zoom is not None:
+            try:
+                from app.core.cartographic_standards import (
+                    label_density_limit, zoom_to_scale_denominator,
+                )
+                n_labels = sum(
+                    len(l.get("features") or []) + len(l.get("coordinates") or [])
+                    for l in label_layers
+                )
+                limit = label_density_limit(zoom_to_scale_denominator(zoom))
+                if n_labels > limit:
+                    issues.append(
+                        f"注记密度超标：{n_labels} 条 / 限 {limit}（建议按优先级裁剪 P3/P2）"
+                    )
+                    density_ok = False
+            except Exception:
+                pass
+
+        # A1：行政区划图应有面状政区注记（anchor=area，字列居中）
+        area_label_ok = True
+        if map_type == "administrative":
+            area_labels = [
+                l for l in label_layers
+                if (l.get("style") or {}).get("anchor") == "area"
+            ]
+            if not area_labels:
+                issues.append("行政区划图缺少面状政区注记（anchor=area，字列居中）")
+                area_label_ok = False
+
         bad_size = 0
         for l in label_layers:
             size = (l.get("style") or {}).get("fontSize")
@@ -587,7 +647,8 @@ class CartographyValidator:
         if bad_size:
             issues.append(f"{bad_size} 个注记图层字号超出规范范围(8-18px)")
             return 70, issues
-        return 100, issues
+        # 密度或面注记任一不合格 → 60；同时合格 → 100
+        return (60 if (not density_ok or not area_label_ok) else 100), issues
 
     def _check_load_density(self, map_data: Dict) -> Tuple[int, List[str]]:
         """载负量：图层数量与要素总量是否超限"""

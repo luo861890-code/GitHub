@@ -5,14 +5,17 @@
 """
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from app.core.config import settings
+from app.core.security import apply_request_policy, DEFAULT_LIMITER, LLM_LIMITER
 from app.api.chat import router as chat_router
 from app.api.maps import router as maps_router
 from app.api.knowledge import router as kg_router
@@ -43,6 +46,11 @@ async def lifespan(app: FastAPI):
     logger.info("  API文档:  http://%s:%s/docs", settings.host, settings.port)
     logger.info("  当前LLM:  %s", settings.llm_provider)
     logger.info("  调试模式:  %s", "开启" if settings.debug else "关闭")
+    if not settings.api_token:
+        logger.warning("  [安全] 未配置 API_TOKEN，API 未启用鉴权（仅建议本地/开发使用；生产请设置 API_TOKEN）")
+    else:
+        logger.info("  [安全] API 鉴权已启用（Bearer Token / X-API-Key）")
+    logger.info("  [安全] 全局限流已启用（%s/分钟/IP，LLM 路径 %s/分钟/IP）", DEFAULT_LIMITER.limit, LLM_LIMITER.limit)
     logger.info("=" * 60)
     yield
     # ===== 关闭 =====
@@ -53,6 +61,12 @@ async def lifespan(app: FastAPI):
         get_map_service().flush()
     except Exception as e:
         logger.warning("关闭时数据落盘失败: %s", e)
+    # 关闭外部资源（Neo4j 驱动等），避免连接泄漏
+    try:
+        from app.api.deps import get_kg_service
+        get_kg_service().close()
+    except Exception as e:
+        logger.warning("关闭时 Neo4j 连接释放失败: %s", e)
     logger.info("地图制图智能体API 服务已停止")
 
 
@@ -64,14 +78,42 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 添加CORS中间件 - 允许跨域访问
+# 添加CORS中间件 - 允许跨域访问（默认仅允许本机前端来源；可通过 CORS_ORIGINS 覆盖）
+_allow_origins = (
+    [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+    if settings.cors_origins
+    else ["*"]
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allow_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 全局限流 + 鉴权中间件：对 /api 路径限流，并在配置 API_TOKEN 时校验令牌
+_HTTP_EXEMPT_PREFIXES = ("/health", "/docs", "/openapi.json", "/redoc", "/static")
+
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api") and not path.startswith(_HTTP_EXEMPT_PREFIXES):
+        # 1) 限流
+        try:
+            apply_request_policy(request)
+        except Exception as e:
+            return JSONResponse(status_code=429, content={"success": False, "message": str(e)})
+        # 2) 鉴权（仅在配置了 API_TOKEN 时生效）
+        if settings.api_token:
+            expected = settings.api_token
+            auth = request.headers.get("authorization")
+            xkey = request.headers.get("x-api-key")
+            provided = xkey or (auth[7:].strip() if auth and auth.lower().startswith("bearer ") else None)
+            if not provided or not secrets.compare_digest(provided, expected):
+                return JSONResponse(status_code=401, content={"success": False, "message": "无效的 API 令牌"})
+    return await call_next(request)
 
 # 挂载API路由
 app.include_router(chat_router)
@@ -125,7 +167,16 @@ if os.path.exists(os.path.join(FRONTEND_DIST, "index.html")):
         return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
 
     # 挂载 dist 目录到根路径（API 路由和 /app 已注册，会优先匹配）
-    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
+    # 静态资源禁用缓存，确保每次更新（如 legacy/map.js）能立即在浏览器生效
+    class _NoCacheStaticFiles(StaticFiles):
+        async def get_response(self, path, scope):
+            response = await super().get_response(path, scope)
+            if path.endswith((".js", ".css", ".html", ".map.js", ".json")):
+                response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+                response.headers["Pragma"] = "no-cache"
+            return response
+
+    app.mount("/", _NoCacheStaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
 
     logger.info("  前端页面: http://%s:%s/app", settings.host, settings.port)
 else:

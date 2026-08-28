@@ -19,15 +19,24 @@ data/maps.json.bak
 data/maps_test_backup.json
 data/sessions.json
 data/archive/
+data/maps/
 data/*.json.new
+data/test_pytest_tmp/
 backend/data/geo/*.geojson
+backend/data/geo/*.metadata.json
 backend/data/dem/
+backend/.venv/.pip-tmp/
 
 # 调试/导出产物
 output/
+outputs/
+.preview/
 .trae-html-share-packages/
 screenshot*.png
 user_screenshot.png
+
+# 前端运行产物
+frontend/vue-app/dev.pid
 
 # IDE
 .idea/

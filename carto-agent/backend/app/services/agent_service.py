@@ -18,7 +18,7 @@ import json
 import re
 from typing import List, Dict, Any, Optional
 
-from app.core.constants import CITY_BBOX, MAP_TYPE_MAP
+from app.core.constants import CITY_BBOX, MAP_TYPE_MAP, WUHAN_DISTRICTS
 from app.core.exceptions import CartoAgentError
 from app.models.agent_models import AgentStep, CartographyTask
 from app.services.task_parser import SixDimParser
@@ -183,7 +183,13 @@ class AgentService:
 
     # ==================== 核心方法：处理用户请求 ====================
 
-    def process_request(self, message: str, session_id: str = None, progress_cb=None) -> dict:
+    def process_request(
+        self,
+        message: str,
+        session_id: str = None,
+        progress_cb=None,
+        map_id: str = None,
+    ) -> dict:
         """处理用户请求 - 实现ReAct流程
 
         自动识别请求类型（制图/问答/修改），执行对应流程。
@@ -192,6 +198,7 @@ class AgentService:
         Args:
             message: 用户自然语言输入
             session_id: 会话ID（可选，用于上下文管理）
+            map_id: 当前地图ID（可选，修改请求的目标地图；缺省时取最近创建的地图）
 
         Returns:
             结果字典，包含:
@@ -241,7 +248,7 @@ class AgentService:
         elif is_modify and not is_map:
             # 明显的地图修改请求，直接进入修改流程
             logger.info(f"[AgentService] 快速路径：识别为地图修改请求，跳过RAG/GraphRAG")
-            return self._handle_modify_request(message, provider, model)
+            return self._handle_modify_request(message, provider, model, map_id=map_id)
 
         # ===== 构建多轮上下文 =====
         context_messages = self._build_context(session_id)
@@ -279,7 +286,7 @@ class AgentService:
             )
         elif intent == "map_modification":
             # 地图修改请求
-            return self._handle_modify_request(message, provider, model)
+            return self._handle_modify_request(message, provider, model, map_id=map_id)
         else:
             # 问答请求
             return self._handle_question(
@@ -501,15 +508,110 @@ class AgentService:
             if action == "update_style":
                 layer_ids = _resolve_ids()
                 style = params.get("style", {})
+                # 横向排布规范化：要求 textDirection=horizontal 的注记修改时强制补正体
+                # （取消斜体）+旋转归零，确保"湖泊注记横向排布"真正去掉斜体、横平竖直
+                if style.get("textDirection") == "horizontal":
+                    style.setdefault("font", "normal")
+                    style["italic"] = False
+                    style["rotation"] = 0
+                if not layer_ids:
+                    # 兜底1：按区县名做要素级样式修改（"洪山区图层换成粉色"→ 只改洪山区要素）
+                    district = self._extract_district_name(target if params.get("target") else instruction)
+                    if district:
+                        district_layer = self._find_district_layer(map_data)
+                        if district_layer:
+                            try:
+                                updated = self.map_service.update_feature_style(
+                                    map_id, district_layer["id"], district, style
+                                )
+                                return self._modify_success_response(
+                                    updated,
+                                    f"已将「{district}」的样式更新为: {style}（仅该区县要素，其余区县不变）{_note}"
+                                )
+                            except CartoAgentError as e:
+                                return {"success": False,
+                                        "response": f"按区县改样式失败：{e}（指令：{instruction}）",
+                                        "map_data": map_data, "action": action}
+                    # 兜底2：图层名包含匹配（target 是具体图层名时按名称包含匹配）
+                    target = str(params.get("target") or "")
+                    if target:
+                        matched = [l for l in map_data.get("layers", [])
+                                   if target in l.get("name", "")]
+                        if matched:
+                            layer_ids = [l["id"] for l in matched]
                 if not layer_ids:
                     return {"success": False,
                             "response": f"未找到可修改的目标图层（指令：{instruction}）",
                             "map_data": map_data, "action": action}
-                updated = map_data
+                # 按区县名优先做要素级修改：指令含区县名且目标是"区县政区"图层时，
+                # 只改该区县要素（"洪山区图层换成粉色"→ 仅洪山区变粉，其余区县不变）
+                district = self._extract_district_name(instruction)
+                if district:
+                    district_layer = self._find_district_layer(map_data)
+                    if district_layer and any(lid == district_layer["id"] for lid in layer_ids):
+                        try:
+                            updated = self.map_service.update_feature_style(
+                                map_id, district_layer["id"], district, style
+                            )
+                            return self._modify_success_response(
+                                updated,
+                                f"已将「{district}」的样式更新为: {style}（仅该区县要素，其余区县不变）{_note}"
+                            )
+                        except CartoAgentError as e:
+                            return {"success": False,
+                                    "response": f"按区县改样式失败：{e}（指令：{instruction}）",
+                                    "map_data": map_data, "action": action}
+                # 过滤"当前已是目标状态"的键：湖泊注记默认即为横向(rotation=0)，
+                # 直接报告"已更新"会造成"指令没反应/地图没变"的误导
+                def _visual_equivalence(_cur_style, _layer, _k, _v):
+                    """判断样式变更是否在视觉上不产生任何差异。
+                    textDirection=horizontal 且图层所有注记旋转角归一化后均为 0 → 视觉上已是横向。
+                    但存在斜体注记时（font=italic）并非"横向正体"，必须执行修改去掉斜体。"""
+                    if _k == "textDirection" and _v == "horizontal":
+                        # 存在斜体注记 → 尚未达成"横向正体"，需执行修改
+                        for _p in (_layer.get("properties") or []):
+                            if (str(_p.get("font") or "")).lower() == "italic":
+                                return False
+                        if _cur_style.get("textDirection") == "horizontal":
+                            return True
+                        base_rot = _cur_style.get("rotation") or 0
+                        for _p in (_layer.get("properties") or []):
+                            r = _p.get("rotation") if _p.get("rotation") is not None else base_rot
+                            norm = ((float(r) + 90) % 180 + 180) % 180 - 90
+                            if abs(norm) > 0.01:
+                                return False
+                        return True
+                    if _k in ("font", "italic"):
+                        # 图层级字体虽可能已正常，但属性级若仍有斜体残留则必须修改
+                        for _p in (_layer.get("properties") or []):
+                            if (str(_p.get("font") or "")).lower() == "italic":
+                                return False
+                    return _cur_style.get(_k) == _v
+
+                effective = []
                 for layer_id in layer_ids:
-                    updated = self.map_service.update_layer_style(map_id, layer_id, style)
+                    cur = {}
+                    layer_obj = None
+                    for _l in (map_data.get("layers") or []):
+                        if _l.get("id") == layer_id:
+                            cur = _l.get("style") or {}
+                            layer_obj = _l
+                            break
+                    diff = {k: v for k, v in style.items()
+                            if not _visual_equivalence(cur, layer_obj or {}, k, v)}
+                    if diff:
+                        effective.append((layer_id, diff))
+                if not effective:
+                    names = [l.get("name") or l.get("id") for l in (map_data.get("layers") or [])
+                             if l.get("id") in layer_ids]
+                    return {"success": True,
+                            "response": f"{'、'.join(names) or '目标图层'}已经是该样式: {style}，无需修改。{_note}",
+                            "map_data": map_data, "action": action}
+                updated = map_data
+                for layer_id, diff in effective:
+                    updated = self.map_service.update_layer_style(map_id, layer_id, diff)
                 return self._modify_success_response(
-                    updated, f"已更新 {len(layer_ids)} 个图层样式: {style}{_note}"
+                    updated, f"已更新 {len(effective)} 个图层样式: {style}{_note}"
                 )
 
             elif action == "set_visible":
@@ -1320,44 +1422,166 @@ class AgentService:
 
     # ==================== 内部流程：修改请求处理 ====================
 
-    def _handle_modify_request(self, message: str, provider: str, model: str) -> dict:
+    def _handle_modify_request(
+        self,
+        message: str,
+        provider: str,
+        model: str,
+        map_id: str = None,
+    ) -> dict:
         """处理修改请求（当未提供map_id时的入口）
 
         Args:
             message: 用户输入
             provider: LLM提供者名称
             model: 模型名称
+            map_id: 目标地图ID（优先使用前端传入的当前地图；缺省取最近创建的地图）
 
         Returns:
             结果字典
         """
-        # 尝试找到最近创建的地图
-        maps = self.map_service.list_maps() if self.map_service else []
-        if not maps:
-            return {
-                "success": False,
-                "response": "当前没有可修改的地图，请先生成一张地图。",
-                "map_data": None,
-                "steps": [],
-                "thinking": "用户请求修改地图，但没有已存在的地图。",
-                "provider": provider,
-                "model": model,
-            }
-
-        # 取最近一张地图
-        # dict 保持插入顺序，最后一张才是最近创建的地图
-        latest_map = maps[-1]
-        map_id = latest_map["map_id"]
+        target_map = None
+        if map_id:
+            # 前端传入了当前地图：修改用户正在查看的地图
+            target_map = self.map_service.get_map(map_id) if self.map_service else None
+            if target_map is None:
+                return {
+                    "success": False,
+                    "response": f"目标地图不存在或已归档: {map_id}，请刷新后重试。",
+                    "map_data": None,
+                    "steps": [],
+                    "thinking": "用户请求修改的地图不存在。",
+                    "provider": provider,
+                    "model": model,
+                }
+            _map_ref = {"map_id": map_id, "name": target_map.get("name") or "当前地图"}
+        else:
+            # 缺省：取最近创建的地图（dict 保持插入顺序，最后一张为最近创建）
+            maps = self.map_service.list_maps() if self.map_service else []
+            if not maps:
+                return {
+                    "success": False,
+                    "response": "当前没有可修改的地图，请先生成一张地图。",
+                    "map_data": None,
+                    "steps": [],
+                    "thinking": "用户请求修改地图，但没有已存在的地图。",
+                    "provider": provider,
+                    "model": model,
+                }
+            _map_ref = maps[-1]
+            map_id = _map_ref["map_id"]
 
         # 调用modify_map执行修改
         result = self.modify_map(message, map_id)
         result["provider"] = provider
         result["model"] = model
-        result["steps"] = []
-        result["thinking"] = f"对地图「{latest_map['name']}」执行修改: {message}"
+
+        # ===== ReAct 步骤构建：让用户看到"思考-行动-观察"全过程（此前被清空导致"智能体没反应"）=====
+        map_name = _map_ref.get('name', '当前地图')
+        action = result.get("action") or "unknown"
+        ok = bool(result.get("success"))
+
+        # 步骤1：理解指令（Thought）
+        s1 = self._create_step("理解指令", "解析用户的修改需求")
+        s1.status = "success"
+        s1.thinking = f"用户要求修改地图「{map_name}」：{message}"
+        steps = [s1]
+
+        # 步骤2：解析修改意图（Thought→Action）
+        s2 = self._create_step("解析修改意图", "LLM解析修改操作与目标图层")
+        s2.status = "success"
+        action_names = {
+            "update_style": "更新图层样式", "set_visible": "设置图层显隐",
+            "rename_layer": "重命名图层", "add_layer": "添加图层",
+            "remove_layer": "移除图层", "update_view": "更新地图视图",
+            "update_theme": "切换底图主题", "unknown": "未识别操作",
+            "success": "执行修改", "error": "执行修改（出错）",
+        }
+        s2.thinking = f"识别操作：{action_names.get(action, action)}"
+        s2.result = result.get("response", "")[:120]
+        steps.append(s2)
+
+        # 步骤3：执行修改（Action）
+        s3 = self._create_step(
+            "执行修改",
+            "调用地图服务执行修改并持久化"
+        )
+        if ok:
+            s3.status = "success"
+            s3.result = result.get("response", "修改已应用")
+        else:
+            s3.status = "failed"
+            s3.result = result.get("response", "修改失败")
+        steps.append(s3)
+
+        # 步骤4：观察结果（Observation）——修改成功后附质量校验反馈
+        if ok and result.get("map_data"):
+            try:
+                issues = self._validate_map_quality(
+                    result.get("map_data"), result.get("map_data", {}).get("region") or "武汉"
+                )
+            except Exception:
+                issues = []
+            if issues:
+                s4 = self._create_step("质量校验", "对修改后的地图做规范性检查")
+                s4.status = "success"
+                s4.thinking = "发现以下需要关注的点：" + "；".join(issues[:5])
+                steps.append(s4)
+            else:
+                s4 = self._create_step("质量校验", "对修改后的地图做规范性检查")
+                s4.status = "success"
+                s4.thinking = "修改后地图通过质量校验，无规范性异常"
+                steps.append(s4)
+
+        # 思考链汇总
+        if ok:
+            thinking = (
+                f"用户要求修改地图「{map_name}」→ 解析意图识别为「{action_names.get(action, action)}」"
+                f"→ 调用地图服务执行修改 → 修改完成并已持久化。{result.get('response', '')}"
+            )
+        else:
+            thinking = (
+                f"用户要求修改地图「{map_name}」→ 解析意图识别为「{action_names.get(action, action)}」"
+                f"→ 执行修改未成功：{result.get('response', '')}"
+            )
+
+        # 把 AgentStep 转为 dict，确保 SSE/会话存储均可 JSON 序列化
+        result["steps"] = [
+            s.model_dump() if hasattr(s, "model_dump") else
+            (s.dict() if hasattr(s, "dict") else s)
+            for s in steps
+        ]
+        result["thinking"] = thinking
         return result
 
     # ==================== 修改意图解析 ====================
+
+    @staticmethod
+    def _extract_district_name(text: str) -> Optional[str]:
+        """从文本中提取武汉区县名（WUHAN_DISTRICTS 已知列表，取最长匹配）。
+
+        用于"洪山区图层换成粉色"等按区县改样式的指令。
+        """
+        if not text:
+            return None
+        best = None
+        for d in WUHAN_DISTRICTS:
+            name = d.get("name", "")
+            if name and name in text:
+                if best is None or len(name) > len(best):
+                    best = name
+        return best
+
+    @staticmethod
+    def _find_district_layer(map_data: dict) -> Optional[dict]:
+        """在地图中定位"区县政区"图层（features 型 polygon，行政区划分组）。"""
+        for layer in (map_data.get("layers") or []):
+            lname = layer.get("name", "")
+            if layer.get("type") == "polygon" and layer.get("features") and (
+                "区县" in lname or "政区" in lname or lname == "行政区划"
+            ):
+                return layer
+        return None
 
     def _parse_modification_with_llm(self, instruction: str, map_data: dict) -> Optional[dict]:
         """使用LLM解析修改意图
@@ -1376,7 +1600,8 @@ class AgentService:
         if not self.llm_service:
             return None
 
-        # 构建紧凑图层目录（QGIS 式：名称/类型/颜色/线宽/填充/虚线）
+        # 构建紧凑图层目录（QGIS 式：名称/类型/分组/颜色/线宽/填充/虚线）
+        from app.core.layer_catalog import layer_group as _catalog_group
         layers_info = []
         for layer in map_data.get("layers", []):
             st = layer.get("style", {}) or {}
@@ -1384,18 +1609,25 @@ class AgentService:
                 "id": layer["id"],
                 "name": layer.get("name", ""),
                 "type": layer.get("type", ""),
+                "group": layer.get("group") or _catalog_group(layer),
                 "color": st.get("color", ""),
                 "fillColor": st.get("fillColor", ""),
                 "weight": st.get("weight", ""),
                 "opacity": st.get("opacity", ""),
                 "dashArray": st.get("dashArray", ""),
+                "textDirection": st.get("textDirection", ""),
             })
 
         system_prompt = (
             "你是一个专业的地图制图助手（类似QGIS/ArcGIS的智能图层管理器）。"
             "根据用户的自然语言修改指令，推理出要修改的图层和具体参数，"
             "输出JSON格式的修改操作。支持的操作类型：\n"
-            "1. update_style: 修改图层样式，params包含 target(目标图层类别词，如\"道路\"/\"湖泊\"/\"水系\")、style(color/weight/opacity/fillOpacity/dashArray，颜色用十六进制)\n"
+            "1. update_style: 修改图层样式，params包含 target(目标图层名或类别词；注记图层如\"湖泊注记\"/\"河流注记\"/\"道路注记\"/\"山峰注记\"/\"区县名称标注\"，要素图层如\"道路\"/\"湖泊\"/\"水系\")、style(...)。\n"
+            "   style 通用键：color(hex)、weight(线宽)、opacity(0-1)、fillOpacity、dashArray；\n"
+            "   style 注记专用键（对 textLabel/label 注记图层生效）：fontSize(基准字号)、\n"
+            "   fontSizeScale(true/false 是否随比例尺缩放字号)、textDirection('horizontal' 水平横排 / 'vertical' 竖排)、\n"
+            "   orientation('up' 字头朝上)、rotation(旋转角度)、font、weight、halo(白描边)、placement('along' 沿要素)\n"
+            "   用户说注记/标注要\"横排/横向/水平\"→textDirection='horizontal'；\"竖排/竖向/垂直\"→textDirection='vertical'。\n"
             "2. set_visible: 显示/隐藏图层，params包含 target 和 visible(true/false)\n"
             "3. rename_layer: 重命名图层，params包含 target 和 name\n"
             "4. remove_layer: 删除图层，params包含 target\n"
@@ -1410,7 +1642,7 @@ class AgentService:
         )
 
         prompt = (
-            f"当前地图图层目录（id/名称/类型/颜色/线宽/填充/虚线）:\n"
+            f"当前地图图层目录（id/名称/类型/分组/颜色/线宽/填充/虚线/文字方向）:\n"
             f"{json.dumps(layers_info, ensure_ascii=False)}\n\n"
             f"用户修改指令: {instruction}\n\n"
             f"请推理并输出修改操作JSON: "
@@ -1512,8 +1744,17 @@ class AgentService:
             # 匹配目标图层
             target_layers = self._find_layers_by_keyword(instruction, layers)
             if not target_layers:
-                # 默认修改第一个图层
-                target_layers = layers[:1] if layers else []
+                # 指令中没有指定任何图层关键词时才默认改第一个图层；
+                # 明确提到注记/湖泊/道路等类别却未命中 → 不猜测（避免误改）
+                _has_layer_hint = any(
+                    k in instruction for k in (
+                        "图层", "注记", "标注", "湖泊", "河流", "水系", "水库", "道路",
+                        "铁路", "轨道", "山峰", "地标", "区县", "市级", "景点", "建筑",
+                        "绿地", "边界", "等高线", "居民地", "铁路",
+                    )
+                )
+                if not _has_layer_hint:
+                    target_layers = layers[:1] if layers else []
 
             if target_layers:
                 style = {}
@@ -1544,6 +1785,15 @@ class AgentService:
                 # 虚线
                 if "虚线" in instruction or "dash" in instruction_lower:
                     style["dashArray"] = "6,4"
+                # 注记文字方向：横向/横排/水平 → horizontal（并强制正体不斜、旋转归零）；
+                # 竖排/竖向/垂直 → vertical
+                if any(k in instruction for k in ("横向", "横排", "水平", "横着", "横写")):
+                    style["textDirection"] = "horizontal"
+                    style["font"] = "normal"   # 横向排布=正体横排（取消斜体）
+                    style["italic"] = False
+                    style["rotation"] = 0
+                elif any(k in instruction for k in ("竖排", "竖向", "垂直", "竖着", "竖写")):
+                    style["textDirection"] = "vertical"
 
                 if style:
                     return {
@@ -1705,6 +1955,10 @@ class AgentService:
         bbox = CITY_BBOX.get(city)
         if bbox and map_type != "administrative":
             for layer in layers:
+                name = layer.get("name", "")
+                # 周边边界/省界/邻近地市类图层故意覆盖武汉周边，超出市区属正常表达，跳过越界检查
+                if any(k in name for k in ("周边", "省界", "边界", "邻区", "邻近", "外围")):
+                    continue
                 coords = layer.get("coordinates", [])
                 for coord in coords:
                     if isinstance(coord, list) and len(coord) == 2 and isinstance(coord[0], (int, float)):
@@ -1788,11 +2042,37 @@ class AgentService:
         return matched[0] if matched else None
 
     def _find_layers_by_keyword(self, text: str, layers: list) -> list:
-        """根据关键词匹配全部目标图层（如"道路"匹配所有 道路-* 图层）。"""
+        """根据关键词匹配全部目标图层（QGIS 式图层解析）。
+
+        注记类意图优先解析：用户提到"湖泊注记/湖注记/河流名/道路注记"等时，
+        先按规范注记图层名精确命中（湖泊注记→湖泊注记图层）；
+        若地图中该注记图层不存在（旧数据仍是合并的"水系注记"），自动回退到最接近的注记图层，
+        避免"找不到湖泊注记图层，只能改水系注记"的尴尬。
+        """
+        from app.core.layer_catalog import resolve_annotation_target
+        # 0) 注记类意图解析（QGIS 图层解析第一优先）
+        ann_target = resolve_annotation_target(text)
+        if ann_target:
+            exact = [l for l in layers if (l.get("name") or "") == ann_target]
+            if exact:
+                return exact
+            # 拆分后的注记图层不存在：回退到兼容的合并注记图层
+            if ann_target in ("湖泊注记", "河流注记", "水库注记"):
+                fallback = [l for l in layers if (l.get("name") or "") == "水系注记"]
+                if fallback:
+                    return fallback
+            hits = [l for l in layers if ann_target in (l.get("name") or "")]
+            if hits:
+                return hits
+            # 明确指定了注记类别但地图上缺失：不扩大到无关注记图层，
+            # 返回空让上层决定（避免"改道路注记"误改到"河流注记"）
+            return []
+
         name_keywords = {
             "道路": ["道路", "road", "highway"],
             "铁路": ["铁路", "railway", "rail"],
-            "水系": ["水系", "水", "water", "river", "河流", "河道", "江"],
+            "水系": ["水系", "水", "water"],
+            "河流": ["河流", "河道", "river", "江"],
             "湖泊": ["湖泊", "湖", "lake"],
             "景点": ["景点", "旅游", "tourism", "attraction"],
             "建筑": ["建筑", "building"],

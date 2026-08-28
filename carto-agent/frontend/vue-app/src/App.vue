@@ -16,6 +16,7 @@
           <MapEditPanel v-if="appStore.showEditPanel" />
           <AgentTracePanel v-if="appStore.showTracePanel" />
           <QaReportPanel v-if="appStore.showQaPanel" />
+          <EvalPanel v-if="appStore.showEvalPanel" />
         </div>
         <ChatPanel v-show="appStore.showChatPanel" />
         <KGPanel v-show="appStore.showKGPanel" />
@@ -75,6 +76,7 @@ const MapEditPanel = lazyLoad(() => import('@/components/MapEditPanel.vue'))
 const RoutePanel = lazyLoad(() => import('@/components/RoutePanel.vue'))
 const AgentTracePanel = lazyLoad(() => import('@/components/AgentTracePanel.vue'))
 const QaReportPanel = lazyLoad(() => import('@/components/QaReportPanel.vue'))
+const EvalPanel = lazyLoad(() => import('@/components/EvalPanel.vue'))
 import { useAppStore } from '@/stores/appStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useMapStore } from '@/stores/mapStore'

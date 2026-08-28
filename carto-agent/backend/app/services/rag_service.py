@@ -83,14 +83,195 @@ class RAGService:
         },
     ]
 
+    # 制图领域同义词/概念扩展词典（语义检索用）
+    # key 与 value 互为语义等价，检索时对查询做同义词扩展后计算特征向量
+    _SYNONYM_MAP = {
+        "湖泊": ["湖", "水系", "水域", "水面", "湖面", "lake", "water"],
+        "河流": ["河", "江", "水系", "水道", "river"],
+        "水系": ["湖泊", "河流", "水域", "水体", "water"],
+        "注记": ["标注", "文字", "标签", "字体", "label", "annotation"],
+        "标注": ["注记", "文字", "标签", "label"],
+        "颜色": ["配色", "色彩", "色调", "色", "color", "colour"],
+        "配色": ["颜色", "色彩", "色", "color"],
+        "道路": ["公路", "路网", "交通", "街道", "road", "highway"],
+        "交通": ["道路", "公路", "路网", "交通图", "traffic"],
+        "图层": ["图层管理", "图层列表", "layer"],
+        "符号": ["符号化", "符号样式", "样式", "图标", "symbol"],
+        "样式": ["符号", "符号化", "风格", "style"],
+        "字体": ["注记", "文字", "标注", "font"],
+        "比例尺": ["缩放", "缩放级别", "scale", "zoom"],
+        "缩放": ["比例尺", "zoom", "scale"],
+        "投影": ["投影方式", "地图投影", "projection"],
+        "点": ["POI", "点位", "兴趣点"],
+        "线": ["线状", "线要素", "polyline", "line"],
+        "面": ["面状", "多边形", "面要素", "polygon"],
+        "图例": ["图例配置", "legend"],
+        "底图": ["底图主题", "主题", "background", "basemap"],
+        "主题": ["底图", "风格", "theme"],
+        "导出": ["shp", "shapefile", "数据导出", "export"],
+        "属性": ["属性表", "字段", "attribute", "dbf"],
+        "要素": ["地物", "对象", "feature"],
+        "选中": ["选择", "高亮", "select", "highlight"],
+        "轮廓": ["边界", "轮廓线", "border", "outline"],
+        "透明度": ["透明", "opacity", "alpha"],
+        "虚线": ["dash", "dasharray", "虚线样式"],
+        "填充": ["fill", "填充色"],
+        "线宽": ["粗细", "宽度", "weight"],
+        "地图类型": ["地图种类", "制图类型", "map type"],
+    }
+
     def __init__(self):
         """初始化RAG服务，加载知识库"""
         self.knowledge_base: List[Dict[str, Any]] = []
         # 预计算的文档 bigrams 缓存，避免每次检索重复计算
         self._doc_bigrams: List[set] = []
+        # 预计算的文档特征向量（字符 n-gram TF，语义检索用）
+        self._doc_vectors: List[Dict[str, float]] = []
         self._load_knowledge_base()
         self._precompute_bigrams()
+        self._precompute_vectors()
         logger.info(f"[RAGService] 初始化完成，知识库共{len(self.knowledge_base)}条")
+
+    def _precompute_vectors(self):
+        """预计算所有知识条目的字符 n-gram TF 特征向量（语义检索用）"""
+        self._doc_vectors = []
+        for entry in self.knowledge_base:
+            text = "".join([
+                entry.get("title", ""), entry.get("content", ""),
+                " ".join(entry.get("keywords", [])),
+            ])
+            self._doc_vectors.append(self._build_vector(text))
+
+    @staticmethod
+    def _build_vector(text: str) -> Dict[str, float]:
+        """构建字符 1/2/3-gram TF 特征向量（归一化）
+
+        中文文本无需分词，字符 n-gram 可同时捕捉单字与常见词组的
+        分布特征，用作轻量语义近似（零外部依赖）。
+        """
+        if not text:
+            return {}
+        lowered = text.lower().replace(" ", "")
+        vec: Dict[str, float] = {}
+        total = 0.0
+        for n in (1, 2, 3):
+            for i in range(len(lowered) - n + 1):
+                gram = lowered[i:i + n]
+                vec[gram] = vec.get(gram, 0.0) + 1.0
+                total += 1.0
+        # 归一化（除以总频次），避免长文档天然高分
+        if total > 0:
+            for k in vec:
+                vec[k] /= total
+        return vec
+
+    @staticmethod
+    def _cosine(a: Dict[str, float], b: Dict[str, float]) -> float:
+        """计算两个特征向量的余弦相似度"""
+        if not a or not b:
+            return 0.0
+        common = set(a) & set(b)
+        if not common:
+            return 0.0
+        dot = sum(a[k] * b[k] for k in common)
+        norm_a = sum(v * v for v in a.values()) ** 0.5
+        norm_b = sum(v * v for v in b.values()) ** 0.5
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot / (norm_a * norm_b)
+
+    def _expand_query(self, query: str) -> str:
+        """同义词扩展：把查询中包含的制图术语扩展到语义等价的表达"""
+        expanded = query
+        for key, values in self._SYNONYM_MAP.items():
+            if key in query:
+                expanded += " " + " ".join(values)
+            for v in values:
+                if v in query:
+                    expanded += " " + key
+        return expanded
+
+    def semantic_search(self, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
+        """语义检索：同义词扩展 + 字符 n-gram 特征向量余弦相似度
+
+        相比关键词匹配，能识别语义等价的表达（如「湖泊」↔「湖」↔「水系」），
+        对应申报书"向量库语义检索"的轻量本地实现。
+
+        Returns:
+            按相似度排序的条目列表，每项含 title, content, score, match_type
+        """
+        if not self.knowledge_base:
+            return []
+        expanded = self._expand_query(query)
+        qvec = self._build_vector(expanded)
+        results = []
+        for idx, entry in enumerate(self.knowledge_base):
+            dvec = self._doc_vectors[idx] if idx < len(self._doc_vectors) else {}
+            sim = self._cosine(qvec, dvec)
+            if sim > 0.02:  # 低阈值过滤
+                results.append({
+                    "title": entry.get("title", ""),
+                    "content": entry.get("content", ""),
+                    "score": round(sim, 4),
+                    "match_type": "semantic",
+                })
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:top_k]
+
+    def search(self, query: str, top_k: int = 3, hybrid: bool = True) -> List[Dict[str, Any]]:
+        """混合检索：关键词 + 2-gram + 语义向量
+
+        Args:
+            query: 查询文本
+            top_k: 返回的最大条目数
+            hybrid: True=关键词与语义分数加权融合；False=仅关键词匹配（旧行为）
+
+        Returns:
+            匹配的知识条目列表，按相关度排序，每项含 title, content, score, match_type, reason
+        """
+        if not self.knowledge_base:
+            return []
+
+        # 语义分数（同义词扩展 + 特征向量余弦）
+        semantic_scores: Dict[int, float] = {}
+        if hybrid:
+            expanded = self._expand_query(query)
+            qvec = self._build_vector(expanded)
+            for idx in range(len(self.knowledge_base)):
+                dvec = self._doc_vectors[idx] if idx < len(self._doc_vectors) else {}
+                semantic_scores[idx] = self._cosine(qvec, dvec)
+
+        # 查询 bigrams 只需计算一次
+        query_lower = query.lower().replace(" ", "")
+        if len(query_lower) < 2:
+            query_bigrams = {query_lower} if query_lower else set()
+        else:
+            query_bigrams = {query_lower[i:i+2] for i in range(len(query_lower) - 1)}
+
+        results = []
+        for idx, entry in enumerate(self.knowledge_base):
+            kw_score = self._calculate_score(query, query_lower, query_bigrams, entry, idx)
+            sim_score = semantic_scores.get(idx, 0.0)
+            if hybrid:
+                # 关键词(0.5) + 语义向量(0.5) 融合
+                score = kw_score * 0.5 + sim_score * 0.5
+                matched_kws = entry.get("keywords", [])
+                reason = "语义相似" if sim_score > 0.03 else "关键词匹配"
+            else:
+                score = kw_score
+                reason = "关键词匹配"
+            if score > 0:
+                results.append({
+                    "title": entry.get("title", ""),
+                    "content": entry.get("content", ""),
+                    "score": round(score, 4),
+                    "match_type": "hybrid" if hybrid else "keyword",
+                    "reason": reason,
+                })
+
+        # 按相关度排序，取前top_k条
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:top_k]
 
     def _precompute_bigrams(self):
         """预计算所有知识条目的 2-gram 集合，缓存到 _doc_bigrams"""
@@ -104,6 +285,24 @@ class RAGService:
             else:
                 bigrams = {doc_text[i:i+2] for i in range(len(doc_text) - 1)}
             self._doc_bigrams.append(bigrams)
+
+    @staticmethod
+    def _normalize_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+        """统一知识库条目结构：兼容 {question,answer} 与 {title,content} 两种形态
+
+        外部知识库文件（data/kg/cartography_kb.json）使用
+        {id, category, question, answer, keywords} 结构；内置默认库使用
+        {title, content, keywords}。归一化后内部一律使用 title/content 字段，
+        否则 question/answer 正文永远不会进入检索，只靠 keywords 匹配。
+        """
+        if "question" in entry and "answer" in entry:
+            return {
+                "title": entry.get("question", ""),
+                "content": entry.get("answer", ""),
+                "keywords": entry.get("keywords", []),
+                "category": entry.get("category", ""),
+            }
+        return entry
 
     def _load_knowledge_base(self):
         """加载知识库文件
@@ -121,8 +320,8 @@ class RAGService:
                     content = f.read()
                 data = safe_json_loads(content, [])
                 if isinstance(data, list) and len(data) > 0:
-                    self.knowledge_base = data
-                    logger.info(f"[RAGService] 从 {kb_path} 加载知识库成功")
+                    self.knowledge_base = [self._normalize_entry(e) for e in data]
+                    logger.info(f"[RAGService] 从 {kb_path} 加载知识库成功（{len(self.knowledge_base)}条，已归一化字段）")
                     return
                 else:
                     logger.info(f"[RAGService] 知识库文件格式无效，使用默认知识库")
@@ -133,40 +332,6 @@ class RAGService:
 
         # 使用内置默认知识库
         self.knowledge_base = list(self._DEFAULT_KB)
-
-    def search(self, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
-        """基于关键词匹配检索相关知识条目
-
-        Args:
-            query: 查询文本
-            top_k: 返回的最大条目数
-
-        Returns:
-            匹配的知识条目列表，按相关度排序，每项包含 title, content, score
-        """
-        if not self.knowledge_base:
-            return []
-
-        # 查询 bigrams 只需计算一次
-        query_lower = query.lower().replace(" ", "")
-        if len(query_lower) < 2:
-            query_bigrams = {query_lower} if query_lower else set()
-        else:
-            query_bigrams = {query_lower[i:i+2] for i in range(len(query_lower) - 1)}
-
-        results = []
-        for idx, entry in enumerate(self.knowledge_base):
-            score = self._calculate_score(query, query_lower, query_bigrams, entry, idx)
-            if score > 0:
-                results.append({
-                    "title": entry.get("title", ""),
-                    "content": entry.get("content", ""),
-                    "score": score,
-                })
-
-        # 按相关度排序，取前top_k条
-        results.sort(key=lambda x: x["score"], reverse=True)
-        return results[:top_k]
 
     def _calculate_score(
         self,

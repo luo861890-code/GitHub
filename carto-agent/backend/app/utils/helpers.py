@@ -14,8 +14,8 @@ _thread_pool = ThreadPoolExecutor(max_workers=4)
 
 
 async def run_in_thread(func: Callable, *args, **kwargs) -> Any:
-    """在线程池中运行同步函数（Python 3.7兼容，替代asyncio.to_thread）"""
-    loop = asyncio.get_event_loop()
+    """在线程池中运行同步函数（避免阻塞事件循环）"""
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(_thread_pool, lambda: func(*args, **kwargs))
 
 # 全局日志工厂：各服务模块通过 get_logger(__name__) 获取独立 logger

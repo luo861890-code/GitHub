@@ -109,6 +109,9 @@ class OSMService:
                 code = (r.stdout or "").strip()
                 if code and code != "000":
                     ok = True
+                    # 探测可达的服务器立即标记为健康，抓取时优先使用
+                    self._server_health[server] = now
+                    self._server_failures[server] = 0
                     break
             except Exception:
                 continue
@@ -163,7 +166,11 @@ class OSMService:
             if not query_part:
                 logger.info(f"[OSMService] 未知要素类型: {typ}，已跳过")
                 continue
-            cells = self._split_bbox(bbox, 2, 2) if typ in SPLIT_TYPES else [bbox]
+            cells = (
+                self._split_bbox(bbox, 5, 5) if typ in ("highway_major", "highway")  # 道路体量大，细分网格防超时
+                else self._split_bbox(bbox, 2, 2) if typ in SPLIT_TYPES
+                else [bbox]
+            )
             for cell in cells:
                 sub_queries = []
                 for sub_query in query_part.split(";"):
@@ -182,12 +189,13 @@ class OSMService:
             return {}
 
         # 总抓取时限（秒）：超时后停止等待，用已获取部分 + 本地数据兜底
-        self._fetch_deadline = time.time() + 300
+        self._fetch_deadline = time.time() + 600
         # 并行请求各类型（并发 2-4；子格网拆分后单请求体积小、速度快）
         results: Dict[str, List[dict]] = {}
-        with ThreadPoolExecutor(max_workers=min(4, len(tasks))) as executor:
-            # 每类型优先尝试最近成功/失败最少的2台服务器，避免限流时逐台超时拖慢整体
-            active_servers = self._ordered_servers(servers)[:2] if len(servers) > 2 else servers
+        with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as executor:
+            # 全量服务器参与轮询（按健康度排序），避免可达镜像排位靠后从未被尝试；
+            # _fetch_type 内部会把失败服务器挪到队尾，确保各镜像都被覆盖。
+            active_servers = self._ordered_servers(servers)
             futures = {
                 executor.submit(self._fetch_type, typ, query, active_servers, max_retries): typ
                 for typ, query in tasks
@@ -324,7 +332,7 @@ class OSMService:
                     return []
                 try:
                     logger.info(f"[OSMService] 尝试从 {server} 获取[{typ}] (轮次 {attempt + 1}/{max_retries})")
-                    data = self._post_overpass(server, query, timeout=90)
+                    data = self._post_overpass(server, query, timeout=60)
                     elems = data.get("elements", [])
                     logger.info(f"[OSMService] 类型[{typ}] 成功获取 {len(elems)} 个要素")
                     self._server_health[server] = time.time()

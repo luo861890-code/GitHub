@@ -149,6 +149,13 @@ function typeLabel(type: LayerType): string {
   return labels[type] || type
 }
 
+function esc(v: unknown): string {
+  if (v === null || v === undefined) return ''
+  return String(v).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string)
+  )
+}
+
 function symbologyHtml(layer: MapLayer) {
   const st = layer.style || {}
   const t = layer.type || ''
@@ -157,18 +164,18 @@ function symbologyHtml(layer: MapLayer) {
   const w = Math.min(parseFloat(String(st.weight)) || 2, 6)
   const dash = st.dashArray || ''
   if (t === 'polyline' || t === 'line') {
-    return `<svg width="24" height="10" viewBox="0 0 24 10"><line x1="1" y1="5" x2="23" y2="5" stroke="${color}" stroke-width="${w}" stroke-dasharray="${dash}" stroke-linecap="round"/></svg>`
+    return `<svg width="24" height="10" viewBox="0 0 24 10"><line x1="1" y1="5" x2="23" y2="5" stroke="${esc(color)}" stroke-width="${w}" stroke-dasharray="${esc(dash)}" stroke-linecap="round"/></svg>`
   }
   if (t === 'polygon' || t === 'area') {
-    return `<svg width="24" height="14" viewBox="0 0 24 14"><rect x="2" y="1" width="20" height="12" rx="2" fill="${fill}" fill-opacity="${st.fillOpacity ?? 0.6}" stroke="${color}" stroke-width="${Math.min(w, 3)}"/></svg>`
+    return `<svg width="24" height="14" viewBox="0 0 24 14"><rect x="2" y="1" width="20" height="12" rx="2" fill="${esc(fill)}" fill-opacity="${esc(st.fillOpacity ?? 0.6)}" stroke="${esc(color)}" stroke-width="${Math.min(w, 3)}"/></svg>`
   }
   if (t === 'textLabel' || t === 'label') {
-    return `<span class="legend-font-symbol" style="color:${color}">文</span>`
+    return `<span class="legend-font-symbol" style="color:${esc(color)}">文</span>`
   }
   if (t === 'heatmap') {
     return `<span class="legend-heat-symbol" style="background:radial-gradient(circle, rgba(252,191,73,.9), rgba(187,55,84,.5), transparent)"></span>`
   }
-  return `<span class="legend-dot-symbol" style="background:${color}"></span>`
+  return `<span class="legend-dot-symbol" style="background:${esc(color)}"></span>`
 }
 </script>
 

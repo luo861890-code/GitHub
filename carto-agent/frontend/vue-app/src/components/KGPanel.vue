@@ -97,7 +97,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, watch, nextTick, toRaw } from 'vue'
 import * as d3 from 'd3'
 import { useAppStore } from '@/stores/appStore'
 import { useKGStore } from '@/stores/kgStore'
@@ -130,12 +130,13 @@ onUnmounted(() => {
   simulation?.stop()
 })
 
+// 仅在加载新图谱（graphData 引用变化）时重绘；
+// 浅监听避免 d3 每帧修改节点坐标触发自身重绘导致死循环
 watch(
   () => kgStore.graphData,
   () => {
     renderGraph()
-  },
-  { deep: true }
+  }
 )
 
 // 类型过滤变化时重新渲染图谱
@@ -212,17 +213,20 @@ function initD3() {
 function renderGraph() {
   if (!simulation || !linkGroup || !nodeGroup) return
   const filters = kgStore.activeFilters
+  // 使用原始（非响应式）节点/连线，避免 d3 在 force tick 中修改响应式代理触发重渲染
+  const sourceNodes = toRaw(kgStore.graphData.nodes) as KGNode[]
+  const sourceLinks = toRaw(kgStore.graphData.links) as KGLink[]
   const nodes = filters.size > 0
-    ? kgStore.graphData.nodes.filter((n) => filters.has(n.label))
-    : kgStore.graphData.nodes
+    ? sourceNodes.filter((n) => filters.has(n.label))
+    : sourceNodes
   const visibleIds = new Set(nodes.map((n) => n.id))
   const links = filters.size > 0
-    ? kgStore.graphData.links.filter((l) => {
+    ? sourceLinks.filter((l) => {
         const s = typeof l.source === 'object' ? (l.source as KGNode).id : l.source
         const t = typeof l.target === 'object' ? (l.target as KGNode).id : l.target
         return visibleIds.has(s) && visibleIds.has(t)
       })
-    : kgStore.graphData.links
+    : sourceLinks
 
   simulation.nodes(nodes)
   simulation.force<d3.ForceLink<KGNode, KGLink>>('link')?.links(links)

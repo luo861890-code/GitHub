@@ -1,5 +1,6 @@
 <template>
-  <div v-if="visible !== false" class="attribute-table-panel">
+  <!-- 面板显隐由 App.vue 的 v-if="appStore.showAttributeTable" 控制挂载，组件内不再判断 visible（Boolean prop 未传时 Vue 默认 false，会导致永不渲染） -->
+  <div class="attribute-table-panel">
     <!-- 头部 -->
     <div class="table-header">
       <div class="header-title">
@@ -123,24 +124,36 @@ const currentLayer = computed(() => {
 
 const layerName = computed(() => currentLayer.value?.data.name || '未知图层')
 
-// 从图层features中提取字段和行数据
-const fields = computed(() => {
-  if (!currentLayer.value?.data.features || currentLayer.value.data.features.length === 0) {
-    return []
+// 统一提取图层属性行：支持 features 型（每个 feature.properties）与
+// coordinates+properties 型（两个数组按索引对应）两种图层结构
+const layerProps = computed(() => {
+  const data = currentLayer.value?.data
+  if (!data) return []
+  if (data.features && data.features.length) {
+    return data.features.map((f: any) => f.properties || {})
   }
-  const firstFeature = currentLayer.value.data.features[0]
-  if (firstFeature.properties) {
-    return Object.keys(firstFeature.properties)
+  if (data.properties && data.properties.length) {
+    const props = data.properties as any[]
+    // 与几何一一对应：属性行数不超过几何要素数（防止清理孤儿属性多显示）
+    const n = Array.isArray(data.coordinates) ? data.coordinates.length : null
+    if (n != null && props.length > n) return props.slice(0, n)
+    return props
   }
   return []
 })
 
-const rows = computed(() => {
-  if (!currentLayer.value?.data.features) {
-    return []
+// 从图层属性行中提取字段和行数据
+const fields = computed(() => {
+  const props = layerProps.value
+  if (!props.length) return []
+  const first = props[0]
+  if (first && typeof first === 'object') {
+    return Object.keys(first)
   }
-  return currentLayer.value.data.features.map((feature: any) => feature.properties || {})
+  return []
 })
+
+const rows = computed(() => layerProps.value)
 
 const featureCount = computed(() => rows.value.length)
 
@@ -191,6 +204,33 @@ const totalPages = computed(() => {
   return Math.max(1, Math.ceil(filteredRows.value.length / pageSize))
 })
 
+// 过滤/排序后每行对应的【原始数据索引】（用于属性表选中 ↔ 地图要素联动）
+const filteredOrigIdx = computed(() => {
+  let result = rows.value.map((row, i) => ({ row, i }))
+  if (searchQuery.value.trim()) {
+    const query = searchQuery.value.toLowerCase()
+    result = result.filter((o) =>
+      Object.values(o.row).some((val) =>
+        String(val).toLowerCase().includes(query)
+      )
+    )
+  }
+  if (sortField.value) {
+    const field = sortField.value
+    result.sort((a, b) => {
+      const valA = a.row[field]
+      const valB = b.row[field]
+      if (typeof valA === 'number' && typeof valB === 'number') {
+        return sortAsc.value ? valA - valB : valB - valA
+      }
+      const strA = String(valA || '')
+      const strB = String(valB || '')
+      return sortAsc.value ? strA.localeCompare(strB) : strB.localeCompare(strA)
+    })
+  }
+  return result.map((o) => o.i)
+})
+
 const pagedRows = computed(() => {
   const start = (currentPage.value - 1) * pageSize
   return filteredRows.value.slice(start, start + pageSize)
@@ -227,6 +267,14 @@ function selectRow(idx: number, event: MouseEvent) {
     selectedRows.value = [idx]
   }
   emit('row-select', idx)
+  // 属性表选中 → 地图联动：派发到地图容器（MapCanvas 监听 #map-container），window 兜底
+  const origIdx = filteredOrigIdx.value[idx] ?? idx
+  try {
+    const detail = { layerId: appStore.attributeTableLayerId, idx: origIdx }
+    const el = document.getElementById('map-container')
+    if (el) el.dispatchEvent(new CustomEvent('map-attr-select', { detail }))
+    else window.dispatchEvent(new CustomEvent('map-attr-select', { detail }))
+  } catch (e) { /* ignore */ }
 }
 
 function formatValue(value: any): string {
@@ -353,24 +401,166 @@ async function fieldCalculator() {
   persistLayerData()
 }
 
+/**
+ * 安全字段计算器（替代 new Function，杜绝任意代码执行）。
+ * 仅支持：数字、字段名、四则运算 + - * / %、一元 - 与 !、括号，
+ * 以及白名单函数 min/max/abs/round/floor/ceil/sqrt/pow。
+ */
+const SAFE_FUNCS: Record<string, (a: number[]) => number> = {
+  min: (a) => Math.min(...a),
+  max: (a) => Math.max(...a),
+  abs: (a) => Math.abs(a[0] ?? 0),
+  round: (a) => Math.round(a[0] ?? 0),
+  floor: (a) => Math.floor(a[0] ?? 0),
+  ceil: (a) => Math.ceil(a[0] ?? 0),
+  sqrt: (a) => Math.sqrt(a[0] ?? 0),
+  pow: (a) => Math.pow(a[0] ?? 0, a[1] ?? 0),
+}
+
+type ASTNode =
+  | { t: 'num'; v: number }
+  | { t: 'field'; name: string }
+  | { t: 'binop'; op: string; l: ASTNode; r: ASTNode }
+  | { t: 'neg'; c: ASTNode }
+  | { t: 'not'; c: ASTNode }
+  | { t: 'call'; name: string; args: ASTNode[] }
+
 function buildCalculator(
   expr: string,
   fields: string[]
 ): ((props: Record<string, any>) => number) | null {
-  const sanitized = expr.replace(/([A-Za-z_][A-Za-z0-9_.]*)/g, (m) => {
-    if (fields.includes(m)) {
-      return `Number(props[${JSON.stringify(m)}] ?? 0)`
+  const tokens = tokenizeCalculator(expr, fields)
+  if (!tokens) return null
+  let pos = 0
+  const peek = () => tokens[pos]
+  const next = () => tokens[pos++]
+
+  function parseExpr(): ASTNode {
+    let n = parseTerm()
+    while (peek() && peek().t === 'op' && (peek().v === '+' || peek().v === '-')) {
+      const op = next().v as string
+      n = { t: 'binop', op, l: n, r: parseTerm() }
     }
-    return m
-  })
+    return n
+  }
+  function parseTerm(): ASTNode {
+    let n = parseFactor()
+    while (peek() && peek().t === 'op' && (peek().v === '*' || peek().v === '/' || peek().v === '%')) {
+      const op = next().v as string
+      n = { t: 'binop', op, l: n, r: parseFactor() }
+    }
+    return n
+  }
+  function parseFactor(): ASTNode {
+    const tk = peek()
+    if (!tk) throw new Error('表达式不完整')
+    if (tk.t === 'num') { next(); return { t: 'num', v: tk.v as number } }
+    if (tk.t === 'field') { next(); return { t: 'field', name: tk.v as string } }
+    if (tk.t === 'op' && tk.v === '-') { next(); return { t: 'neg', c: parseFactor() } }
+    if (tk.t === 'op' && tk.v === '!') { next(); return { t: 'not', c: parseFactor() } }
+    if (tk.t === 'lp') {
+      next(); const inner = parseExpr()
+      if (!peek() || peek().t !== 'rp') throw new Error('缺少右括号')
+      next(); return inner
+    }
+    if (tk.t === 'func') {
+      const name = next().v as string
+      if (!peek() || peek().t !== 'lp') throw new Error('缺少 (')
+      next()
+      const args: ASTNode[] = []
+      if (peek() && peek().t !== 'rp') {
+        args.push(parseExpr())
+        while (peek() && peek().t === 'comma') { next(); args.push(parseExpr()) }
+      }
+      if (!peek() || peek().t !== 'rp') throw new Error('缺少右括号')
+      next()
+      return { t: 'call', name, args }
+    }
+    throw new Error('包含非法符号: ' + tk.v)
+  }
+
+  function evalNode(n: ASTNode, props: Record<string, any>): number {
+    switch (n.t) {
+      case 'num': return n.v
+      case 'field': return Number(props[n.name] ?? 0) || 0
+      case 'neg': return -evalNode(n.c, props)
+      case 'not': return evalNode(n.c, props) === 0 ? 1 : 0
+      case 'binop': {
+        const l = evalNode(n.l, props)
+        const r = evalNode(n.r, props)
+        switch (n.op) {
+          case '+': return l + r
+          case '-': return l - r
+          case '*': return l * r
+          case '/': return r === 0 ? 0 : l / r
+          case '%': return r === 0 ? 0 : l % r
+          default: return 0
+        }
+      }
+      case 'call': {
+        const fn = SAFE_FUNCS[n.name]
+        if (!fn) throw new Error('不支持的函数: ' + n.name)
+        return fn(n.args.map((a) => evalNode(a, props)))
+      }
+      default: return 0
+    }
+  }
+
   try {
-    // eslint-disable-next-line no-new-func
-    return new Function('props', `"use strict"; return (${sanitized})`) as (
-      props: Record<string, any>
-    ) => number
+    const root = parseExpr()
+    if (pos !== tokens.length) throw new Error('包含多余符号')
+    return (props: Record<string, any>) => evalNode(root, props)
   } catch {
     return null
   }
+}
+
+function tokenizeCalculator(
+  expr: string,
+  fields: string[]
+): Array<{ t: string; v: string | number }> | null {
+  const out: Array<{ t: string; v: string | number }> = []
+  const s = expr.replace(/\s+/g, '')
+  if (!s) return null
+  let i = 0
+  while (i < s.length) {
+    const ch = s[i]
+    if ('+-*/%!(),'.includes(ch)) {
+      const tokenType: Record<string, string> = {
+        '+': 'op', '-': 'op', '*': 'op', '/': 'op', '%': 'op', '!': 'op',
+        '(': 'lp', ')': 'rp', ',': 'comma',
+      }
+      out.push({ t: tokenType[ch], v: ch })
+      i++
+      continue
+    }
+    if (ch >= '0' && ch <= '9' || (ch === '.' && s[i + 1] >= '0' && s[i + 1] <= '9')) {
+      let j = i
+      while (j < s.length && /[0-9.]/.test(s[j])) j++
+      const num = Number(s.slice(i, j))
+      if (Number.isNaN(num)) return null
+      out.push({ t: 'num', v: num })
+      i = j
+      continue
+    }
+    if (/[A-Za-z_]/.test(ch)) {
+      let j = i
+      while (j < s.length && /[A-Za-z0-9_.]/.test(s[j])) j++
+      const ident = s.slice(i, j)
+      // 函数：白名单函数名且后跟 (
+      if (Object.prototype.hasOwnProperty.call(SAFE_FUNCS, ident) && s[j] === '(') {
+        out.push({ t: 'func', v: ident })
+      } else if (fields.includes(ident)) {
+        out.push({ t: 'field', v: ident })
+      } else {
+        return null // 未知标识符（可能是注入企图），拒绝
+      }
+      i = j
+      continue
+    }
+    return null // 非法字符
+  }
+  return out
 }
 
 watch(

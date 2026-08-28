@@ -14,6 +14,7 @@ class RenameSessionRequest(BaseModel):
 
 class SendMessageRequest(BaseModel):
     message: str = Field(..., min_length=1)
+    map_id: Optional[str] = Field(None, description="当前地图ID（修改请求的目标地图）")
 
 
 class MessageResponse(BaseModel):

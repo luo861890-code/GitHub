@@ -179,15 +179,22 @@ const BASEMAP_TO_THEME: Record<string, string> = {
 }
 
 /** 渲染地图数据，并保证容器尺寸正确后再取景 */
-function renderMapData(data: MapData) {
+function renderMapData(data: MapData, preserveView = false) {
   if (!panel?.map) return
   clearRouteLayer()
+  // 增量重建（样式/显隐/LOD 变化）时保留用户当前的视角，避免每次重绘重置视图
+  const savedCenter = preserveView ? panel.map.getCenter() : null
+  const savedZoom = preserveView ? panel.map.getZoom() : null
   // 校准容器尺寸：Vue 挂载/流式渲染初期容器可能为 0，直接 renderMap 会导致
   // 行政图 fitBounds 取景失效（地图停在默认中心，周边地市不可见）
   panel.map.invalidateSize()
   panel.currentMapId = data.map_id || null
   panel.currentMapData = data
   panel.renderMap(data)
+  if (preserveView && savedCenter && savedZoom !== null) {
+    panel.map.setView(savedCenter, savedZoom)
+    return
+  }
   syncPanelVisibility()
   // 流式渲染会多次触发 renderMap，布局仍可能抖动；下一帧再强制取景一次，
   // 确保行政图最终视图正确（显示完整"武汉全域 + 周边地市"范围）
@@ -201,14 +208,26 @@ function renderMapData(data: MapData) {
 }
 
 /** 依据 mapStore 当前图层状态重建地图数据并重渲染（样式/显隐/排序/分析结果即时生效） */
-function rebuildFromStore() {
+function rebuildFromStore(preserveView = false) {
   if (!panel?.map) return
   const base = mapStore.currentMapData || {}
   // 直接复用 mapStore 的原始 data 引用（不做浅拷贝），保证经典 MapPanel 编辑与
   // mapStore 共享同一对象，实现主界面与编辑界面实时同步
   const layers = mapStore.sortedLayers.map((item) => item.data)
   const data: MapData = { ...(base as MapData), layers }
-  renderMapData(data)
+  renderMapData(data, preserveView)
+}
+
+/** 手动刷新当前地图：从 mapStore 重渲染，保留当前视角 */
+function handleRefreshMap() {
+  if (!panel?.map) return
+  const cur = mapStore.currentMapData
+  if (!cur) return
+  panel.map.invalidateSize()
+  rebuildFromStore(true)
+  if ((window as any).Utils?.showToast) {
+    ;(window as any).Utils.showToast('地图已刷新', 'success')
+  }
 }
 
 /** 按 mapStore 的显隐状态同步经典 MapPanel 图层（直接操作 Leaflet，不触发后端持久化） */
@@ -306,6 +325,72 @@ function zoomToLayer(layerId: string) {
   const bounds = leafletLayer?.getBounds?.()
   if (bounds && bounds.isValid()) {
     panel.map.fitBounds(bounds, { padding: [50, 50] })
+  }
+}
+
+/** 属性表选中行 → 地图联动：按数据索引定位到具体要素并高亮、缩放 */
+function highlightAttrRow(layerId: string, idx: number) {
+  if (!panel?.map || layerId == null || idx == null) return
+  const item = panel.layerGroups[layerId]
+  const leaf = item?.layer
+  if (!leaf) return
+  // 枚举子要素（按渲染顺序与数据索引对应；优先匹配 _cartoFeatureIdx）
+  const children: any[] = []
+  if (typeof leaf.eachLayer === 'function') leaf.eachLayer((l: any) => children.push(l))
+  else if (leaf._layers) Object.values(leaf._layers).forEach((l: any) => children.push(l))
+  else children.push(leaf)
+  let target: any = children.find((l) => l._cartoFeatureIdx === idx)
+  if (!target) target = children[idx]
+  if (!target) {
+    // 兜底：直接用数据坐标定位
+    const data = item?.data
+    if (data) {
+      const coords = Array.isArray(data.coordinates)
+        ? data.coordinates
+        : (data.features ? data.features.map((f: any) => f.geometry?.coordinates) : [])
+      const c = coords[idx]
+      if (c) fitCoords(c)
+    }
+    return
+  }
+  // 高亮
+  if (target.setStyle) {
+    try {
+      target.setStyle({ color: '#ca8a04', weight: 4, opacity: 1, fillColor: '#fef08a', fillOpacity: 0.5 })
+    } catch (e) { /* ignore */ }
+  }
+  // 定位
+  try {
+    const b = typeof target.getBounds === 'function' ? target.getBounds() : null
+    if (b && b.isValid()) panel.map.flyToBounds(b, { maxZoom: 16 })
+    else if (typeof target.getLatLng === 'function') {
+      const ll = target.getLatLng()
+      if (ll) panel.map.flyTo(ll, Math.max(panel.map.getZoom() || 12, 15))
+    }
+  } catch (e) { /* ignore */ }
+}
+
+/** 由坐标数组计算 bounds 并飞入（coordinates 支持点/线/面/多点） */
+function fitCoords(coords: any) {
+  if (!panel?.map) return
+  const L = (window as any).L
+  if (!L) return
+  const pts: Array<[number, number]> = []
+  const flatten = (c: any) => {
+    if (!Array.isArray(c)) return
+    if (typeof c[0] === 'number' && c.length >= 2) { pts.push([c[0], c[1]]); return }
+    c.forEach(flatten)
+  }
+  flatten(coords)
+  if (!pts.length) return
+  const latMin = Math.min(...pts.map((p) => p[0]))
+  const latMax = Math.max(...pts.map((p) => p[0]))
+  const lngMin = Math.min(...pts.map((p) => p[1]))
+  const lngMax = Math.max(...pts.map((p) => p[1]))
+  if (latMin === latMax && lngMin === lngMax) {
+    panel.map.flyTo([latMin, lngMin], Math.max(panel.map.getZoom() || 12, 15))
+  } else {
+    panel.map.flyToBounds(L.latLngBounds([[latMin, lngMin], [latMax, lngMax]]), { maxZoom: 16 })
   }
 }
 
@@ -659,6 +744,10 @@ function handleMapEvent(e: Event) {
       rebuildFromStore()
       break
     }
+    case 'map-refresh': {
+      handleRefreshMap()
+      break
+    }
     case 'map-apply-data': {
       const data = detail?.data
       if (data) renderMapData(data)
@@ -713,6 +802,11 @@ function handleMapEvent(e: Event) {
       startMeasure(detail?.mode || 'distance')
       panel.map.on('click', handleMapClickForMeasure)
       panel.map.on('dblclick', handleMapDblClickForMeasure)
+      break
+    }
+    // 属性表选中行 → 地图联动：高亮并定位对应要素
+    case 'map-attr-select': {
+      highlightAttrRow(detail?.layerId, detail?.idx)
       break
     }
     case 'map-export-image': {
@@ -959,7 +1053,7 @@ function setupPanel() {
     'map-zoom-in', 'map-zoom-out', 'map-zoom-full', 'map-reset-view',
     'map-set-theme', 'map-set-scale', 'map-scale-request', 'map-set-projection',
     'map-reset-north', 'map-undo', 'map-redo',
-    'map-locate', 'map-refresh-layers', 'map-apply-data',
+    'map-locate', 'map-refresh-layers', 'map-refresh', 'map-apply-data',
     'map-zoom-to-layer', 'map-clear-layers', 'map-get-stats',
     'map-apply-task-params', 'map-measure-start', 'map-export-image',
     'map-set-tool', 'map-show-route', 'map-clear-route',
@@ -972,6 +1066,7 @@ function setupPanel() {
     'map-edit-rotate', 'map-edit-scale', 'map-edit-mirror', 'map-edit-offset',
     'map-edit-merge-vertex', 'map-edit-split', 'map-edit-merge',
     'map-density', 'map-view-prev', 'map-view-next',
+    'map-attr-select',
   ]
   eventNames.forEach((name) => mapEl.value?.addEventListener(name, handleMapEvent))
 
@@ -1044,25 +1139,28 @@ watch(
   () => syncGraticule()
 )
 
-// 载负量等级（计划 3.3）：写入全局 LOD 系数并重渲染
+// 载负量等级（计划 3.3）：写入全局 LOD 系数并重渲染（保留视图）
 watch(
   () => appStore.loadLevel,
   (level) => {
     ;(window as any).CARTO_LOAD_MODE = level
-    if (panel?.map) rebuildFromStore()
+    if (panel?.map) rebuildFromStore(true)
   }
 )
 
-// 图层样式/显隐/排序/增删变化时，防抖重渲染（使图层面板/样式面板/分析结果即时生效）
+// 图层样式/显隐/排序/增删变化时，防抖重渲染（保留视图，避免视口重置）
+// 用稳定签名代替 deep watch，避免无关变更（如 d3/LOD 写属性）触发重建
 let layerSyncTimer: ReturnType<typeof setTimeout> | null = null
 watch(
-  () => mapStore.sortedLayers.map((l) => ({ id: l.id, order: l.order, visible: l.visible, style: l.data.style, name: l.data.name })),
+  () =>
+    mapStore.sortedLayers
+      .map((l) => `${l.id}:${l.order}:${l.visible}:${(l.data.style ? JSON.stringify(l.data.style) : '')}:${l.data.name}`)
+      .join('|'),
   () => {
     if (!panel?.map) return
     if (layerSyncTimer) clearTimeout(layerSyncTimer)
-    layerSyncTimer = setTimeout(() => rebuildFromStore(), 120)
+    layerSyncTimer = setTimeout(() => rebuildFromStore(true), 120)
   },
-  { deep: true },
 )
 
 onBeforeUnmount(() => {

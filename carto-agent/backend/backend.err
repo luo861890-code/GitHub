@@ -1,0 +1,21 @@
+2026-08-28 16:19:42,555 [INFO] carto-agent:   前端页面: http://0.0.0.0:8080/app
+INFO:     Started server process [27432]
+INFO:     Waiting for application startup.
+2026-08-28 16:19:42,555 [INFO] carto-agent: ============================================================
+2026-08-28 16:19:42,555 [INFO] carto-agent: 地图制图智能体API 服务已启动
+2026-08-28 16:19:42,555 [INFO] carto-agent:   监听地址: http://0.0.0.0:8080
+2026-08-28 16:19:42,555 [INFO] carto-agent:   API文档:  http://0.0.0.0:8080/docs
+2026-08-28 16:19:42,571 [INFO] carto-agent:   当前LLM:  deepseek
+2026-08-28 16:19:42,571 [INFO] carto-agent:   调试模式:  开启
+2026-08-28 16:19:42,571 [WARNING] carto-agent:   [安全] 未配置 API_TOKEN，API 未启用鉴权（仅建议本地/开发使用；生产请设置 API_TOKEN）
+2026-08-28 16:19:42,571 [INFO] carto-agent:   [安全] 全局限流已启用（120/分钟/IP，LLM 路径 15/分钟/IP）
+2026-08-28 16:19:42,571 [INFO] carto-agent: ============================================================
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+2026-08-28 16:19:57,298 [INFO] app.services.osm_service: [OSMService] 磁盘缓存加载: 29 条
+2026-08-28 16:19:57,298 [INFO] app.services.osm_service: [OSMService] 初始化完成，可用服务器: 4个
+2026-08-28 16:19:57,298 [INFO] app.services.data_source_adapter: [DataSourceRegistry] 已注册数据源: osm (OSMSourceAdapter)
+2026-08-28 16:19:57,298 [INFO] app.services.data_source_adapter: [DataSourceRegistry] 已注册数据源: amap (AmapPOIAdapter)
+2026-08-28 16:19:57,298 [INFO] app.services.data_source_adapter: [DataSourceRegistry] 已注册数据源: tianditu (TiandituTileAdapter)
+2026-08-28 16:19:57,298 [INFO] app.services.map_service: [MapService] 已从主文件 ../data\maps.json 恢复 16 张地图
+2026-08-28 16:19:57,298 [INFO] app.services.map_service: [MapService] 初始化完成，已注册数据源: ['osm', 'amap', 'tianditu']

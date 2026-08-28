@@ -533,13 +533,37 @@ class LocalGeoService:
                              "feature_count": len(lake_pts_overview)},
             })
         if labels:
-            layers.append({
-                "id": generate_id("layer"), "type": "textLabel", "name": "水系注记",
-                "coordinates": [l["coords"] for l in labels],
-                "properties": [{"name": l["name"], "rotation": 0,
-                                "area_km2": l.get("area_km2")} for l in labels],
-                "style": {"color": "#1e3a8a", "fontSize": 12, "weight": 2, "font": "song"},
-            })
+            # QGIS 式注记图层拆分：河流/湖泊/水库各占独立图层（不再合并为"水系注记"）
+            from app.core.layer_catalog import split_water_labels, ANNOTATION_STYLE_DEFAULTS
+            _split = split_water_labels(labels)
+            _ann_layers = [
+                ("河流注记", _split["river"], "river"),
+                ("湖泊注记", _split["lake"], "lake"),
+                ("水库注记", _split["reservoir"], "reservoir"),
+            ]
+            for _ann_name, _ann_labels, _ann_kind in _ann_layers:
+                if not _ann_labels:
+                    continue
+                _st = dict(ANNOTATION_STYLE_DEFAULTS.get(_ann_name, {}))
+                _st["kind"] = _ann_kind
+                layers.append({
+                    "id": generate_id("layer"), "type": "textLabel", "name": _ann_name,
+                    "coordinates": [l["coords"] for l in _ann_labels],
+                    "properties": [{"name": l["name"], "rotation": 0,
+                                    "area_km2": l.get("area_km2"),
+                                    "category": _ann_kind} for l in _ann_labels],
+                    "style": _st,
+                    "group": "注记",
+                })
+            if _split["other"]:
+                layers.append({
+                    "id": generate_id("layer"), "type": "textLabel", "name": "水系注记",
+                    "coordinates": [l["coords"] for l in _split["other"]],
+                    "properties": [{"name": l["name"], "rotation": 0,
+                                    "area_km2": l.get("area_km2")} for l in _split["other"]],
+                    "style": {"color": "#1e3a8a", "fontSize": 12, "weight": 2, "font": "song"},
+                    "group": "注记",
+                })
         # 湖岸线（河湖连通性吸附用）：入湖河口/出湖河源端点吸附到最近湖岸
         try:
             lake_shores = unary_union([

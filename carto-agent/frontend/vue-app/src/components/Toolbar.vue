@@ -144,6 +144,15 @@
         <i class="fa-solid fa-pen-to-square"></i>
         <span>编辑</span>
       </button>
+      <button
+        class="tool-btn"
+        :class="{ active: appStore.showEvalPanel }"
+        title="实证驱动评估（任务完成率/延迟/规范性5分制）"
+        @click="appStore.toggleEvalPanel()"
+      >
+        <i class="fa-solid fa-chart-column"></i>
+        <span>评估</span>
+      </button>
     </div>
 
     <div class="toolbar-divider"></div>
@@ -168,6 +177,10 @@
           <div class="dropdown-item" @click="exportGeoJSON">
             <i class="fa-solid fa-file-code"></i>
             <span>导出 GeoJSON</span>
+          </div>
+          <div class="dropdown-item" @click="exportSHP">
+            <i class="fa-solid fa-file-zipper"></i>
+            <span>导出 SHP（含属性表）</span>
           </div>
           <div class="dropdown-divider"></div>
           <div class="dropdown-item" @click="exportLayout">
@@ -285,6 +298,25 @@ async function exportMapFile(format: string, ext: string, mime: string) {
 async function exportGeoJSON() {
   await exportMapFile('geojson', 'geojson', 'application/geo+json')
   showExportMenu.value = false
+}
+
+async function exportSHP() {
+  if (!mapStore.currentMapId) {
+    alert('请先生成地图')
+    return
+  }
+  showExportMenu.value = false
+  try {
+    const blob = await api.exportMapBinary(mapStore.currentMapId, 'shp')
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `map-${Date.now()}_shp.zip`
+    link.click()
+    URL.revokeObjectURL(url)
+  } catch (e: any) {
+    alert('SHP 导出失败: ' + e.message)
+  }
 }
 
 function exportLayout() {

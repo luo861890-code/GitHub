@@ -17,6 +17,8 @@ from app.services.osm_service import OSMService
 from app.services.routing_service import RoutingService
 from app.services.graphrag_service import GraphRAGService
 from app.services.geotoken_service import GeoTokenService
+from app.services.cleanup_service import MapCleanupService
+from app.services.evaluation_service import EvaluationService
 
 # ========== 模块级单例缓存 ==========
 _llm_service: Optional[LLMService] = None
@@ -30,6 +32,8 @@ _session_service: Optional[SessionService] = None
 _routing_service: Optional[RoutingService] = None
 _graphrag_service: Optional[GraphRAGService] = None
 _geotoken_service: Optional[GeoTokenService] = None
+_cleanup_service: Optional[MapCleanupService] = None
+_evaluation_service: Optional[EvaluationService] = None
 
 
 def get_osm_service() -> OSMService:
@@ -78,11 +82,19 @@ def get_rag_service() -> RAGService:
 
 
 def get_export_service() -> ExportService:
-    """获取地图导出服务单例（GeoJSON/SVG/PNG导出）"""
+    """获取地图导出服务单例（GeoJSON/SVG/PNG/SHP导出）"""
     global _export_service
     if _export_service is None:
         _export_service = ExportService()
     return _export_service
+
+
+def get_cleanup_service() -> MapCleanupService:
+    """获取地图质量清洗服务单例（几何硬伤清洗）"""
+    global _cleanup_service
+    if _cleanup_service is None:
+        _cleanup_service = MapCleanupService()
+    return _cleanup_service
 
 
 def get_session_service() -> SessionService:
@@ -122,6 +134,15 @@ def get_geotoken_service() -> GeoTokenService:
     if _geotoken_service is None:
         _geotoken_service = GeoTokenService()
     return _geotoken_service
+
+
+def get_evaluation_service() -> EvaluationService:
+    """获取实证驱动评估服务单例（任务完成率/端到端延迟/规范性5分制）"""
+    global _evaluation_service
+    if _evaluation_service is None:
+        from app.core.config import settings
+        _evaluation_service = EvaluationService(data_dir=settings.current_user_dir)
+    return _evaluation_service
 
 
 def get_agent_service() -> AgentService:

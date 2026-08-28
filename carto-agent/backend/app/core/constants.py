@@ -175,8 +175,8 @@ ADMIN_CENTER_STYLES: Dict[str, Dict[str, Any]] = {
                  "weight": 1, "radius": 2.2},
 }
 
-# ========== 周边地市底图（规范二-3：极浅米黄衬托，突出武汉主体）==========
-SURROUNDING_CITY_FILL = "#F5F0E1"
+# ========== 周边地市底图（统一浅灰白，交通图不区分行政区划颜色）==========
+SURROUNDING_CITY_FILL = "#F5F5F5"
 
 # ========== 市级行政中心红星位置 ==========
 # 按用户要求标注于武昌区（注：官方驻地实际在江岸区沿江大道188号，如需改回可调整此值）
@@ -485,12 +485,12 @@ MAP_THEMES: Dict[str, Dict[str, str]] = {
              "attribution": "&copy; CARTO"},
     "satellite": {"name": "卫星地图", "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
                   "attribution": "&copy; Esri"},
-    # 中文底图
+    # 中文底图（天地图需在 .env 配置 TIANDITU_KEY，运行时由 /api/settings/map/themes 注入 {tk}）
     "amap_normal": {"name": "高德地图", "url": "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", "attribution": "&copy; 高德地图", "subdomains": "1234", "maxZoom": 20},
     "amap_satellite": {"name": "高德卫星", "url": "https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}", "attribution": "&copy; 高德地图", "subdomains": "1234", "maxZoom": 20},
-    "tianditu_vec": {"name": "天地图矢量", "url": "https://t{s}.tianditu.gov.cn/DataServer?T=vec_w&x={x}&y={y}&l={z}&tk=a3bb2eed53ecf1d9a3c852f0ab4d27de", "attribution": "&copy; 天地图", "subdomains": "01234567", "maxZoom": 18},
-    "tianditu_img": {"name": "天地图影像", "url": "https://t{s}.tianditu.gov.cn/DataServer?T=img_w&x={x}&y={y}&l={z}&tk=a3bb2eed53ecf1d9a3c852f0ab4d27de", "attribution": "&copy; 天地图", "subdomains": "01234567", "maxZoom": 18},
-    "tianditu_cva": {"name": "天地图标注", "url": "https://t{s}.tianditu.gov.cn/DataServer?T=cva_w&x={x}&y={y}&l={z}&tk=a3bb2eed53ecf1d9a3c852f0ab4d27de", "attribution": "&copy; 天地图", "subdomains": "01234567", "maxZoom": 18},
+    "tianditu_vec": {"name": "天地图矢量", "url": "https://t{s}.tianditu.gov.cn/DataServer?T=vec_w&x={x}&y={y}&l={z}&tk={tk}", "attribution": "&copy; 天地图", "subdomains": "01234567", "maxZoom": 18},
+    "tianditu_img": {"name": "天地图影像", "url": "https://t{s}.tianditu.gov.cn/DataServer?T=img_w&x={x}&y={y}&l={z}&tk={tk}", "attribution": "&copy; 天地图", "subdomains": "01234567", "maxZoom": 18},
+    "tianditu_cva": {"name": "天地图标注", "url": "https://t{s}.tianditu.gov.cn/DataServer?T=cva_w&x={x}&y={y}&l={z}&tk={tk}", "attribution": "&copy; 天地图", "subdomains": "01234567", "maxZoom": 18},
     "tencent_normal": {"name": "腾讯地图", "url": "https://rt{s}.map.gtimg.com/realtimerender?z={z}&x={x}&y={-y}&type=vector&style=0", "attribution": "&copy; 腾讯地图", "subdomains": "0123", "maxZoom": 20},
     "esri_street_cn": {"name": "Esri中文街道", "url": "https://services.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", "attribution": "&copy; Esri", "maxZoom": 19},
     # 地势底图（DEM 山体阴影 / 地形）

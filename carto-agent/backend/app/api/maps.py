@@ -11,6 +11,7 @@ from app.api.deps import (
     get_agent_service,
     get_export_service,
     get_routing_service,
+    get_cleanup_service,
 )
 from app.core.exceptions import CartoAgentError
 from app.models.schemas import (
@@ -30,6 +31,7 @@ from app.services.map_service import MapService
 from app.services.agent_service import AgentService
 from app.services.export_service import ExportService
 from app.services.routing_service import RoutingService
+from app.services.cleanup_service import MapCleanupService
 
 router = APIRouter(prefix="/api/maps", tags=["地图"])
 
@@ -40,7 +42,7 @@ async def wiki_lookup(name: str = Query(..., description="要查询的建筑/地
     """查询建筑/地标的百科简介与图片，用于地图弹窗展示"""
     from app.services.wiki_service import WikiService
     try:
-        data = WikiService().lookup(name)
+        data = await run_in_thread(WikiService().lookup, name)
         return ApiResponse(success=True, message="百科查询成功" if data.get("found") else "未找到百科词条", data=data)
     except Exception as e:
         return ApiResponse(success=False, message=f"百科查询失败: {e}", data={"name": name, "found": False})
@@ -178,7 +180,8 @@ async def map_quality_check(
         map_data = map_service.get_map(map_id)
         if not map_data:
             return ApiResponse(success=False, message=f"地图不存在: {map_id}")
-        report = QualityService().check(map_data)
+        # 质检为 O(n²) 几何计算，放线程池避免阻塞事件循环
+        report = await run_in_thread(QualityService().check, map_data)
         return ApiResponse(success=True, message="质量检测完成", data=report)
     except CartoAgentError as e:
         return ApiResponse(success=False, message=str(e))
@@ -263,17 +266,33 @@ async def add_layer(
         return ApiResponse(success=False, message=f"添加图层失败: {e}")
 
 
-@router.post("/{map_id}/layers/import", response_model=ApiResponse, summary="导入GeoJSON图层")
+@router.post("/{map_id}/layers/import", response_model=ApiResponse, summary="导入GeoJSON/SHP图层")
 async def import_geojson_layer(
     map_id: str,
-    file: UploadFile = File(..., description="GeoJSON 文件"),
+    file: UploadFile = File(..., description="GeoJSON / SHP(zip) 文件"),
     name: str = Form(..., description="图层名称"),
     layer_type: str = Form("auto", description="auto/point/line/polygon"),
     map_service: MapService = Depends(get_map_service),
 ):
-    """导入用户上传的 GeoJSON 数据为地图图层（计划 2.2）"""
+    """导入用户上传的 GeoJSON / SHP 数据为地图图层
+
+    按文件后缀自动识别：.zip/.shp 走 SHP 导入（含属性表 .dbf），否则按 GeoJSON 导入。
+    """
+    # 限制上传体积，防止内存/磁盘 DoS
+    MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
     try:
-        content = await file.read()
+        content = await file.read(MAX_UPLOAD_BYTES + 1)
+        if len(content) > MAX_UPLOAD_BYTES:
+            return ApiResponse(success=False, message="文件过大（上限 20MB）")
+        fname = (file.filename or "").lower()
+        if fname.endswith(".zip") or fname.endswith(".shp"):
+            result = map_service.import_shp_layer(
+                map_id=map_id,
+                name=name,
+                file_bytes=content,
+                filename=fname,
+            )
+            return ApiResponse(success=True, message="SHP 图层导入成功（含属性表）", data=result)
         geojson = json.loads(content.decode("utf-8"))
         result = map_service.import_geojson_layer(
             map_id=map_id,
@@ -285,7 +304,7 @@ async def import_geojson_layer(
     except CartoAgentError as e:
         return ApiResponse(success=False, message=str(e))
     except Exception as e:
-        return ApiResponse(success=False, message=f"GeoJSON 导入失败: {e}")
+        return ApiResponse(success=False, message=f"数据导入失败: {e}")
 
 
 class ReorderLayersRequest(BaseModel):
@@ -415,6 +434,14 @@ async def patch_layer(
 
         if "group" in request:
             map_service.set_layer_group(map_id, layer_id, request["group"] or None)
+            updated = True
+
+        if "opacity" in request:
+            target_layer["opacity"] = float(request["opacity"])
+            updated = True
+
+        if "crs" in request:
+            target_layer["crs"] = str(request["crs"])
             updated = True
 
         if not updated:
@@ -579,7 +606,7 @@ async def export_map(
     map_service: MapService = Depends(get_map_service),
     export_service: ExportService = Depends(get_export_service),
 ):
-    """将指定地图导出为 GeoJSON / SVG / PNG 格式"""
+    """将指定地图导出为 GeoJSON / SVG / PNG / SHP 格式"""
     try:
         # 先获取地图数据
         map_data = map_service.get_map(map_id)
@@ -587,17 +614,31 @@ async def export_map(
             return ApiResponse(success=False, message="地图不存在")
 
         fmt = request.format.lower()
-        if fmt == "geojson":
-            result = export_service.export_geojson(map_data)
-        elif fmt == "svg":
-            result = export_service.export_svg(map_data)
-        elif fmt == "png":
-            if request.layout:
-                result = export_service.export_layout_png(map_data, request.layout)
-            else:
-                result = export_service.export_png(map_data)
-        else:
+        if fmt not in ("geojson", "svg", "png", "shp"):
             return ApiResponse(success=False, message=f"不支持的导出格式: {fmt}")
+
+        # 重活（Pillow 渲染 / SVG/JSON 序列化 / shp 打包）在线程池执行，避免阻塞事件循环
+        def _do_export():
+            if fmt == "geojson":
+                return export_service.export_geojson(map_data)
+            if fmt == "svg":
+                return export_service.export_svg(map_data)
+            if fmt == "shp":
+                return export_service.export_shp_zip(map_data)
+            if request.layout:
+                return export_service.export_layout_png(map_data, request.layout)
+            return export_service.export_png(map_data)
+
+        result = await run_in_thread(_do_export)
+
+        # shp 二进制 zip 直接返回文件下载（不经 ApiResponse JSON 包装）
+        if fmt == "shp":
+            from fastapi.responses import Response as FastAPIResponse
+            return FastAPIResponse(
+                content=result,
+                media_type="application/zip",
+                headers={"Content-Disposition": f'attachment; filename="map_{map_id}_shp.zip"'},
+            )
 
         return ApiResponse(
             success=True,
@@ -608,6 +649,44 @@ async def export_map(
         return ApiResponse(success=False, message=str(e))
     except Exception as e:
         return ApiResponse(success=False, message=f"地图导出失败: {e}")
+
+
+class CleanupMapRequest(BaseModel):
+    """质量清洗请求"""
+    deep: bool = Field(False, description="是否深度清洗（含政区重叠修复/碎面删除）")
+
+
+@router.post("/{map_id}/cleanup", response_model=ApiResponse, summary="地图几何质量清洗")
+async def cleanup_map(
+    map_id: str,
+    request: CleanupMapRequest,
+    map_service: MapService = Depends(get_map_service),
+    cleanup_service: MapCleanupService = Depends(get_cleanup_service),
+):
+    """清洗地图几何硬伤：冗余折点/退化几何/重复要素（始终执行），
+    深度模式额外修复区县政区重叠与删除碎面。"""
+    try:
+        map_data = map_service.get_map(map_id)
+        if map_data is None:
+            return ApiResponse(success=False, message="地图不存在")
+
+        def _do_cleanup():
+            cleaned = cleanup_service.cleanup_map(map_data, deep=request.deep)
+            map_service._schedule_save()
+            return cleaned
+
+        result = await run_in_thread(_do_cleanup)
+        report = result.get("cleanup_report") or {}
+        mode = "深度清洗" if request.deep else "基础清洗"
+        message = (
+            f"{mode}完成：去重 {report.get('dedupe', 0)}、退化 {report.get('degenerate', 0)}、"
+            f"折点 {report.get('vertices', 0)}、重叠 {report.get('overlap', 0)}、碎面 {report.get('sliver', 0)}"
+        )
+        return ApiResponse(success=True, message=message, data=result)
+    except CartoAgentError as e:
+        return ApiResponse(success=False, message=str(e))
+    except Exception as e:
+        return ApiResponse(success=False, message=f"质量清洗失败: {e}")
 
 
 @router.post("/{map_id}/route", response_model=ApiResponse, summary="规划路径")

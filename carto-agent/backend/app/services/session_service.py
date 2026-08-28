@@ -31,7 +31,7 @@ class SessionService:
         # 内存会话存储 {session_id: Session}
         self.sessions: Dict[str, Session] = {}
         # 会话文件路径
-        self.sessions_file = os.path.join(settings.data_dir, "sessions.json")
+        self.sessions_file = settings.user_sessions_file
 
         # 确保数据目录存在
         ensure_dir(os.path.dirname(self.sessions_file))
@@ -307,42 +307,46 @@ class SessionService:
         self._save_sessions()
 
     def _save_sessions(self):
-        """保存会话到JSON文件"""
-        try:
-            # 序列化所有会话
-            data = {}
-            for session_id, session in self.sessions.items():
-                # 序列化消息列表
-                messages_data = []
-                for msg in session.messages:
-                    msg_data = {
-                        "role": msg.role,
-                        "content": msg.content,
-                        "timestamp": msg.timestamp,
-                        "map_data": msg.map_data,
-                        "map_id": msg.map_id,
-                        "map_summary": msg.map_summary,
-                        "thinking": msg.thinking,
+        """保存会话到JSON文件（加锁 + 原子写，避免并发/中断导致文件损坏）"""
+        with self._save_lock:
+            try:
+                # 序列化所有会话
+                data = {}
+                for session_id, session in self.sessions.items():
+                    # 序列化消息列表
+                    messages_data = []
+                    for msg in session.messages:
+                        msg_data = {
+                            "role": msg.role,
+                            "content": msg.content,
+                            "timestamp": msg.timestamp,
+                            "map_data": msg.map_data,
+                            "map_id": msg.map_id,
+                            "map_summary": msg.map_summary,
+                            "thinking": msg.thinking,
+                        }
+                        # 序列化步骤列表
+                        if msg.steps:
+                            msg_data["steps"] = [
+                                step.model_dump() if hasattr(step, "model_dump") else step
+                                for step in msg.steps
+                            ]
+                        messages_data.append(msg_data)
+
+                    data[session_id] = {
+                        "session_id": session.session_id,
+                        "title": session.title,
+                        "messages": messages_data,
+                        "created_at": session.created_at,
+                        "updated_at": session.updated_at,
                     }
-                    # 序列化步骤列表
-                    if msg.steps:
-                        msg_data["steps"] = [
-                            step.model_dump() if hasattr(step, "model_dump") else step
-                            for step in msg.steps
-                        ]
-                    messages_data.append(msg_data)
 
-                data[session_id] = {
-                    "session_id": session.session_id,
-                    "title": session.title,
-                    "messages": messages_data,
-                    "created_at": session.created_at,
-                    "updated_at": session.updated_at,
-                }
+                # 原子写入：先写临时文件再替换
+                ensure_dir(os.path.dirname(self.sessions_file) or ".")
+                tmp_path = self.sessions_file + ".tmp"
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    f.write(safe_json_dumps(data))
+                os.replace(tmp_path, self.sessions_file)
 
-            # 写入文件
-            with open(self.sessions_file, "w", encoding="utf-8") as f:
-                f.write(safe_json_dumps(data))
-
-        except Exception as e:
-            logger.info(f"[SessionService] 保存会话失败: {e}")
+            except Exception as e:
+                logger.info(f"[SessionService] 保存会话失败: {e}")

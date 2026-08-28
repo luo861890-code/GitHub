@@ -109,6 +109,18 @@ export const useChatStore = defineStore('chat', () => {
       if (msg.map_data) {
         mapStore.setMapData(msg.map_data)
         if (msg.map_data.name) appStore.setMapTitle(msg.map_data.name)
+        // 若同时存在 map_id，异步拉取后端最新数据覆盖快照（保证属性/清洗等更新可见）
+        if (msg.map_id) {
+          api
+            .getMap(msg.map_id)
+            .then((res: any) => {
+              const data = res?.data || res
+              if (data && data.map_id) {
+                mapStore.setMapData(data)
+              }
+            })
+            .catch(() => {})
+        }
         return
       }
       if (msg.map_id) {
@@ -189,6 +201,8 @@ export const useChatStore = defineStore('chat', () => {
     messages.value.push(userMsg)
 
     try {
+      // 携带当前地图 ID：修改意见作用于用户正在查看的地图
+      const mapStore = useMapStore()
       await api.streamMessage(sessionId, text, {
         onThinking: (content: string) => {
           streamingThinking.value += content
@@ -244,7 +258,7 @@ export const useChatStore = defineStore('chat', () => {
         onError: (error: string) => {
           console.error('流式消息错误:', error)
         },
-      }, controller.signal)
+      }, controller.signal, mapStore.currentMapId)
     } catch (error) {
       console.error('发送消息失败:', error)
       const aborted = (error as any)?.name === 'AbortError'

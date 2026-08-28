@@ -81,14 +81,14 @@ export const CONFIG = {
     },
     tianditu_vec: {
       name: '天地图矢量',
-      url: 'https://t{s}.tianditu.gov.cn/DataServer?T=vec_w&x={x}&y={y}&l={z}&tk=a3bb2eed53ecf1d9a3c852f0ab4d27de',
+      url: 'https://t{s}.tianditu.gov.cn/DataServer?T=vec_w&x={x}&y={y}&l={z}&tk=<YOUR_TIANDITU_KEY>',
       attribution: '&copy; 天地图',
       maxZoom: 18,
       subdomains: '01234567',
     },
     tianditu_img: {
       name: '天地图影像',
-      url: 'https://t{s}.tianditu.gov.cn/DataServer?T=img_w&x={x}&y={y}&l={z}&tk=a3bb2eed53ecf1d9a3c852f0ab4d27de',
+      url: 'https://t{s}.tianditu.gov.cn/DataServer?T=img_w&x={x}&y={y}&l={z}&tk=<YOUR_TIANDITU_KEY>',
       attribution: '&copy; 天地图',
       maxZoom: 18,
       subdomains: '01234567',

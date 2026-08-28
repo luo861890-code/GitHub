@@ -28,14 +28,19 @@ class MapLoadMetrics:
                 line += n
                 for c in (l.get("coordinates") or []):
                     if isinstance(c, list) and c and isinstance(c[0], list):
-                        line_length_m += self.crs.length_meters([(p[0], p[1]) for p in c])
+                        _len = self.crs.length_meters([(p[0], p[1]) for p in c])
+                        # 防护：个别坐标异常时 transform 可能返回 NaN/Inf，跳过避免污染统计
+                        if _len == _len and _len not in (float("inf"), float("-inf")):
+                            line_length_m += _len
             elif t in ("polygon", "area"):
                 polygon += n
                 for c in (l.get("coordinates") or []):
                     if isinstance(c, list) and len(c) >= 4:
                         from shapely.geometry import Polygon
                         try:
-                            polygon_area_m2 += self.crs.area_meters2(Polygon(c))
+                            _area = self.crs.area_meters2(Polygon(c))
+                            if _area == _area and _area not in (float("inf"), float("-inf")):
+                                polygon_area_m2 += _area
                         except Exception:
                             pass
             elif t in ("textLabel", "label"):

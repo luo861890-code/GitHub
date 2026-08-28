@@ -85,8 +85,9 @@ def make_label_meta(
     color = FEATURE_COLOR_OVERRIDE.get(feature_color_key, style["color"])
     halo = False
     if feature_color_key == "water":
-        # 高德式水系注记：宋体斜体 + 白色描边
-        font = "italic"
+        # 用户偏好：所有注记以横向为主、正体不斜；河流注记的"沿河方向"由 rotation 表达，
+        # 不再默认斜体（此前制图规范把水系一律斜体，用户明确要求横向为主）
+        font = style["font"]
         halo = True
     meta: Dict[str, Any] = {
         "label_id": label_id,
@@ -109,3 +110,61 @@ def make_label_meta(
 
 def priority_label(priority: int) -> str:
     return {P0: "P0", P1: "P1", P2: "P2", P3: "P3"}.get(priority, "P3")
+
+
+# ============ 面状政区注记（A1：字列式/雁行式，居中于面几何） ============
+# 依据地图学原理：政区名称按行政等级定字号，置于面内几何中心，字列沿面长轴方向。
+# admin_level: province / city / district / street（省-市-区县-乡镇）
+AREA_LABEL_BY_LEVEL: Dict[str, Dict[str, Any]] = {
+    "province": {"priority": P0, "font": "black", "size": 22, "weight": 800, "color": "#1F2937"},
+    "city":     {"priority": P0, "font": "black", "size": 20, "weight": 800, "color": "#1F2937"},
+    "district": {"priority": P1, "font": "bold",  "size": 15, "weight": 700, "color": "#374151"},
+    "street":   {"priority": P2, "font": "song",  "size": 12, "weight": 500, "color": "#6B7280"},
+}
+
+# 面注记推荐偏移方向（几何中心四周，优先上方）
+AREA_LABEL_CANDIDATES: List[tuple] = [
+    (0, 0), (0, -14), (0, 14), (-10, 0), (10, 0),
+]
+
+
+def area_label_style(admin_level: str) -> Dict[str, Any]:
+    """按行政等级取面注记字体规格（同级完全一致）。"""
+    return dict(AREA_LABEL_BY_LEVEL.get(admin_level, AREA_LABEL_BY_LEVEL["district"]))
+
+
+def make_area_label_meta(
+    label_id: str,
+    text: str,
+    admin_level: str,
+    anchor: str = "area",
+    feature_color_key: str = "admin",
+) -> Dict[str, Any]:
+    """构建面状政区注记对象（规范 §23 JSON + 扩展字段）。
+
+    面注记默认 P0 起、字列居中，water 色系时启用斜体+白描边。
+    """
+    style = area_label_style(admin_level)
+    color = FEATURE_COLOR_OVERRIDE.get(feature_color_key, style["color"])
+    font = style["font"]
+    halo = False
+    if feature_color_key == "water":
+        font = "italic"
+        halo = True
+    return {
+        "label_id": label_id,
+        "name": text,
+        "feature_type": "admin",
+        "priority": style["priority"],
+        "anchor": anchor,           # area：字列居中于面几何
+        "font": font,
+        "size": style["size"],
+        "fontSize": style["size"],
+        "weight": style["weight"],
+        "color": color,
+        "halo": halo,
+        "candidates": AREA_LABEL_CANDIDATES,
+        "scale_range": scale_range_for(8),
+        "min_zoom": 8,
+        "visibility": True,
+    }

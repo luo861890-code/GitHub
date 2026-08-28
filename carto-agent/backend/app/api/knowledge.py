@@ -5,7 +5,7 @@
 """
 from fastapi import APIRouter, Depends
 
-from app.api.deps import get_kg_service, get_graphrag_service
+from app.api.deps import get_kg_service, get_graphrag_service, get_rag_service
 from app.core.exceptions import CartoAgentError
 from app.models.schemas import (
     CreateEntityRequest,
@@ -17,6 +17,7 @@ from app.models.schemas import (
 )
 from app.services.kg_service import KGService
 from app.services.graphrag_service import GraphRAGService
+from app.services.rag_service import RAGService
 from pydantic import BaseModel
 from typing import Optional
 
@@ -203,6 +204,24 @@ async def get_style_recommendations(
         return ApiResponse(success=False, message=f"获取样式推荐失败: {e}")
 
 
+@router.get("/cqs", response_model=ApiResponse, summary="能力问题(CQs)验证")
+async def evaluate_cqs(
+    kg_service: KGService = Depends(get_kg_service),
+):
+    """执行预设制图能力问题(CQs)验证，检验知识图谱覆盖度与推理能力
+
+    对应申报书验收点：知识图谱需支持 10 个以上预设能力问题（CQs），
+    覆盖要素匹配、规则检索、场景适配。返回通过率与未通过项，供知识补全闭环使用。
+    """
+    try:
+        result = kg_service.evaluate_competency_questions()
+        return ApiResponse(success=True, data=result)
+    except CartoAgentError as e:
+        return ApiResponse(success=False, message=str(e))
+    except Exception as e:
+        return ApiResponse(success=False, message=f"CQs验证失败: {e}")
+
+
 # ========== GraphRAG端点 ==========
 
 class GraphRAGRequest(BaseModel):
@@ -218,6 +237,41 @@ class SymbolRecommendRequest(BaseModel):
     element_type: Optional[str] = None
     scale: Optional[int] = None
     audience: str = "public"
+
+
+class RAGSearchRequest(BaseModel):
+    """RAG 混合检索请求"""
+    query: str
+    top_k: int = 3
+    semantic: bool = True
+
+
+@router.post("/rag-search", response_model=ApiResponse, summary="RAG混合检索（关键词+语义向量）")
+async def rag_search(
+    request: RAGSearchRequest,
+    rag_service: RAGService = Depends(get_rag_service),
+):
+    """智能融合中的 RAG 混合检索
+
+    对应申报书"知识驱动+智能融合"：KG 精确规则 + 向量语义检索。
+    对知识库（35条制图知识，含 question/answer 全文）执行
+    关键词 + 字符 n-gram 特征向量余弦的混合检索，支持同义词扩展
+    （如「湖泊」↔「湖」↔「水系」）。
+    """
+    try:
+        if request.semantic:
+            result = rag_service.search(request.query, top_k=request.top_k, hybrid=True)
+        else:
+            result = rag_service.search(request.query, top_k=request.top_k, hybrid=False)
+        return ApiResponse(success=True, data={
+            "query": request.query,
+            "total_kb": len(rag_service.knowledge_base),
+            "results": result,
+        })
+    except CartoAgentError as e:
+        return ApiResponse(success=False, message=str(e))
+    except Exception as e:
+        return ApiResponse(success=False, message=f"RAG检索失败: {e}")
 
 
 @router.post("/graphrag", response_model=ApiResponse, summary="GraphRAG图检索增强查询")

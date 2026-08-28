@@ -174,7 +174,8 @@ def test_apply_symbol_registry_attaches_symbol_id():
     }]
     out = ms._apply_symbol_registry(layers)
     assert out[0]["symbol_id"] == "road.motorway"
-    assert out[0]["style"]["color"] == "#C2410C"
+    # B5：符号颜色统一取自国标色系（高速=红）
+    assert out[0]["style"]["color"] == "#C0392B"
     assert out[0]["group"] == "道路"
 
 

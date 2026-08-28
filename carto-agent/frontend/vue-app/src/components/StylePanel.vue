@@ -243,6 +243,33 @@
               <option value="right">右侧</option>
             </select>
           </div>
+
+          <div class="style-row">
+            <label>文字方向</label>
+            <select v-model="labelDirection" @change="applyLabels" class="select-input">
+              <option value="horizontal">水平横排</option>
+              <option value="vertical">竖排</option>
+            </select>
+          </div>
+
+          <div class="style-row">
+            <label>字体</label>
+            <select v-model="labelFont" @change="applyLabels" class="select-input">
+              <option value="song">宋体</option>
+              <option value="hei">黑体</option>
+              <option value="kai">楷体</option>
+              <option value="italic">斜体</option>
+              <option value="bold">粗体</option>
+            </select>
+          </div>
+
+          <div class="style-row">
+            <label>白描边</label>
+            <label class="toggle-label">
+              <input type="checkbox" v-model="labelHalo" @change="applyLabels" />
+              <span class="toggle-switch small"></span>
+            </label>
+          </div>
         </div>
       </div>
 
@@ -328,6 +355,9 @@ const labelField = ref('')
 const labelFontSize = ref(12)
 const labelColor = ref('#1a1a1a')
 const labelPosition = ref('top')
+const labelDirection = ref<'horizontal' | 'vertical'>('horizontal')
+const labelFont = ref('song')
+const labelHalo = ref(true)
 
 // 分类渲染
 const categoryField = ref('')
@@ -376,6 +406,12 @@ const isPolygonLayer = computed(() => {
 })
 
 const isLineOrPoint = computed(() => isLineLayer.value || isPointLayer.value)
+
+/** 是否为注记图层（textLabel/label） */
+const isLabelLayer = computed(() => {
+  const t = selectedLayer.value?.data.type
+  return t === 'textLabel' || t === 'label' || t === 'text'
+})
 
 // 配色方案
 const colorSchemes = [
@@ -446,10 +482,13 @@ watch(selectedLayer, (layer) => {
     styleForm.fillOpacity = style.fillOpacity ?? 0.3
     styleForm.dashArray = style.dashArray || null
     styleForm.radius = style.radius || 6
-    labelEnabled.value = style.labelsEnabled || false
-    labelFontSize.value = style.labelFontSize || 12
-    labelColor.value = style.labelColor || '#1a1a1a'
+    labelEnabled.value = style.labelsEnabled || isLabelLayer.value
+    labelFontSize.value = style.labelFontSize || style.fontSize || 12
+    labelColor.value = style.labelColor || style.color || '#1a1a1a'
     labelPosition.value = style.labelPosition || 'top'
+    labelDirection.value = style.textDirection || 'horizontal'
+    labelFont.value = style.font || 'song'
+    labelHalo.value = style.halo !== false
   }
 }, { immediate: true })
 
@@ -658,6 +697,9 @@ function toggleLabels() {
     labelFontSize: labelFontSize.value,
     labelColor: labelColor.value,
     labelPosition: labelPosition.value,
+    textDirection: labelDirection.value,
+    font: labelFont.value,
+    halo: labelHalo.value,
   })
   refreshMap()
 }
@@ -669,6 +711,9 @@ function applyLabels() {
     labelFontSize: labelFontSize.value,
     labelColor: labelColor.value,
     labelPosition: labelPosition.value,
+    textDirection: labelDirection.value,
+    font: labelFont.value,
+    halo: labelHalo.value,
   })
   refreshMap()
 }
@@ -1127,6 +1172,23 @@ async function applyStylePackage(pkg: string) {
 
 .toggle-label input:checked + .toggle-switch::after {
   transform: translateX(16px);
+}
+
+/* 小号开关（白描边等行内开关） */
+.toggle-switch.small {
+  width: 30px;
+  height: 16px;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.toggle-switch.small::after {
+  width: 12px;
+  height: 12px;
+}
+
+.toggle-label input:checked + .toggle-switch.small::after {
+  transform: translateX(14px);
 }
 
 .label-settings {

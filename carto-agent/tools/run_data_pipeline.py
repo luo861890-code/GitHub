@@ -4,9 +4,12 @@ import os
 import subprocess
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPTS = os.path.join(ROOT, "backend", "scripts")
-PY = r"D:\python\py3.12.8\python.exe"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import path_utils
+
+ROOT = path_utils.repo_root()
+SCRIPTS = os.path.join(path_utils.backend_dir(), "scripts")
+PY = path_utils.find_python()
 
 STEPS = [
     ("prepare_local_data.py", "本地行政区划/旅游/轨道数据准备"),
@@ -23,7 +26,7 @@ def main():
             print(f"[跳过] {script} 不存在")
             continue
         print(f"[运行] {desc} ({script})")
-        code = subprocess.call([PY, path])
+        code = subprocess.call(PY + [path])
         if code != 0:
             print(f"[失败] {script} 退出码 {code}")
             return code

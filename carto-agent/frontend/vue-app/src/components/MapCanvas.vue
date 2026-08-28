@@ -305,13 +305,36 @@ onMounted(() => {
     ['map-redo', () => { redoEdit() }],
     ['map-reset-north', () => { map?.setView(map.getCenter(), map.getZoom()) }],
     ['map-get-stats', () => {
-      // 发送地图统计数据
+      // 发送地图统计数据（字段名与 ChatPanel 期望一致：totalLayers/totalFeatures）
       const stats = {
-        layerCount: mapStore.sortedLayers.length,
-        featureCount: 0,
+        totalLayers: mapStore.sortedLayers.length,
+        totalFeatures: 0,
+        pointLayers: 0,
+        lineLayers: 0,
+        polygonLayers: 0,
+        pointFeatures: 0,
+        lineFeatures: 0,
+        polygonFeatures: 0,
         center: map?.getCenter(),
         zoom: map?.getZoom(),
       }
+      mapStore.sortedLayers.forEach((item) => {
+        const l = item.data
+        if (!l) return
+        const n = (l.coordinates || []).length
+        stats.totalFeatures += n
+        const t = (l.type || '').toLowerCase()
+        if (t === 'point' || t === 'marker' || t === 'circleMarker' || t === 'circle') {
+          stats.pointLayers++
+          stats.pointFeatures += n
+        } else if (t === 'line' || t === 'polyline') {
+          stats.lineLayers++
+          stats.lineFeatures += n
+        } else if (t === 'polygon' || t === 'area') {
+          stats.polygonLayers++
+          stats.polygonFeatures += n
+        }
+      })
       window.dispatchEvent(new CustomEvent('map-stats-data', { detail: stats }))
     }],
     ['map-apply-task-params', (e) => {
@@ -409,6 +432,12 @@ onMounted(() => {
       measureResult.value = ''
       clearSelection()
       if (editing) exitEditMode()
+    }],
+    // 属性表选中行 → 地图联动：高亮并定位对应要素
+    ['map-attr-select', (e) => {
+      const d = (e as CustomEvent).detail
+      if (!d || d.layerId == null || d.idx == null) return
+      highlightIndexed(d.layerId, d.idx)
     }],
   ]
   listeners.forEach(([name, fn]) => el.addEventListener(name, fn))
@@ -862,51 +891,60 @@ function addLayer(layer: MapLayer) {
 
   try {
     const style = layer.style || {}
+    // QGIS 式图层级不透明度：layer.opacity 与样式透明度叠加
+    const effectiveStyle = { ...style }
+    if (layer.opacity !== undefined && layer.opacity !== null && Number(layer.opacity) < 1) {
+      const lo = Number(layer.opacity)
+      effectiveStyle.opacity = (style.opacity !== undefined ? Number(style.opacity) : 1) * lo
+      if (style.fillOpacity !== undefined) {
+        effectiveStyle.fillOpacity = Number(style.fillOpacity) * lo
+      }
+    }
     const type = (layer.type || '').toLowerCase()
     
     // 线图层
     if (type === 'polyline' || type === 'line' || type === 'linestring' || 
         type === '线' || type === '线状' || type === '道路' || type === '河流' || type === '边界') {
-      addPolylineLayer(layer, style)
+      addPolylineLayer(layer, effectiveStyle)
       return
     }
     
     // 面图层
     if (type === 'polygon' || type === 'area' || type === 'polygon' || 
         type === '面' || type === '面状' || type === '水体' || type === '湖泊' || type === '建筑') {
-      addPolygonLayer(layer, style)
+      addPolygonLayer(layer, effectiveStyle)
       return
     }
     
     // 点图层
     if (type === 'circlemarker' || type === 'point' || type === 'marker' || type === 'point' || 
         type === '点' || type === '点状' || type === '地标' || type === 'poi') {
-      addPointLayer(layer, style)
+      addPointLayer(layer, effectiveStyle)
       return
     }
     
     // 文字标注图层
     if (type === 'textlabel' || type === 'label' || type === 'text' || 
         type === '标注' || type === '注记' || type === '文字' || type === '名称') {
-      addTextLabelLayer(layer, style)
+      addTextLabelLayer(layer, effectiveStyle)
       return
     }
     
-    // 热力图图层
+// 热力图图层
     if (type === 'heatmap' || type === 'heat' || type === '热力图') {
-      addHeatmapLayer(layer, style)
+      addHeatmapLayer(layer, effectiveStyle)
       return
     }
 
     // 栅格/影像图层（imageOverlay）
     if (type === 'imageoverlay' || type === 'raster' || type === 'image' || type === '栅格' || type === '影像') {
-      addImageOverlayLayer(layer, style)
+      addImageOverlayLayer(layer, effectiveStyle)
       return
     }
     
     // 尝试用GeoJSON方式渲染
     if (layer.data) {
-      addGeoJsonLayer(layer, style)
+      addGeoJsonLayer(layer, effectiveStyle)
       return
     }
     
@@ -919,19 +957,19 @@ function addLayer(layer: MapLayer) {
           // 二维数组，可能是线或面
           if (first.length >= 4) {
             // 可能是面（闭合的）
-            addPolygonLayer(layer, style)
+            addPolygonLayer(layer, effectiveStyle)
           } else {
             // 可能是线
-            addPolylineLayer(layer, style)
+            addPolylineLayer(layer, effectiveStyle)
           }
         } else if (typeof first === 'number') {
           // 扁平数组，可能是点或线
           if (coords.length === 2) {
             // 单个点
-            addPointLayer(layer, style)
+            addPointLayer(layer, effectiveStyle)
           } else {
             // 多个点，可能是线
-            addPolylineLayer(layer, style)
+            addPolylineLayer(layer, effectiveStyle)
           }
         }
       }
@@ -1115,6 +1153,21 @@ function addPolygonLayer(layer: MapLayer, style: any) {
 }
 
 // 点图层
+// 是否为车站/交通枢纽类点（渲染专业制图符号）
+function isStationPoint(p: any, layer: any): boolean {
+  const s = `${p?.subtype || ''} ${p?.type || ''} ${p?.name || ''} ${layer?.name || ''}`
+  return /站|枢纽|机场/.test(s)
+}
+
+// 专业制图符号：火车站/高铁站 = 白底红环 + 中心点；机场 = 蓝色飞机
+function stationSymbolHtml(subtype: string) {
+  if (/机场/.test(subtype || '')) {
+    return `<div class="carto-station carto-airport">✈</div>`
+  }
+  const color = '#d9381e'
+  return `<div class="carto-station" style="border-color:${color}"><span class="carto-station-dot" style="background:${color}"></span></div>`
+}
+
 function addPointLayer(layer: MapLayer, style: any) {
   // features 型点图层（专题地图点/圆点）
   if (layer.features && Array.isArray(layer.features) && layer.features.length > 0) {
@@ -1124,13 +1177,19 @@ function addPointLayer(layer: MapLayer, style: any) {
       const featStyle = feat.style || style
       if (!validLatLng(feat.coordinates)) return
       const coord = [feat.coordinates[0], feat.coordinates[1]] as [number, number]
-      L.circleMarker(coord, {
-        radius: featStyle.radius || style.radius || 6,
-        color: featStyle.color || style.color || '#3388ff',
-        fillColor: featStyle.fillColor || featStyle.color || style.fillColor || style.color || '#3388ff',
-        fillOpacity: featStyle.fillOpacity !== undefined ? featStyle.fillOpacity : (style.fillOpacity !== undefined ? style.fillOpacity : 0.7),
-        weight: featStyle.weight || style.weight || 2,
-      }).addTo(group)
+      const featProps = feat.properties || {}
+      if (isStationPoint(featProps, layer)) {
+        const icon = L.divIcon({ className: '', html: stationSymbolHtml(featProps.subtype), iconSize: [22, 22], iconAnchor: [11, 11] })
+        L.marker(coord, { icon }).addTo(group)
+      } else {
+        L.circleMarker(coord, {
+          radius: featStyle.radius || style.radius || 6,
+          color: featStyle.color || style.color || '#3388ff',
+          fillColor: featStyle.fillColor || featStyle.color || style.fillColor || style.color || '#3388ff',
+          fillOpacity: featStyle.fillOpacity !== undefined ? featStyle.fillOpacity : (style.fillOpacity !== undefined ? style.fillOpacity : 0.7),
+          weight: featStyle.weight || style.weight || 2,
+        }).addTo(group)
+      }
     })
     group.addTo(map!)
     layerMap.set(layer.id, group)
@@ -1139,39 +1198,86 @@ function addPointLayer(layer: MapLayer, style: any) {
 
   const coords = normalizeCoords(layer.coordinates)
   if (!coords || coords.length === 0) return
+  const props = (layer.properties || []) as any[]
   
   // 多个点
   if (coords.length > 1) {
     const layerGroup = L.layerGroup()
-    coords.forEach((coord) => {
-      const marker = L.circleMarker(coord, {
+    coords.forEach((coord, i) => {
+      const p = props[i] || {}
+      if (isStationPoint(p, layer)) {
+        const icon = L.divIcon({ className: '', html: stationSymbolHtml(p.subtype), iconSize: [22, 22], iconAnchor: [11, 11] })
+        L.marker(coord, { icon }).addTo(layerGroup)
+      } else {
+        L.circleMarker(coord, {
+          radius: style.radius || 4,
+          fillColor: style.color || '#f59e0b',
+          color: style.borderColor || '#fff',
+          weight: style.weight || 2,
+          opacity: style.opacity !== undefined ? style.opacity : 1,
+          fillOpacity: style.fillOpacity !== undefined ? style.fillOpacity : 0.8,
+        }).addTo(layerGroup)
+      }
+    })
+    layerGroup.addTo(map!)
+    layerMap.set(layer.id, layerGroup)
+  } else {
+    // 单个点
+    const p = props[0] || {}
+    if (isStationPoint(p, layer)) {
+      const icon = L.divIcon({ className: '', html: stationSymbolHtml(p.subtype), iconSize: [22, 22], iconAnchor: [11, 11] })
+      const marker = L.marker(coords[0], { icon }).addTo(map!)
+      layerMap.set(layer.id, marker)
+    } else {
+      const marker = L.circleMarker(coords[0], {
         radius: style.radius || 4,
         fillColor: style.color || '#f59e0b',
         color: style.borderColor || '#fff',
         weight: style.weight || 2,
         opacity: style.opacity !== undefined ? style.opacity : 1,
         fillOpacity: style.fillOpacity !== undefined ? style.fillOpacity : 0.8,
-      })
-      layerGroup.addLayer(marker)
-    })
-    layerGroup.addTo(map!)
-    layerMap.set(layer.id, layerGroup)
-  } else {
-    // 单个点
-    const marker = L.circleMarker(coords[0], {
-      radius: style.radius || 4,
-      fillColor: style.color || '#f59e0b',
-      color: style.borderColor || '#fff',
-      weight: style.weight || 2,
-      opacity: style.opacity !== undefined ? style.opacity : 1,
-      fillOpacity: style.fillOpacity !== undefined ? style.fillOpacity : 0.8,
-    }).addTo(map!)
-    layerMap.set(layer.id, marker)
+      }).addTo(map!)
+      layerMap.set(layer.id, marker)
+    }
   }
 }
 
-// 文字标注图层
+// 文字标注图层（QGIS 式标注渲染：支持竖排/旋转/描边/图层不透明度）
 function addTextLabelLayer(layer: MapLayer, style: any) {
+  const layerOpacity = layer.opacity !== undefined && layer.opacity !== null ? Number(layer.opacity) : 1
+  // 文字方向：图层级 textDirection > 属性级 > 默认水平
+  const textDirection = style.textDirection || 'horizontal'
+
+  // 单条注记的 div 内联样式
+  function labelHtml(prop: any, text: string, fontSize: number, baseColor: string) {
+    const isVertical = prop.textDirection === 'vertical' || textDirection === 'vertical'
+    const fontVal = prop.font || style.font || 'song'
+    const fontWeight = (fontVal === 'bold' || prop.weight) ? (prop.weight || 'bold') : 'normal'
+    const fontStyle = fontVal === 'italic' ? 'italic' : 'normal'
+    const halo = prop.halo !== undefined ? prop.halo : (style.halo !== undefined ? style.halo : true)
+    const rotation = prop.rotation ? Number(prop.rotation) : (style.rotation || 0)
+    const opacity = Math.max(0, Math.min(1, layerOpacity))
+    const shadow = halo
+      ? 'text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff;'
+      : ''
+    const verticalStyle = isVertical
+      ? 'writing-mode: vertical-rl; text-orientation: mixed; letter-spacing: 2px;'
+      : 'white-space: pre-line; text-align: center;'
+    const rotateStyle = rotation ? 'transform: rotate(' + rotation + 'deg);' : ''
+    return '<div style="' +
+      'color: ' + (prop.color || baseColor) + ';' +
+      'font-size: ' + Math.max(8, Math.round(fontSize * (isVertical ? 1.25 : 1))) + 'px;' +
+      'font-weight: ' + fontWeight + ';' +
+      'font-style: ' + fontStyle + ';' +
+      shadow +
+      verticalStyle +
+      'text-align: center;' +
+      'line-height: 1.2;' +
+      'opacity: ' + opacity + ';' +
+      rotateStyle +
+      '">' + text + '</div>'
+  }
+
   // features 型注记图层
   if (layer.features && Array.isArray(layer.features) && layer.features.length > 0) {
     const group = L.layerGroup()
@@ -1183,18 +1289,16 @@ function addTextLabelLayer(layer: MapLayer, style: any) {
       if (!text) return
       if (feat.properties?.min_zoom && (map?.getZoom?.() ?? 12) < feat.properties.min_zoom) return
       const coord = [feat.coordinates[0], feat.coordinates[1]] as [number, number]
+      const html = labelHtml(
+        feat.properties || {},
+        text,
+        (featStyle.fontSize || style.fontSize || 13) * _zf,
+        featStyle.color || style.color || '#1a1a1a',
+      )
       L.marker(coord, {
         icon: L.divIcon({
           className: 'text-label-icon',
-          html: `<div style="
-            color: ${feat.properties?.color || featStyle.color || style.color || '#1a1a1a'};
-            font-size: ${Math.max(8, Math.round((featStyle.fontSize || style.fontSize || 13) * _zf))}px;
-            font-weight: ${feat.properties?.weight || featStyle.fontWeight || style.fontWeight || 'normal'};
-            font-style: ${feat.properties?.font === 'italic' ? 'italic' : 'normal'};
-            text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff;
-            white-space: nowrap;
-            text-align: center;
-          ">${text}</div>`,
+          html,
           iconSize: [100, 20],
           iconAnchor: [50, 10],
         }),
@@ -1217,19 +1321,12 @@ function addTextLabelLayer(layer: MapLayer, style: any) {
     if (!text) return
     if (prop.min_zoom && (map?.getZoom?.() ?? 12) < prop.min_zoom) return
     const _zf = Math.min(2.2, Math.max(0.55, Math.pow(1.12, (map?.getZoom?.() ?? 12) - 12)))
+    const html = labelHtml(prop, text, (style.fontSize || 13) * _zf, style.color || '#1a1a1a')
     
     const marker = L.marker(coord, {
       icon: L.divIcon({
         className: 'text-label-icon',
-        html: `<div style="
-          color: ${prop.color || style.color || '#1a1a1a'};
-          font-size: ${Math.max(8, Math.round((style.fontSize || 13) * _zf))}px;
-          font-weight: ${prop.weight || style.fontWeight || 'normal'};
-          font-style: ${prop.font === 'italic' ? 'italic' : 'normal'};
-          text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff;
-          white-space: nowrap;
-          text-align: center;
-        ">${text}</div>`,
+        html,
         iconSize: [100, 20],
         iconAnchor: [50, 10],
       }),
@@ -1334,8 +1431,9 @@ function renderMap(mapData: MapData) {
     map.setView([mapData.center[0], mapData.center[1]], mapData.zoom || CONFIG.defaultZoom)
   }
 
-  // 设置底图：行政区划图与 carto-agent-1 一致，强制制图底图（无瓦片）
-  if (mapData.map_type === 'administrative') {
+  // 设置底图：行政区划图/交通图与 carto-agent-1 一致，强制制图底图（无瓦片）
+  // 交通图不用外部瓦片（避免分区县各色底图/水印），统一纯色制图底图
+  if (mapData.map_type === 'administrative' || mapData.map_type === 'traffic') {
     setTheme('plain')
   } else if (mapData.theme && mapData.theme !== currentTheme.value) {
     setTheme(mapData.theme)
@@ -1356,6 +1454,8 @@ function renderMap(mapData: MapData) {
     sortedLayers.forEach((layer) => {
       addLayer(layer)
     })
+    // 统一挂载要素点击识别：非编辑模式下点击要素即可选中并查看属性
+    attachAllEditMetadata()
     // LOD 载负量控制（与 carto-agent-1 map-lod.js 一致）
     applyLod()
   }
@@ -1466,13 +1566,29 @@ function lodVisible(layer: MapLayer, zoom: number): boolean {
 function applyLod() {
   if (!map) return
   const zoom = map.getZoom()
+  // 注记图层：字号需随比例尺缩放，重建以应用最新 _zf
+  const toRebuild: MapLayer[] = []
   layerMap.forEach((layer, id) => {
     const data = layerDataById.get(id)
     if (!data) return
+    const t = (data.type || '').toLowerCase()
+    if (t === 'textlabel' || t === 'label' || t === 'text' ||
+        t === '标注' || t === '注记' || t === '名称') {
+      toRebuild.push(data)
+      if (map!.hasLayer(layer)) map!.removeLayer(layer)
+      return
+    }
     const visible = data.visible !== false && lodVisible(data, zoom)
     const onMap = map!.hasLayer(layer)
     if (visible && !onMap) layer.addTo(map!)
     if (!visible && onMap) map!.removeLayer(layer)
+  })
+  // 重建注记图层（按 LOD 显隐 + 新字号）
+  toRebuild.forEach((data) => {
+    layerMap.delete(data.id)
+    if (data.visible !== false && lodVisible(data, zoom)) {
+      addLayer(data)
+    }
   })
 }
 
@@ -1615,9 +1731,12 @@ function attachEditMetadata(layerId: string, leafletLayer: any) {
     l._cartoFeatureIdx = idx
     setType(l)
     l.on('click', (e: any) => {
+      L.DomEvent.stopPropagation(e)
       if (editing) {
-        L.DomEvent.stopPropagation(e)
         selectFeature(layerId, idx, l)
+      } else {
+        // 非编辑模式：点击即可选中要素并查看属性
+        inspectFeature(layerId, idx, l)
       }
     })
   }
@@ -1652,6 +1771,43 @@ function exitEditMode() {
 function clearVertexMarkers() {
   vertexMarkers.forEach((m) => m.remove())
   vertexMarkers = []
+}
+
+/** 属性表选中行 → 地图联动：按数据索引定位到 leaflet 要素并高亮、缩放 */
+function highlightIndexed(layerId: string, idx: number) {
+  if (!map) return
+  const leaf: any = layerMap.get(layerId)
+  if (!leaf) return
+  const children: any[] = []
+  if (typeof leaf.eachLayer === 'function') leaf.eachLayer((l: any) => children.push(l))
+  else if (leaf._layers) Object.values(leaf._layers).forEach((l: any) => children.push(l))
+  else children.push(leaf)
+  let target = children.find((l) => l._cartoFeatureIdx === idx)
+  if (!target) target = children[idx]
+  if (!target) return
+  inspectFeature(layerId, idx, target)
+  try {
+    if (typeof target.getBounds === 'function') {
+      const b = target.getBounds()
+      if (b && b.isValid?.()) map.flyToBounds(b, { maxZoom: 16 })
+    } else if (typeof target.getLatLng === 'function') {
+      const ll = target.getLatLng()
+      if (ll) map.flyTo(ll, Math.max(map.getZoom() || 12, 15))
+    }
+  } catch (e) { /* ignore */ }
+}
+
+/** 非编辑模式点击识别：高亮要素并展示属性（不进入编辑态） */
+function inspectFeature(layerId: string, idx: number, leafletLayer: any) {
+  clearSelection()
+  currentEdit = { layerId, idx, layer: leafletLayer }
+  editStore.setSelected(layerId, idx)
+  const data = getLayerData(layerId)
+  const props = (Array.isArray(data?.properties) && data!.properties[idx]) || (Array.isArray(data?.features) && data!.features[idx]?.properties) || {}
+  editStore.setSelectedFeatureInfo({ layerName: data?.name || '未知图层', properties: props, index: idx })
+  if (leafletLayer.setStyle) {
+    try { leafletLayer.setStyle({ color: '#ca8a04', weight: 4, opacity: 1, fillColor: '#fef08a', fillOpacity: 0.5 }) } catch (e) { /* ignore */ }
+  }
 }
 
 function selectFeature(layerId: string, idx: number, leafletLayer: any) {
@@ -2332,6 +2488,34 @@ async function handleModify() {
 </script>
 
 <style scoped>
+/* 专业车站制图符号（火车站/高铁站：白底红环 + 中心点；机场：蓝色飞机） */
+.carto-station {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 3px solid #d9381e;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  font-family: 'Segoe UI Symbol', 'Noto Sans Symbols 2', sans-serif;
+}
+.carto-station-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: block;
+}
+.carto-airport {
+  font-size: 11px;
+  line-height: 1;
+  border-color: #2f6fd6;
+  color: #2f6fd6;
+  text-align: center;
+}
+
 .map-panel {
   width: 100%;
   height: 100%;

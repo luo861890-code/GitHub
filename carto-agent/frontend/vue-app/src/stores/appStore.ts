@@ -48,6 +48,9 @@ export const useAppStore = defineStore('app', () => {
   const showQaPanel = ref(false)
   const qaReport = ref<Record<string, any> | null>(null)
 
+  /** 实证驱动评估面板（任务完成率/延迟/规范性5分制） */
+  const showEvalPanel = ref(false)
+
   const showEditPanel = ref(false)
 
   const editDrawTool = ref<'point' | 'line' | 'polygon' | null>(null)
@@ -192,6 +195,11 @@ export const useAppStore = defineStore('app', () => {
   function closeQaPanel() {
     showQaPanel.value = false
     qaReport.value = null
+  }
+
+  /** 切换实证驱动评估面板 */
+  function toggleEvalPanel() {
+    showEvalPanel.value = !showEvalPanel.value
   }
 
   function toggleEditPanel() {
@@ -425,6 +433,7 @@ export const useAppStore = defineStore('app', () => {
     traceData,
     showQaPanel,
     qaReport,
+    showEvalPanel,
     showEditPanel,
     editDrawTool,
     showLegendPanel,
@@ -459,6 +468,7 @@ export const useAppStore = defineStore('app', () => {
     closeTracePanel,
     openQaPanel,
     closeQaPanel,
+    toggleEvalPanel,
     toggleEditPanel,
     setEditDrawTool,
     toggleLegendPanel,

@@ -754,13 +754,10 @@ class TiandituTileAdapter(DataSourceAdapter):
     def __init__(self, api_key: Optional[str] = None):
         """
         Args:
-            api_key: 天地图 API Key，为 None 时从环境变量 TIANDITU_KEY 读取，
-                     再为 None 时使用默认项目 token
+            api_key: 天地图 API Key，为 None 时从环境变量 TIANDITU_KEY 读取。
+                     未配置则适配器不可用（不再内置任何默认 token）。
         """
-        self.api_key = api_key or os.getenv(
-            "TIANDITU_KEY",
-            "a3bb2eed53ecf1d9a3c852f0ab4d27de"
-        )
+        self.api_key = api_key or os.getenv("TIANDITU_KEY") or ""
         self._session = requests.Session()
         self._session.headers.update({
             "User-Agent": "CartoAgent/1.0 (Map Cartography Agent)",

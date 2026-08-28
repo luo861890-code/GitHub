@@ -72,6 +72,15 @@
     >
       <i class="fa-solid fa-border-all"></i>
     </button>
+
+    <button
+      class="map-top-btn map-refresh-btn"
+      title="刷新地图（重渲染当前地图）"
+      aria-label="刷新地图"
+      @click="handleRefresh"
+    >
+      <i class="fa-solid fa-arrows-rotate"></i>
+    </button>
   </div>
 </template>
 
@@ -124,6 +133,10 @@ function handleClear() {
 
 function handleResetNorth() {
   dispatch('map-reset-north')
+}
+
+function handleRefresh() {
+  dispatch('map-refresh')
 }
 
 function onScaleEnter(e: Event) {

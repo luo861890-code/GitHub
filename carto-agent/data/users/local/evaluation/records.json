@@ -1,0 +1,35 @@
+[
+ {
+  "ts": "2026-08-26 16:39:44",
+  "message": "把湖泊注记换成横向排布",
+  "success": true,
+  "latency_ms": 1750.0,
+  "map_id": "map_b35f1d835113",
+  "map_name": "武汉市行政区划图",
+  "map_type": "administrative",
+  "scene": "基础",
+  "is_task": true
+ },
+ {
+  "ts": "2026-08-26 17:07:21",
+  "message": "生成一张武汉市复杂模糊的多要素地图",
+  "success": true,
+  "latency_ms": 1525093.0,
+  "map_id": "map_0014776b004f",
+  "map_name": "武汉市基础地图",
+  "map_type": "basic",
+  "scene": "压力(复杂模糊)",
+  "is_task": true
+ },
+ {
+  "ts": "2026-08-28 16:25:29",
+  "message": "你好，请用一句话回复",
+  "success": true,
+  "latency_ms": 3563.0,
+  "map_id": null,
+  "map_name": null,
+  "map_type": null,
+  "scene": "基础",
+  "is_task": false
+ }
+]
