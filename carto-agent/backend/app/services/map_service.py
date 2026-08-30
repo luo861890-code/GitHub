@@ -738,8 +738,10 @@ class MapService:
                     _local_water = _lgs.get_water_layers(region)
                     _local_roads = _lgs.get_roads_layers(region)
                     try:
-                        # 居民地街区（制图综合：合并/化简/分级），仅大比例尺显示
-                        _local_builtup = _lgs.get_builtup_layers(region)
+                        # 居民地街区：交通图以道路/轨道等线要素为核心，不叠加居民地街区，
+                        # 避免无关面状底图干扰交通网络表达，同时减少不必要的数据处理。
+                        if map_type != "traffic":
+                            _local_builtup = _lgs.get_builtup_layers(region)
                     except Exception as _be:
                         logger.info(f"[MapService] 居民地街区图层加载失败: {_be}")
                     if map_type == "tourism":
@@ -831,16 +833,20 @@ class MapService:
                         _st["weight"] = max(float(_st.get("weight", 1.5) or 1.5), 2.5)
                         _st["opacity"] = max(float(_st.get("opacity", 0.9) or 0.9), 0.95)
                         _l["style"] = _st
-                    # 交通图道路保留全部车行道路（motorway/trunk/primary/secondary/tertiary/
-                    # residential/支路/匝道），仅剔除步行/自行车/阶梯/服务性等非车行低等级要素，
-                    # 满足"显示所有道路（依据比例尺）"的制图要求
-                _TRAFFIC_ROAD_DROP = ("步行", "自行车", "阶梯", "服务道路", "人行", "路径")
+                    # 交通图（GIS 叠加版）：保留主要道路等级（高速/国道/省道/主干道/次干道主线），
+                    # 剔除低等级道路及匝道/连接线（支路/三级/居民区/服务性/未分级/其他/匝道/连接线），
+                    # 既匹配"主要道路为主"的需求，也避免低等级道路拖累制图综合性能。
+                    # 保留图层：高速公路主线、城市干线主干道（国道/省道）、城市主干道、城市次干道
+                _TRAFFIC_ROAD_KEEP = {
+                    "道路-高速公路主线", "道路-城市干线主干道",
+                    "道路-城市主干道", "道路-城市次干道",
+                }
                 map_layers = [
                     l for l in map_layers
                     if not (
                         l.get("type") == "polyline"
-                        and ("道路" in (l.get("name") or "") or re.search(r"高速|公路|国道|省道|干线|主干道|次干道", l.get("name") or ""))
-                        and any(k in (l.get("name") or "") for k in _TRAFFIC_ROAD_DROP)
+                        and "道路" in (l.get("name") or "")
+                        and l.get("name") not in _TRAFFIC_ROAD_KEEP
                     )
                 ]
 
@@ -1175,14 +1181,8 @@ class MapService:
             label_metrics = self._apply_label_engine(map_type, map_layers, zoom)
             # 制图规范钳制：线宽/透明度/注记字号入合理范围 + 无效面过滤（消除 QA 越界告警）
             map_layers = self._normalize_styles(map_layers)
-            # 安全质量清洗：冗余折点合并/退化几何删除/重复要素去重（不改变制图表达）
-            try:
-                from app.services.cleanup_service import MapCleanupService
-                _cleanup = MapCleanupService()
-                _cleanup.cleanup_map({"layers": map_layers}, deep=False)
-            except Exception as _ce:
-                logger.warning(f"[MapService] 生成时质量清洗跳过: {_ce}")
             # 几何质量清洗（安全项，生成时自动执行）：冗余折点合并、退化几何删除、重复要素去重
+            # （不改变制图表达，仅消除 QA 越界告警）
             try:
                 from app.services.cleanup_service import MapCleanupService
                 _clean = MapCleanupService()
@@ -2157,8 +2157,17 @@ class MapService:
     def _apply_generalization(
         self, map_type: str, map_layers: List[dict], zoom: int
     ) -> Dict[str, Any]:
-        """调用 GeneralizationEngine 做真实制图综合，返回 metrics"""
+        """调用 GeneralizationEngine 做真实制图综合，返回 metrics
+
+        交通图使用轻量模式：本地数据已分级且质量高，仅做去重 + 适度简化，
+        跳过选取/位移/聚合/拓扑检查等重型操作，大幅提升生成速度。
+        """
         try:
+            # 交通图轻量综合模式：本地道路数据已按等级分层 + 已裁剪到市域 + 质量稳定，
+            # 无需重型选取/位移/拓扑检查，只做去重 + 简化 + 基本度量
+            if map_type == "traffic":
+                return self._apply_traffic_light_generalization(map_layers, zoom)
+
             from app.services.generalization import GeneralizationEngine
             engine = GeneralizationEngine()
             scale = self._zoom_to_scale(zoom)
@@ -2171,6 +2180,75 @@ class MapService:
         except Exception as e:
             logger.info(f"[MapService] 制图综合失败（保留原图层）: {e}")
             return {"error": str(e)}
+
+    def _apply_traffic_light_generalization(
+        self, map_layers: List[dict], zoom: int
+    ) -> Dict[str, Any]:
+        """交通图轻量综合：去重 + 适度简化，跳过选取/位移/拓扑检查等重型操作。
+
+        本地道路数据已按 OSM 等级分层且质量稳定，无需重型综合处理。
+        """
+        from app.core.crs_manager import CRSManager
+
+        before_feats = sum(
+            len(l.get("coordinates") or []) for l in map_layers
+            if l.get("type") in ("polyline", "polygon", "circleMarker", "point"))
+        before_verts = sum(
+            sum(len(c) for c in (l.get("coordinates") or []))
+            for l in map_layers if l.get("type") in ("polyline", "polygon"))
+
+        # 1. 统一去重 exact/reverse（polyline 层内去重）
+        map_layers[:] = self._dedupe_polyline_layers(map_layers)
+
+        # 2. 道路/轨道/铁路线要素适度简化（降低顶点密度，不改变形态）
+        #    zoom=12 约 1:100,000，使用 5-10m 简化容差，视觉无感知但顶点数大幅减少
+        crs = CRSManager()
+        scale = self._zoom_to_scale(zoom)
+        # 简化容差（米）：大比例尺更小，小比例尺更大
+        tol_m = 5.0 if zoom >= 13 else 8.0 if zoom >= 11 else 15.0
+
+        simplified_total = 0
+        for layer in map_layers:
+            if layer.get("type") != "polyline":
+                continue
+            name = layer.get("name") or ""
+            # 只对道路/轨道/铁路/河流做简化（边界/注记等不动）
+            if not any(k in name for k in ("道路", "轨道", "铁路", "地铁", "轻轨", "河流", "水系")):
+                continue
+            coords = layer.get("coordinates") or []
+            new_coords = []
+            for c in coords:
+                if isinstance(c, list) and c and isinstance(c[0], (list, tuple)) and len(c) >= 3:
+                    try:
+                        lonlat = [(float(p[1]), float(p[0])) for p in c]
+                        simplified = crs.simplify_meters(lonlat, tol_m, preserve_topology=True)
+                        new_coords.append([[pt[1], pt[0]] for pt in simplified])
+                        simplified_total += 1
+                    except Exception:
+                        new_coords.append(c)
+                else:
+                    new_coords.append(c)
+            layer["coordinates"] = new_coords
+
+        after_feats = sum(
+            len(l.get("coordinates") or []) for l in map_layers
+            if l.get("type") in ("polyline", "polygon", "circleMarker", "point"))
+        after_verts = sum(
+            sum(len(c) for c in (l.get("coordinates") or []))
+            for l in map_layers if l.get("type") in ("polyline", "polygon"))
+
+        return {
+            "mode": "traffic_light",
+            "simplified_features": simplified_total,
+            "simplification_tolerance_m": tol_m,
+            "data_loss": {
+                "before_features": before_feats,
+                "after_features": after_feats,
+                "before_vertices": before_verts,
+                "after_vertices": after_verts,
+            },
+            "scale": scale,
+        }
 
     def _dedupe_polyline_layers(self, map_layers: List[dict]) -> List[dict]:
         """对 polyline 图层做 exact/reverse 去重（linemerge 后统一）"""
@@ -2281,14 +2359,25 @@ class MapService:
                             st[key] = min(0.9, max(0.1, float(st[key])))
                         except (TypeError, ValueError):
                             pass
-                # 注记字号钳制
+                # 注记字号钳制（《地图文字注记规范》§十.6 可读性底线：屏幕图最小 9px；
+                # 图名/市名等最高可到 20px）
                 if ltype in ("textLabel", "label"):
                     for key in ("fontSize", "size", "font_size"):
                         if key in st:
                             try:
-                                st[key] = max(8, min(18, int(st[key])))
+                                st[key] = max(9, min(20, int(st[key])))
                             except (TypeError, ValueError):
                                 pass
+                    # 注记一律横向（用户要求：所有地图类型注记水平排列、字头朝上）：
+                    # 未显式要求竖排(textDirection=vertical)时默认 horizontal，并归零旋转角
+                    if st.get("textDirection") != "vertical":
+                        st.setdefault("textDirection", "horizontal")
+                        if st.get("rotation") is not None and st.get("rotation") != 0:
+                            st["rotation"] = 0
+                        # 属性级旋转角同样归零（旧数据/其他路径可能残留沿要素方向角）
+                        for _p in (layer.get("properties") or []):
+                            if isinstance(_p, dict) and _p.get("rotation"):
+                                _p["rotation"] = 0
                 layer["style"] = st
             # 无效面过滤（拓扑）
             if ltype in ("polygon", "area") and layer.get("coordinates"):
@@ -2322,7 +2411,8 @@ class MapService:
         name = layer_name or ""
         if any(k in name for k in ("区县名称", "市级名称", "行政", "政区")):
             return "admin"
-        if any(k in name for k in ("地标", "水系注记", "湖泊注记", "河流注记", "水库注记", "城市名称")):
+        if any(k in name for k in ("地标", "水系注记", "湖泊注记", "河流注记", "水库注记", "城市名称",
+                                   "街道地名", "村庄名称")):
             return "core_place"
         if any(k in name for k in ("道路注记", "桥梁", "轨道", "铁路", "枢纽")):
             return "transport"
@@ -2344,6 +2434,10 @@ class MapService:
             return 6
         if "区县名称" in name:
             return 8
+        if "街道地名" in name:
+            return 12
+        if "村庄名称" in name:
+            return 13
         if "山峰" in name:
             return 9
         if any(k in name for k in ("地标", "重点地标")):
@@ -2389,6 +2483,10 @@ class MapService:
             return 0.9
         if any(k in name for k in ("地标", "重点地标")):
             return 0.8
+        if "街道地名" in name:
+            return 0.45
+        if "村庄名称" in name:
+            return 0.25
         if "水系" in name or "湖泊" in name:
             pname = (prop.get("name") or "") if isinstance(prop, dict) else ""
             try:
@@ -2427,6 +2525,10 @@ class MapService:
         # P1：区名、主要道路、铁路/轨道、核心景区/地标
         if "区县名称" in name:
             return P1
+        if "街道地名" in name:
+            return P2
+        if "村庄名称" in name:
+            return P3
         if any(k in name for k in ("铁路", "轨道", "地铁", "轻轨")):
             return P1
         if any(k in name for k in ("重点地标", "地标名称")):
@@ -2462,7 +2564,7 @@ class MapService:
     def _label_feature_type(layer_name: str) -> str:
         """注记要素类型（admin/water/transport/poi/peak）"""
         name = layer_name or ""
-        if any(k in name for k in ("区县", "市级", "行政", "政区")):
+        if any(k in name for k in ("区县", "市级", "街道", "村庄", "行政", "政区")):
             return "admin"
         if any(k in name for k in ("水系", "湖泊", "河流", "溪流")):
             return "water"
@@ -2550,7 +2652,9 @@ class MapService:
                             "point", _mz, _ftype,
                         )
                         meta["importance"] = self._label_importance(_lname, p)
-                        meta["rotation"] = p.get("rotation", 0)
+                        # 注记一律横向（《地图文字注记规范》§一：水平排列、字头朝上；
+                        # 用户要求所有地图注记横向，不继承源数据沿要素方向旋转角）
+                        meta["rotation"] = 0
                         meta["category"] = cat
                         kept_p.append(meta)
                 else:
@@ -2654,15 +2758,17 @@ class MapService:
 
         if (line_labels or water_line_labels or rail_line_labels) and map_type in (
                 "traffic", "tourism", "administrative", "basic"):
+            # 线注记基础样式（《地图文字注记规范》§四 交通注记/§二 水系注记）：
+            # 道路名称=等线深灰、河流名称=宋体深蓝、轨道名称=等线黑
             _append_line_labels("道路注记", line_labels,
-                                {"color": "#374151", "fontSize": 11, "weight": 2,
-                                 "font": "song", "lineLabel": True})
+                                {"color": "#374151", "fontSize": 11, "weight": 400,
+                                 "font": "dengxian", "lineLabel": True})
             _append_line_labels("河流注记", water_line_labels,
-                                {"color": "#2E6FA3", "fontSize": 12, "weight": 2,
+                                {"color": "#2E6FA3", "fontSize": 12, "weight": 400,
                                  "font": "song", "lineLabel": True})
             _append_line_labels("轨道注记", rail_line_labels,
-                                {"color": "#6b21a8", "fontSize": 11, "weight": 2,
-                                 "font": "song", "lineLabel": True})
+                                {"color": "#1F2937", "fontSize": 11, "weight": 400,
+                                 "font": "dengxian", "lineLabel": True})
             placed_count += len(line_labels) + len(water_line_labels) + len(rail_line_labels)
 
         from app.services.label.metrics import compute_metrics
@@ -4014,7 +4120,8 @@ class MapService:
                     "type": "textLabel",
                     "name": "水系注记",
                     "coordinates": [lb["coords"] for lb in _split["other"]],
-                    "properties": [{"name": lb.get("name"), "rotation": lb.get("rotation", 0)} for lb in _split["other"]],
+                    # 注记一律横向（用户要求）：不沿用河流沿河旋转角
+                    "properties": [{"name": lb.get("name"), "rotation": 0} for lb in _split["other"]],
                     "style": {"color": wcfg["color"], "fontSize": wcfg["fontSize"],
                               "weight": wcfg["weight"], "font": wcfg["font"]},
                     "group": "注记",
@@ -4117,10 +4224,11 @@ class MapService:
     def _process_place_labels(self, node_elements: List[dict]) -> List[dict]:
         """处理行政区划/地名标注 - 按行政级别分级排布
 
-        城市(place=city)大号黑体、区县中号黑体、街道小号弱化；
-        注记位置位于要素点右上方，字头朝上。
+        依据《地图文字注记规范》§一 居民地分级：
+        地级市 16pt 宋体、区县 14pt 宋体、乡镇 12pt 细等线、村庄 10pt 细等线；
+        注记一律水平排列、字头朝上，位置优先在要素符号正上方/右上方。
         """
-        city, district, street = [], [], []
+        city, district, street, village = [], [], [], []
         for elem in node_elements:
             coords = self._extract_coordinates(elem, "marker")
             if not coords or not isinstance(coords, list) or len(coords) != 2:
@@ -4133,14 +4241,20 @@ class MapService:
             # 城市标注仅收真正的城市（排除区/县名，防止与区县标注重复）
             if place == "city" and not name.endswith(("区", "县")):
                 city.append({"coords": coords, "name": name})
-            elif name.endswith(("区", "县")) or place in ("town", "borough"):
+            elif name.endswith(("区", "县")) or place == "borough":
                 district.append({"coords": coords, "name": name})
+            elif place in ("village", "hamlet", "suburb", "neighbourhood") or name.endswith(
+                    ("村", "湾", "庄", "屯", "垸")):
+                village.append({"coords": coords, "name": name})
             else:
+                # place=town（镇）及其余 → 乡镇/街道层（规范 §一：乡镇 12pt 细等线）
                 street.append({"coords": coords, "name": name})
 
-        layer_names = {"city": "城市名称标注", "district": "区县名称标注", "town": "街道地名标注"}
+        layer_names = {"city": "城市名称标注", "district": "区县名称标注",
+                       "town": "街道地名标注", "village": "村庄名称标注"}
         layers = []
-        for items, key in ((city, "city"), (district, "district"), (street, "town")):
+        for items, key in ((city, "city"), (district, "district"),
+                           (street, "town"), (village, "village")):
             if not items:
                 continue
             cfg = LABEL_STYLES[key]

@@ -1262,7 +1262,7 @@ function addTextLabelLayer(layer: MapLayer, style: any) {
       : ''
     const verticalStyle = isVertical
       ? 'writing-mode: vertical-rl; text-orientation: mixed; letter-spacing: 2px;'
-      : 'white-space: pre-line; text-align: center;'
+      : 'white-space: nowrap; text-align: center;'
     const rotateStyle = rotation ? 'transform: rotate(' + rotation + 'deg);' : ''
     return '<div style="' +
       'color: ' + (prop.color || baseColor) + ';' +
@@ -1299,8 +1299,8 @@ function addTextLabelLayer(layer: MapLayer, style: any) {
         icon: L.divIcon({
           className: 'text-label-icon',
           html,
-          iconSize: [100, 20],
-          iconAnchor: [50, 10],
+          iconSize: [Math.max(120, text.length * 14 + 20), 24],
+          iconAnchor: [Math.max(60, text.length * 7 + 10), 12],
         }),
         interactive: false,
       }).addTo(group)
@@ -1327,8 +1327,8 @@ function addTextLabelLayer(layer: MapLayer, style: any) {
       icon: L.divIcon({
         className: 'text-label-icon',
         html,
-        iconSize: [100, 20],
-        iconAnchor: [50, 10],
+        iconSize: [Math.max(120, text.length * 14 + 20), 24],
+        iconAnchor: [Math.max(60, text.length * 7 + 10), 12],
       }),
       interactive: false,
     })

@@ -355,8 +355,10 @@ async def send_message_stream(
             result_holder: dict = {}
 
             def progress_cb(event: dict):
-                # 只透传步骤进度，thinking 由最终结果统一推送，避免重复累加
-                if event.get("type") == "steps":
+                # 透传 steps 和 thinking 进度事件（地图生成期间的"正在获取数据..."等提示需实时推送）
+                # 第一个 thinking 已在上方统一推送，后续 thinking 直接透传避免重复
+                etype = event.get("type")
+                if etype in ("steps", "thinking"):
                     loop.call_soon_threadsafe(queue.put_nowait, event)
 
             def run_agent():
@@ -374,9 +376,18 @@ async def send_message_stream(
 
             threading.Thread(target=run_agent, daemon=True).start()
 
-            # 处理过程中逐条推送步骤进度
+            # 处理过程中逐条推送步骤进度；加心跳保活，避免地图生成（OSM拉取）期间前端假死
+            last_heartbeat = time.time()
             while True:
-                item = await queue.get()
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    # 15秒无事件：推送心跳/进度提示，让前端知道连接仍存活
+                    elapsed = time.time() - last_heartbeat
+                    if elapsed >= 15:
+                        last_heartbeat = time.time()
+                        yield f"data: {_sse_json({'type': 'thinking', 'content': '正在处理中（地图数据获取/生成可能需要较长时间），请稍候...'})}\n\n"
+                    continue
                 if item is None:
                     break
                 yield f"data: {_sse_json(item)}\n\n"

@@ -1,0 +1,10 @@
+{
+  "layers": 5,
+  "segments": 7827,
+  "points": 54084,
+  "out_of_bounds": 6176,
+  "short": 2517,
+  "duplicates": 917,
+  "isolated_endpoints": 1555,
+  "connection_rate": 90.1
+}

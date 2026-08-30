@@ -292,13 +292,17 @@ WUHAN_DISTRICTS: List[Dict[str, Any]] = [
     {"name": "新洲区", "lat": 30.8422, "lng": 114.8011},
 ]
 
+# 注记样式（《地图文字注记规范》§一 居民地分级）：
+# 地级市 16pt 宋体 → 县 14pt 宋体 → 乡镇 12pt 细等线 → 村庄 10pt 细等线；
+# 水系 12pt 深蓝；地标/独立地物黑体加粗；POI 细等线弱化
 LABEL_STYLES: Dict[str, Dict[str, Any]] = {
-    "city":     {"fontSize": 18, "color": "#000000", "font": "song", "weight": 3, "offset": [0, 0]},
-    "district": {"fontSize": 15, "color": "#000000", "font": "song", "weight": 3, "offset": [0, 0]},
-    "town":     {"fontSize": 12, "color": "#000000", "font": "song", "weight": 2, "offset": [0, 0]},
-    "water":    {"fontSize": 12, "color": "#2E6FA3", "font": "song", "weight": 2, "offset": [0, -10]},
-    "landmark": {"fontSize": 13, "color": "#0f3d91", "font": "bold", "weight": 3, "offset": [0, 0]},
-    "poi":      {"fontSize": 11, "color": "#475569", "font": "normal", "weight": 2, "offset": [0, 0]},
+    "city":     {"fontSize": 16, "color": "#000000", "font": "song", "weight": 700, "offset": [0, 0]},
+    "district": {"fontSize": 14, "color": "#000000", "font": "song", "weight": 600, "offset": [0, 0]},
+    "town":     {"fontSize": 12, "color": "#000000", "font": "thin", "weight": 400, "offset": [0, 0]},
+    "village":  {"fontSize": 10, "color": "#000000", "font": "thin", "weight": 400, "offset": [0, 0]},
+    "water":    {"fontSize": 12, "color": "#2E6FA3", "font": "song", "weight": 400, "offset": [0, -10]},
+    "landmark": {"fontSize": 13, "color": "#0f3d91", "font": "bold", "weight": 700, "offset": [0, 0]},
+    "poi":      {"fontSize": 11, "color": "#475569", "font": "thin", "weight": 400, "offset": [0, 0]},
 }
 
 # ========== 重点建筑百科知识库（点击地标时显示简介与图片） ==========

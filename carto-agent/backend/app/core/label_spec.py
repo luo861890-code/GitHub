@@ -20,24 +20,88 @@ P1 = 80    # 区名、主要道路、主要铁路、核心景区
 P2 = 50    # 次要道路、一般景点、普通地名
 P3 = 20    # 普通 POI、辅助信息
 
-# ============ 字体层级（规范 §十六） ============
-# font: black=黑体粗 / bold=半粗 / song=宋体常规
-LABEL_STYLE: Dict[int, Dict[str, Any]] = {
-    P0: {"font": "black", "size": 20, "weight": 800, "color": "#1F2937"},
-    P1: {"font": "bold",  "size": 15, "weight": 700, "color": "#1F2937"},
-    P2: {"font": "song",  "size": 12, "weight": 500, "color": "#374151"},
-    P3: {"font": "song",  "size": 10, "weight": 400, "color": "#6B7280"},
+# ============ 字体族（《地图文字注记规范》§一~§七） ============
+# 规范字体 → 前端渲染语义（frontend/vue-app/public/legacy/map.js 按此映射 CSS）：
+#   rough_song  粗宋体（首都/省级/市名）
+#   song        宋体（地级市/县/岛屿半岛）
+#   thin        细等线（乡镇/村庄/县乡道）
+#   dengxian    等线（交通/山峰/独立地物）
+#   shoulder    耸肩等线（山脉/沙丘/森林草地的斜体等线）
+#   italic_song 左斜宋体（水系，屏幕图按用户偏好保持正体，仅沿河方向用 rotation）
+#   black       黑体（兼容旧值）
+#   bold        半粗（兼容旧值）
+FONT_FAMILY: Dict[str, str] = {
+    "rough_song": "SimSun,serif", "song": "SimSun,serif", "thin": "DengXian,sans-serif",
+    "dengxian": "DengXian,sans-serif", "shoulder": "DengXian,sans-serif",
+    "italic_song": "SimSun,serif", "black": "SimHei,sans-serif",
+    "bold": "SimHei,sans-serif", "normal": "sans-serif",
 }
 
+# ============ 字体层级（规范 §十六 + 注记规范字体分级） ============
+# font 取值见 FONT_FAMILY；同一等级字体/字号/字色完全统一（规范 §十.5）
+LABEL_STYLE: Dict[int, Dict[str, Any]] = {
+    P0: {"font": "rough_song", "size": 20, "weight": 800, "color": "#1F2937"},
+    P1: {"font": "song",       "size": 14, "weight": 700, "color": "#1F2937"},
+    P2: {"font": "song",       "size": 12, "weight": 500, "color": "#374151"},
+    P3: {"font": "thin",       "size": 10, "weight": 400, "color": "#6B7280"},
+}
+
+# ============ 居民地注记分级（规范 §一：分级与字体字号） ============
+# 首都/直辖市 20pt 粗宋体 → 省 18pt 粗宋体 → 地级市 16pt 宋体 → 县 14pt 宋体 →
+# 乡镇 12pt 细等线 → 村庄 10-11pt 细等线；字色一律黑（规范 §一）
+RESIDENCE_LABEL_BY_LEVEL: Dict[str, Dict[str, Any]] = {
+    "capital":  {"priority": P0, "font": "rough_song", "size": 20, "weight": 800, "color": "#1F2937"},
+    "province": {"priority": P0, "font": "rough_song", "size": 18, "weight": 800, "color": "#1F2937"},
+    "city":     {"priority": P0, "font": "song",       "size": 16, "weight": 700, "color": "#1F2937"},
+    "district": {"priority": P1, "font": "song",       "size": 14, "weight": 600, "color": "#374151"},
+    "town":     {"priority": P2, "font": "thin",       "size": 12, "weight": 400, "color": "#4B5563"},
+    "village":  {"priority": P3, "font": "thin",       "size": 10, "weight": 400, "color": "#6B7280"},
+}
+
+
+def residence_label_style(level: str) -> Dict[str, Any]:
+    """按居民地等级取注记规格（同级完全一致，规范 §十.5 一致性）。"""
+    return dict(RESIDENCE_LABEL_BY_LEVEL.get(level, RESIDENCE_LABEL_BY_LEVEL["town"]))
+
+
+def make_residence_label_meta(
+    label_id: str,
+    text: str,
+    level: str,
+    anchor: str = "point",
+    min_zoom: int = 10,
+) -> Dict[str, Any]:
+    """构建居民地注记对象（规范 §一 分级字体字号 + §23 JSON 结构）。"""
+    style = residence_label_style(level)
+    meta: Dict[str, Any] = {
+        "label_id": label_id,
+        "name": text,
+        "feature_type": "admin",
+        "priority": style["priority"],
+        "anchor": anchor,
+        "font": style["font"],
+        "size": style["size"],
+        "fontSize": style["size"],
+        "weight": style["weight"],
+        "color": style["color"],
+        "halo": False,
+        "scale_range": scale_range_for(min_zoom),
+        "min_zoom": min_zoom,
+        "visibility": True,
+    }
+    return meta
+
 # 颜色层级修正（规范 §十七：主题要素 > 核心注记 > 普通注记 > 背景）：
-# 水系注记参考高德地图样式：蓝色 #2E6FA3 + 斜体 + 白色描边（halo），
-# 交通注记用深灰，仍弱于主题符号
+# 水系注记：深蓝 #2E6FA3 + 白色描边（halo），保证水面/陆地交界可读；
+# 交通注记用深灰，仍弱于主题符号；地貌/山峰注记用棕褐（规范 §三）
 FEATURE_COLOR_OVERRIDE: Dict[str, str] = {
-    "water": "#2E6FA3",   # 水系注记（高德蓝，弱于水体填充但清晰）
-    "transport": "#374151",  # 道路/轨道注记（深灰，弱于道路符号）
-    "admin": "#1F2937",   # 行政注记（深灰黑）
-    "peak": "#7A5230",    # 山峰注记（棕褐）
+    "water": "#2E6FA3",   # 水系注记（深蓝，规范 §二）
+    "transport": "#374151",  # 道路/轨道注记（深灰，弱于道路符号，规范 §四）
+    "admin": "#1F2937",   # 行政注记（深灰黑，规范 §五）
+    "peak": "#7A5230",    # 山峰注记（棕褐，规范 §三）
+    "relief": "#7A5230",  # 地貌/山脉注记（棕色，规范 §三）
     "poi": "#B91C1C",     # 旅游 POI 注记（红，强于普通标签、弱于符号）
+    "vegetation": "#2E7D32",  # 植被注记（深绿，规范 §七）
 }
 
 # ============ 尺度范围（规范 §十） ============
@@ -113,13 +177,14 @@ def priority_label(priority: int) -> str:
 
 
 # ============ 面状政区注记（A1：字列式/雁行式，居中于面几何） ============
-# 依据地图学原理：政区名称按行政等级定字号，置于面内几何中心，字列沿面长轴方向。
+# 依据《地图文字注记规范》§五：行政区域名置于几何中心或视觉重心，
+# 省/自治区 18pt 粗宋体 → 市 16pt 宋体 → 县 14pt 宋体 → 乡镇 12pt 细等线。
 # admin_level: province / city / district / street（省-市-区县-乡镇）
 AREA_LABEL_BY_LEVEL: Dict[str, Dict[str, Any]] = {
-    "province": {"priority": P0, "font": "black", "size": 22, "weight": 800, "color": "#1F2937"},
-    "city":     {"priority": P0, "font": "black", "size": 20, "weight": 800, "color": "#1F2937"},
-    "district": {"priority": P1, "font": "bold",  "size": 15, "weight": 700, "color": "#374151"},
-    "street":   {"priority": P2, "font": "song",  "size": 12, "weight": 500, "color": "#6B7280"},
+    "province": {"priority": P0, "font": "rough_song", "size": 18, "weight": 800, "color": "#1F2937"},
+    "city":     {"priority": P0, "font": "song",       "size": 16, "weight": 700, "color": "#1F2937"},
+    "district": {"priority": P1, "font": "song",       "size": 14, "weight": 600, "color": "#374151"},
+    "street":   {"priority": P2, "font": "thin",       "size": 12, "weight": 400, "color": "#6B7280"},
 }
 
 # 面注记推荐偏移方向（几何中心四周，优先上方）

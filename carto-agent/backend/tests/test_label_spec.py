@@ -56,13 +56,13 @@ def test_lake_priority_by_area():
 # ==================== 字体层级（规范 §十六） ====================
 
 def test_font_hierarchy_sizes_and_weights():
-    # P0 大号粗体 > P1 中号半粗 > P2 常规 > P3 小号
+    # P0 粗宋体 > P1 宋体 > P2 宋体 > P3 细等线（《地图文字注记规范》§一 居民地分级）
     assert LABEL_STYLE[P0]["size"] > LABEL_STYLE[P1]["size"] > LABEL_STYLE[P2]["size"] > LABEL_STYLE[P3]["size"]
     assert LABEL_STYLE[P0]["weight"] > LABEL_STYLE[P1]["weight"] > LABEL_STYLE[P2]["weight"] > LABEL_STYLE[P3]["weight"]
-    assert LABEL_STYLE[P0]["font"] == "black"   # 黑体
-    assert LABEL_STYLE[P1]["font"] == "bold"    # 半粗
-    assert LABEL_STYLE[P2]["font"] == "song"    # 常规宋体
-    assert LABEL_STYLE[P3]["font"] == "song"
+    assert LABEL_STYLE[P0]["font"] == "rough_song"   # 粗宋体（首都/省级/市名）
+    assert LABEL_STYLE[P1]["font"] == "song"         # 宋体
+    assert LABEL_STYLE[P2]["font"] == "song"
+    assert LABEL_STYLE[P3]["font"] == "thin"         # 细等线（乡镇/村庄/普通 POI）
 
 
 def test_style_for_same_level_consistent():
@@ -74,12 +74,28 @@ def test_style_for_same_level_consistent():
 
 def test_feature_color_override():
     meta = make_label_meta("l1", "长江", "water", P0, "line", 7, "water")
-    assert meta["color"] == "#2E6FA3"  # 高德式水系注记蓝
-    assert meta["font"] == "italic"    # 高德式水系注记斜体
-    assert meta["halo"] is True        # 高德式水系注记白色描边
+    assert meta["color"] == "#2E6FA3"  # 水系注记深蓝（规范 §二）
+    assert meta["font"] == "rough_song"  # 屏幕图保持正体（用户偏好横向为主）
+    assert meta["halo"] is True        # 水系注记白色描边，保证水面/陆地交界可读
     meta2 = make_label_meta("l2", "武汉市", "admin", P0, "point", 7, "admin")
     assert meta2["color"] == "#1F2937"
     assert meta2["halo"] is False
+
+
+def test_residence_label_levels():
+    # 居民地分级（规范 §一）：地级市 16 > 区县 14 > 乡镇 12 > 村庄 10
+    from app.core.label_spec import (
+        RESIDENCE_LABEL_BY_LEVEL, residence_label_style, make_residence_label_meta,
+    )
+    assert RESIDENCE_LABEL_BY_LEVEL["city"]["size"] == 16
+    assert RESIDENCE_LABEL_BY_LEVEL["district"]["size"] == 14
+    assert RESIDENCE_LABEL_BY_LEVEL["town"]["size"] == 12
+    assert RESIDENCE_LABEL_BY_LEVEL["village"]["size"] == 10
+    assert residence_label_style("town")["font"] == "thin"   # 乡镇=细等线
+    assert residence_label_style("city")["font"] == "song"   # 地级市=宋体
+    meta = make_residence_label_meta("r1", "某村", "village")
+    assert meta["fontSize"] == 10
+    assert meta["feature_type"] == "admin"
 
 
 # ==================== 尺度范围（规范 §十） ====================

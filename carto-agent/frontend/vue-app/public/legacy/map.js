@@ -784,9 +784,10 @@ class MapPanel {
                         let itemFontSize = getFontSize(idx);
                         if (fontSizeScale) {
                             const zoomFactor = Math.pow(1.12, this.map.getZoom() - 12);
-                            itemFontSize = Math.max(8, Math.round(itemFontSize * Math.min(2.2, Math.max(0.55, zoomFactor))));
+                            // 可读性底线（《地图文字注记规范》§十.6）：屏幕图最小字号 9px
+                            itemFontSize = Math.max(9, Math.round(itemFontSize * Math.min(2.2, Math.max(0.55, zoomFactor))));
                         } else {
-                            itemFontSize = Math.max(8, Math.round(itemFontSize));
+                            itemFontSize = Math.max(9, Math.round(itemFontSize));
                         }
                         // 旋转角：智能体设 textDirection='horizontal' 时固定水平，
                         // 设 'vertical' 时启用竖排（writing-mode），否则沿要素方向且字头朝上
@@ -799,13 +800,25 @@ class MapPanel {
                             rot = ((_r + 90) % 180 + 180) % 180 - 90;
                         }
                         const labelFont = prop.font || style.font || "normal";
-                        let fontCss = "";
-                        if (labelFont === "black") fontCss = "font-family:'SimHei','Microsoft YaHei',sans-serif;";
-                        else if (labelFont === "song") fontCss = "font-family:'SimSun','宋体','NSimSun',serif;";
-                        else if (labelFont === "italic") fontCss = "font-family:'SimSun','宋体','NSimSun',serif;font-style:italic;";
-                        // 字重层级（规范 §十六）：P0 800 / P1 700 / P2 500 / P3 400
+                        // 字体族映射（《地图文字注记规范》§一~§七）：
+                        // 粗宋体 rough_song / 宋体 song / 细等线 thin / 等线 dengxian /
+                        // 耸肩等线 shoulder / 左斜宋体 italic_song / 黑体 black
+                        const _FONT_CSS = {
+                            "rough_song": "font-family:'SimSun','宋体','NSimSun',serif;",
+                            "song": "font-family:'SimSun','宋体','NSimSun',serif;",
+                            "thin": "font-family:'DengXian','等线','Microsoft YaHei',sans-serif;font-weight:300;",
+                            "dengxian": "font-family:'DengXian','等线','Microsoft YaHei',sans-serif;",
+                            "shoulder": "font-family:'DengXian','等线','Microsoft YaHei',sans-serif;font-style:italic;",
+                            "italic_song": "font-family:'SimSun','宋体','NSimSun',serif;font-style:italic;",
+                            "black": "font-family:'SimHei','Microsoft YaHei',sans-serif;",
+                            "bold": "font-family:'SimHei','Microsoft YaHei',sans-serif;",
+                            "italic": "font-family:'SimSun','宋体','NSimSun',serif;font-style:italic;",
+                            "normal": "",
+                        };
+                        let fontCss = _FONT_CSS[labelFont] || _FONT_CSS["normal"];
+                        // 字重层级（规范 §十六 + 注记规范分级）：P0 800 / P1 700 / P2 500 / P3 400
                         const _labelWeight = prop.weight ||
-                            ((labelFont === "black" || labelFont === "bold") ? 700 : 400);
+                            ((labelFont === "black" || labelFont === "bold" || labelFont === "rough_song") ? 700 : 400);
                         fontCss += "font-weight:" + _labelWeight + ";";
                         // 高德式水系注记：白色描边光晕（halo），保证水面/陆地交界可读
                         if (prop.halo) fontCss += "text-shadow:0 0 2px #fff,0 0 2px #fff,0 0 2px #fff;";
@@ -840,17 +853,31 @@ class MapPanel {
                             placed.push({ x: cp.x + ox, y: cp.y + oy, w: labelW, h: labelH });
                             _placedCount += 1;
                         } else {
-                            for (let attempt = 0; attempt < 4; attempt++) {
-                                const cand = { x: cp.x + ox, y: cp.y + oy, w: labelW, h: labelH };
+                            // 注记摆放优先级（《地图文字注记规范》§一/§六）：
+                            // 正上方 > 右上方 > 右方 > 左上方 > 左方 > 下方；
+                            // 同时避让已放置注记与地物符号（不压盖清单 §十.2）
+                            const labelOffsets = [
+                                [0, -Math.round(labelH * 1.1)],
+                                [Math.round(labelW * 0.7), -Math.round(labelH * 1.1)],
+                                [Math.round(labelW * 0.7), 0],
+                                [-Math.round(labelW * 0.7), -Math.round(labelH * 1.1)],
+                                [-Math.round(labelW * 0.7), 0],
+                                [0, Math.round(labelH * 1.3)],
+                                [0, 0],
+                            ];
+                            let _placedOk = false;
+                            for (const [ox2, oy2] of labelOffsets) {
+                                const cand = { x: cp.x + ox2, y: cp.y + oy2, w: labelW, h: labelH };
                                 const h1 = placed.some(p2 =>
                                     !(cand.x + cand.w < p2.x || cand.x > p2.x + p2.w ||
                                       cand.y + cand.h < p2.y || cand.y > p2.y + p2.h));
-                                if (!h1) { placed.push(cand); _placedCount += 1; break; }
-                                if (attempt === 0) { ox += labelW * 0.7; }
-                                else if (attempt === 1) { ox = 0; oy += labelH * 1.3; }
-                                else if (attempt === 2) { ox = -labelW * 0.7; oy = 0; }
-                                else { ox = 0; oy = 0; placed.push(cand); }
+                                const h2 = (this._poiMarkers || []).some(pm =>
+                                    !(cand.x + cand.w < pm.x || cand.x > pm.x + pm.w ||
+                                      cand.y + cand.h < pm.y || cand.y > pm.y + pm.h));
+                                if (!h1 && !h2) { placed.push(cand); _placedCount += 1; ox = ox2; oy = oy2; _placedOk = true; break; }
                             }
+                            // 全冲突兜底：最小可读性优先，放回符号中心
+                            if (!_placedOk) { placed.push({ x: cp.x, y: cp.y, w: labelW, h: labelH }); _placedCount += 1; }
                         }
                         const icon = L.divIcon({
                             className: "map-text-label",

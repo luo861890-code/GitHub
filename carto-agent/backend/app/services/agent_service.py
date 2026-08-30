@@ -16,6 +16,7 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 import json
 import re
+import concurrent.futures
 from typing import List, Dict, Any, Optional
 
 from app.core.constants import CITY_BBOX, MAP_TYPE_MAP, WUHAN_DISTRICTS
@@ -990,17 +991,20 @@ class AgentService:
 
         map_data = None
         try:
-            map_data = self.map_service.generate_map(
-                map_type=map_type,
-                region=city,
-            )
+            # 地图生成加超时保护（OSM拉取可能很慢），避免SSE流无限阻塞
+            def _gen_with_timeout(mt, timeout_s):
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
+                    return _ex.submit(
+                        lambda: self.map_service.generate_map(map_type=mt, region=city)
+                    ).result(timeout=timeout_s)
+            map_data = _gen_with_timeout(map_type, 300)
             # ReAct容错：生成失败/空图层时自动重试一次，仍失败降级为基础图
             if not map_data or not map_data.get("layers"):
                 logger.info(f"[AgentService] 地图生成结果为空，重试一次 ({map_type})")
-                map_data = self.map_service.generate_map(map_type=map_type, region=city)
+                map_data = _gen_with_timeout(map_type, 120)
             if not map_data or not map_data.get("layers"):
                 logger.info(f"[AgentService] 重试仍失败，降级生成基础地图")
-                map_data = self.map_service.generate_map(map_type="basic", region=city)
+                map_data = _gen_with_timeout("basic", 120)
             layer_count = len(map_data.get("layers", []))
             step4.thinking = f"地图生成成功，共{layer_count}个图层"
             step4.result = {"map_id": map_data.get("map_id"), "layer_count": layer_count}
@@ -1019,6 +1023,10 @@ class AgentService:
                 map_data["task"] = map_data["provenance"]["task"]
             except Exception as e:
                 logger.info(f"[AgentService] 写入地图provenance失败: {e}")
+        except concurrent.futures.TimeoutError:
+            step4.thinking = "地图生成超时（OSM数据获取耗时过长，已超过300秒），请稍后重试或缩小区域范围"
+            step4.result = "generation_timeout"
+            step4.status = "failed"
         except Exception as e:
             step4.thinking = f"地图生成失败: {e}"
             step4.result = str(e)

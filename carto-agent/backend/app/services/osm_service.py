@@ -167,7 +167,7 @@ class OSMService:
                 logger.info(f"[OSMService] 未知要素类型: {typ}，已跳过")
                 continue
             cells = (
-                self._split_bbox(bbox, 5, 5) if typ in ("highway_major", "highway")  # 道路体量大，细分网格防超时
+                self._split_bbox(bbox, 3, 3) if typ in ("highway_major", "highway")  # 道路体量大，3x3子格网平衡速度与完整性
                 else self._split_bbox(bbox, 2, 2) if typ in SPLIT_TYPES
                 else [bbox]
             )
@@ -188,8 +188,8 @@ class OSMService:
             logger.info("[OSMService] 没有有效的查询语句")
             return {}
 
-        # 总抓取时限（秒）：超时后停止等待，用已获取部分 + 本地数据兜底
-        self._fetch_deadline = time.time() + 600
+        # 总抓取时限（秒）：超时后停止等待，用已获取部分 + 本地数据兜底（180s 平衡速度与完整性）
+        self._fetch_deadline = time.time() + 180
         # 并行请求各类型（并发 2-4；子格网拆分后单请求体积小、速度快）
         results: Dict[str, List[dict]] = {}
         with ThreadPoolExecutor(max_workers=min(8, len(tasks))) as executor:
@@ -408,6 +408,9 @@ class OSMService:
         Returns:
             按类型分组的元素字典
         """
+        # 空列表快速返回：无需连通性探测与后续处理
+        if not element_types:
+            return {}
         # 快速连通性探测：全部镜像不可达时直接跳过，避免数分钟空等
         if not self._probe_ok():
             return {}
