@@ -1,0 +1,12 @@
+# CartoAgent 桌面版额外依赖
+# 核心后端依赖见 backend/requirements.txt
+
+# 桌面窗口
+pywebview>=5.0.0
+
+# 系统托盘（可选，未安装自动降级）
+pystray>=0.19.0
+Pillow>=10.0.0
+
+# 打包工具
+pyinstaller>=6.0.0
