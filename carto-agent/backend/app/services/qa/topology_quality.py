@@ -32,7 +32,10 @@ class TopologyQuality:
         # 仅统计真正的道路图层；边界（每市一条闭合线）、河流、铁路等
         # 多要素同名属正常制图结构，不计入道路分段碎化。
         ROAD_HINT = ("道路", "高速", "公路", "国道", "省道", "干道", "快速路", "环线", "匝道")
-        seg_groups: Dict[str, int] = {}
+        # 按 (图层, 道路名) 分组统计：同一图层内同名分段过多才判定碎化。
+        # 同一条路跨不同等级图层（如"解放大道"部分为主干道、部分为次干道）属
+        # 正常分层制图，不同等级的段在拓扑上并不连续，不应跨图层累计。
+        seg_groups: Dict[Tuple[str, str], int] = {}
         for l in layers:
             if l.get("type") not in ("polyline", "line"):
                 continue
@@ -49,7 +52,8 @@ class TopologyQuality:
             for p in (l.get("properties") or []):
                 nm = p.get("name") or ""
                 if nm:
-                    seg_groups[nm] = seg_groups.get(nm, 0) + 1
+                    key = (lname, nm)
+                    seg_groups[key] = seg_groups.get(key, 0) + 1
         fragmented = sum(1 for c in seg_groups.values() if c > 30)
         road_top = max(0, 30 - 3 * fragmented)
         if fragmented:

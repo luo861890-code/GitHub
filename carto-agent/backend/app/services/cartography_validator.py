@@ -286,8 +286,8 @@ class CartographyValidator:
             if not isinstance(style, dict):
                 continue
 
-            # 检查线宽
-            if "weight" in style:
+            # 检查线宽（textLabel/label 图层的 weight 为字体粗细 400/600/700，非线宽，跳过）
+            if layer.get("type") not in ("textLabel", "label") and "weight" in style:
                 weight = style["weight"]
                 if isinstance(weight, (int, float)):
                     total_params_checked += 1

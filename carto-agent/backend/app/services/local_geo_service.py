@@ -501,14 +501,14 @@ class LocalGeoService:
             })
         # 多比例尺湖泊图层（多尺度表达：前端按 zoom 切换档位）
         band_styles = {
-            "湖泊（概览级）": {"fillColor": "#3f7fc4", "fillOpacity": 0.55,
+            "湖泊（概览级）": {"fillColor": "#9bc6ec", "fillOpacity": 0.5,
                               "color": "#1d5fa8", "weight": 1.4, "opacity": 0.9},
-            "湖泊（市域级）": {"fillColor": "#4a90d9", "fillOpacity": 0.62,
-                              "color": "#2e6fb8", "weight": 1.2, "opacity": 0.9},
-            "湖泊（城区级）": {"fillColor": "#6faee3", "fillOpacity": 0.55,
-                              "color": "#3d82c4", "weight": 1.0, "opacity": 0.85},
-            "湖泊（详图级）": {"fillColor": "#9bc6ec", "fillOpacity": 0.45,
-                              "color": "#6fa3d6", "weight": 0.8, "opacity": 0.75},
+            "湖泊（市域级）": {"fillColor": "#9bc6ec", "fillOpacity": 0.55,
+                              "color": "#1d5fa8", "weight": 1.2, "opacity": 0.9},
+            "湖泊（城区级）": {"fillColor": "#9bc6ec", "fillOpacity": 0.55,
+                              "color": "#1d5fa8", "weight": 1.0, "opacity": 0.85},
+            "湖泊（详图级）": {"fillColor": "#9bc6ec", "fillOpacity": 0.5,
+                              "color": "#1d5fa8", "weight": 0.9, "opacity": 0.8},
         }
         for bname, *_ in LAKE_BANDS:
             items = lake_bands[bname]
@@ -527,8 +527,8 @@ class LocalGeoService:
                 "id": generate_id("layer"), "type": "circleMarker", "name": "湖泊点符号（概览）",
                 "coordinates": [p["coords"] for p in lake_pts_overview],
                 "properties": [{"name": p["name"], "subtype": "lake_point"} for p in lake_pts_overview],
-                "style": {"color": "#1d5fa8", "fillColor": "#4a90d9",
-                          "fillOpacity": 0.9, "weight": 1.5, "radius": 5},
+                "style": {"color": "#1d5fa8", "fillColor": "#1d5fa8",
+                          "fillOpacity": 0.9, "weight": 1.5, "radius": 5, "shape": "circle"},
                 "metadata": {"subtype": "lake_point", "legend_title": "湖泊（点状符号）",
                              "feature_count": len(lake_pts_overview)},
             })
@@ -770,7 +770,7 @@ class LocalGeoService:
             ("big", "集中居民地（大型）",
              {"fillColor": "#e8cfa6", "fillOpacity": 0.7, "color": "#c9a15f", "weight": 1.0, "opacity": 0.8}, 5),
             ("mid", "集中居民地（中型）",
-             {"fillColor": "#eeddbc", "fillOpacity": 0.6, "color": "#d0b27a", "weight": 0.8, "opacity": 0.7}, 1),
+             {"fillColor": "#f4e7cf", "fillOpacity": 0.6, "color": "#d0b27a", "weight": 0.8, "opacity": 0.7}, 1),
             ("small", "集中居民地（小型）",
              {"fillColor": "#f4e7cf", "fillOpacity": 0.5, "color": "#dcc29a", "weight": 0.6, "opacity": 0.6}, 0.2),
         ):

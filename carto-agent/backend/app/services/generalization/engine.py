@@ -22,14 +22,14 @@ from .terrain_scale_rules import contour_interval, select_contours
 from .duplicate import DuplicateDetector, count_exact_duplicates
 
 
-def _to_lonlat(latlng: List[tuple]) -> List[tuple]:
-    """[lat, lng] -> [lng, lat]"""
-    return [(c[1], c[0]) for c in latlng]
+def _to_lonlat(latlng: List[tuple]) -> List[list]:
+    """[lat, lng] -> [lng, lat]（统一返回 list，保持图层坐标形态一致）"""
+    return [[c[1], c[0]] for c in latlng]
 
 
-def _to_latlng(lonlat: List[tuple]) -> List[tuple]:
-    """[lng, lat] -> [lat, lng]"""
-    return [(c[1], c[0]) for c in lonlat]
+def _to_latlng(lonlat: List[tuple]) -> List[list]:
+    """[lng, lat] -> [lat, lng]（统一返回 list，避免 tuple 被下游误判为非法几何）"""
+    return [[c[1], c[0]] for c in lonlat]
 
 
 class GeneralizationEngine:
@@ -351,6 +351,81 @@ class GeneralizationEngine:
             layer["duplicate_removed"] = len(exact_idx)
             lines = [{"coordinates": c, "importance": 1.0 if cat in ("motorway", "trunk_road") else 0.5}
                      for c in new_coords if isinstance(c, list) and c and isinstance(c[0], list)]
+        # ---- 按名称合并：同名道路段 linemerge 为连续线（真实聚合） ----
+        # 在去重后、位移前执行；合并后线数大减，位移 O(n²) 更快。
+        names = []
+        for _i, _c in enumerate(new_coords):
+            _nm = ""
+            if props and _i < len(props) and isinstance(props[_i], dict):
+                _nm = props[_i].get("name") or ""
+            names.append(_nm)
+        if new_coords:
+            from shapely.geometry import LineString
+            from shapely.ops import linemerge as _lm
+
+            # 按名称分组（未命名段不合并，原样保留）
+            grouped = {}
+            order = []
+            for c, nm in zip(new_coords, names):
+                if nm:
+                    if nm not in grouped:
+                        grouped[nm] = []
+                        order.append(nm)
+                    grouped[nm].append(c)
+
+            merged_pairs = []  # (name, coords) 输出顺序
+            unnamed = []
+            for i, c in enumerate(new_coords):
+                if not (names[i] if i < len(names) else ""):
+                    unnamed.append((names[i] if i < len(names) else "", c))
+
+            for nm in order:
+                segs = grouped[nm]
+                if len(segs) <= 1:
+                    merged_pairs.append((nm, segs[0]))
+                    continue
+                lines = [LineString([(p[0], p[1]) for p in s])
+                         for s in segs if isinstance(s, list) and len(s) >= 2
+                         and isinstance(s[0], list)]
+                if len(lines) <= 1:
+                    merged_pairs.append((nm, segs[0]))
+                    continue
+                try:
+                    m = _lm(lines)
+                    if m.geom_type == "LineString":
+                        merged_pairs.append((nm, [list(c) for c in m.coords]))
+                    elif m.geom_type == "MultiLineString":
+                        for part in m.geoms:
+                            merged_pairs.append((nm, [list(c) for c in part.coords]))
+                    else:
+                        merged_pairs.append((nm, segs[0]))
+                except Exception:
+                    merged_pairs.append((nm, segs[0]))
+
+            new_coords = [c for _, c in merged_pairs] + [c for _, c in unnamed]
+            # 属性同步：同名合并输出取该名首个 property，未命名段保留原属性
+            first_prop = {}
+            for i, nm in enumerate(names):
+                if nm and nm not in first_prop and i < len(props):
+                    first_prop[nm] = props[i]
+            new_props = []
+            for nm, c in merged_pairs:
+                p = dict(first_prop.get(nm, {}))
+                try:
+                    km = self.crs.length_meters(_to_lonlat([(q[0], q[1]) for q in c])) / 1000.0
+                    p["length_km"] = round(km, 2)
+                except Exception:
+                    pass
+                new_props.append(p)
+            for nm, c in unnamed:
+                # 未命名段属性：取原 index 对应属性
+                new_props.append({})
+            layer["coordinates"] = new_coords
+            if props and len(props) == len(names):
+                layer["properties"] = new_props
+            new_coords = layer["coordinates"]
+            layer["merged_by_name"] = len(merged_pairs)
+
         # 位移（平行符号冲突消解）仅对可控规模的图层执行：
         # 线数过多时逐对距离计算为 O(n²)，大图层（如基础图居民区道路）会退化；
         # 制图实践中位移只用于主要道路的符号冲突，次要道路做选取/简化即可。

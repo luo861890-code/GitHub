@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """B. 数据数量与完整性（100 分）：覆盖/密度/冗余/信息有效率"""
+import re
 from typing import Any, Dict, List, Tuple
 
 from .metrics import THEMATIC_EXPECTED
@@ -26,9 +27,22 @@ class Completeness:
             }[t])
             if not has:
                 coverage -= loss
+        # 关键图层同时匹配图层名与要素名（如长江位于"河流水面"图层内属正常表达）
         layer_names = " ".join(l.get("name", "") for l in layers)
+        feature_names = " ".join(
+            (p.get("name") or "") for l in layers
+            for p in (l.get("properties") or [])
+            if isinstance(p, dict)
+        )
+        haystack = layer_names + " " + feature_names
         expected = THEMATIC_EXPECTED.get(map_type, [])
-        missing_key = [k for k in expected if k not in layer_names]
+        # "水系"为类别语义：河流/湖泊/水库/水系任一存在即视为覆盖（地势图以
+        # 主要河流/河流水面/湖泊分层表达，不含"水系"字样的图层名属正常制图）
+        def _key_hit(k: str) -> bool:
+            if k == "水系":
+                return bool(re.search(r"河流|湖泊|水库|水系", haystack))
+            return k in haystack
+        missing_key = [k for k in expected if not _key_hit(k)]
         if missing_key:
             coverage -= min(12, 3 * len(missing_key))
             issues["C1"].append(f"B1 覆盖：缺少关键要素 {missing_key}")

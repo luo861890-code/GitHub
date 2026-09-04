@@ -34,6 +34,8 @@ MAP_TYPE_MAP: Dict[str, str] = {
     "基础地图": "basic", "基础": "basic", "普通地图": "basic",
     "美食图": "food", "美食": "food", "餐饮图": "food",
     "行政区划图": "administrative", "行政区划": "administrative",
+    "行政区域": "administrative", "区域划分": "administrative", "区划图": "administrative",
+    "各区分布": "administrative", "各区": "administrative", "分区图": "administrative",
     "地形图": "terrain", "地形": "terrain", "等高线图": "terrain",
     "等高线": "terrain", "高程图": "terrain", "地势图": "terrain", "地势": "terrain",
     "山体阴影": "terrain",
@@ -166,13 +168,14 @@ WUHAN_MAIN_BOUNDARY: Dict[str, Any] = {
 # ========== 行政中心标准符号（规范三：市级★/区县●/乡镇黑点）==========
 ADMIN_CENTER_STYLES: Dict[str, Dict[str, Any]] = {
     "city":     {"name": "市级行政中心", "color": "#D82828", "fillColor": "#D82828", "fillOpacity": 1.0,
-                 "weight": 1, "radius": 9, "icon": "★", "iconClass": "fa-star", "kind": "admin_city"},
+                 "weight": 1, "radius": 9, "icon": "★", "iconClass": "fa-star", "kind": "admin_city",
+                 "shape": "star"},
     "district": {"name": "区县行政中心", "color": "#D82828", "fillColor": "#D82828", "fillOpacity": 1.0,
-                 "weight": 1, "radius": 5},
+                 "weight": 1, "radius": 5, "shape": "circle"},
     "outside":  {"name": "周边市县驻地", "color": "#D82828", "fillColor": "#D82828", "fillOpacity": 0.9,
-                 "weight": 1, "radius": 3.5},
+                 "weight": 1, "radius": 3.5, "shape": "circle"},
     "town":     {"name": "乡镇居民点",   "color": "#000000", "fillColor": "#000000", "fillOpacity": 0.85,
-                 "weight": 1, "radius": 2.2},
+                 "weight": 1, "radius": 2.2, "shape": "circle"},
 }
 
 # ========== 周边地市底图（统一浅灰白，交通图不区分行政区划颜色）==========

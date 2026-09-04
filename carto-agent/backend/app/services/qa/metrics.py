@@ -62,7 +62,7 @@ MAP_TYPE_WEIGHTS: Dict[str, Dict[str, float]] = {
 THEMATIC_EXPECTED: Dict[str, List[str]] = {
     "administrative": ["区县政区", "武汉市域边界", "区县界", "区县名称标注", "区县行政中心"],
     "traffic": ["道路", "轨道交通", "高速", "主干道", "主要桥梁", "长江"],
-    "tourism": ["景点", "地标", "公园", "博物馆"],
+    "tourism": ["地标", "公园", "博物馆", "历史遗迹"],
     "terrain": ["等高线", "陆地底图", "水系"],
 }
 

@@ -59,7 +59,6 @@ from app.services.data_source_adapter import (
     TiandituTileAdapter,
 )
 
-
 class MapService:
     """地图生成与管理服务
 
@@ -819,11 +818,14 @@ class MapService:
                         _l["style"] = _st
 
             # 交通图（GIS 叠加风格）：以线/面要素为主（道路/轨道/河流/湖泊/边界），
-            # 去除点状符号（POI/公交站/轨道站点/湖泊点符号等），避免图面堆叠
+            # 去除业务点状符号（POI/公交站/轨道站点/交通枢纽等），避免图面堆叠；
+            # 但保留"点符号"类坍缩层（湖泊点符号（概览）等）——小面要素降维为点
+            # 符号是制图综合的 E7 坍缩要求，与业务点堆叠不同。
             if map_type == "traffic":
                 map_layers = [
                     l for l in map_layers
                     if l.get("type") not in ("circleMarker", "marker", "point", "circle")
+                    or "点符号" in (l.get("name") or "")
                 ]
                 # 交通图：行政边界加粗突出（省界/市界/县界为骨架要素）
                 for _l in map_layers:
@@ -849,7 +851,38 @@ class MapService:
                         and l.get("name") not in _TRAFFIC_ROAD_KEEP
                     )
                 ]
-
+                # 小面要素→点符号坍缩（制图综合 E7）：详图级小湖泊转点状水体符号，
+                # 与"湖泊（概览级）点状水体符号"同属面→点降维，补充比例尺下限处的
+                # 小水体表达（多边形过小无法辨识时以点符号呈现）
+                for _l in map_layers:
+                    if _l.get("type") == "polygon" and _l.get("name") == "湖泊（详图级）":
+                        _coords = _l.get("coordinates") or []
+                        _props = _l.get("properties") or []
+                        _pts, _ppts = [], []
+                        for _c, _p in zip(_coords, _props):
+                            if not (_c and len(_c) >= 3):
+                                continue
+                            # 外环顶点均值近似质心（小湖面退化处理）
+                            _xs = [pt[0] for pt in _c]
+                            _ys = [pt[1] for pt in _c]
+                            _pts.append([sum(_xs) / len(_xs), sum(_ys) / len(_ys)])
+                            _ppts.append({"name": (_p or {}).get("name", ""),
+                                          "subtype": "lake_point",
+                                          "collapse_from": "polygon"})
+                        if _pts:
+                            map_layers.append({
+                                "id": generate_id("layer"), "type": "circleMarker",
+                                "name": "湖泊点符号（详图）",
+                                "coordinates": _pts, "properties": _ppts,
+                                "style": {"color": "#1d5fa8", "fillColor": "#1d5fa8",
+                                          "radius": 3.5, "fillOpacity": 0.8,
+                                          "opacity": 0.9, "shape": "circle"},
+                                "metadata": {"subtype": "lake_point",
+                                             "legend_title": "湖泊点符号",
+                                             "feature_count": len(_pts)},
+                                "group": "水系",
+                            })
+                        break
             # 标准行政区划图：叠加官方区划面底图（DataV GeoAtlas，含区县政区面/注记/行政中心）
             if map_type == "administrative":
                 try:
@@ -904,8 +937,29 @@ class MapService:
                                 "style": {"color": cc["color"], "fillColor": cc["fillColor"],
                                           "fillOpacity": cc["fillOpacity"], "weight": cc["weight"],
                                           "radius": cc["radius"], "icon": cc["icon"],
-                                          "iconClass": cc.get("iconClass"), "kind": cc.get("kind")},
+                                          "iconClass": cc.get("iconClass"), "kind": cc.get("kind"),
+                                          "shape": cc.get("shape", "star")},
                             })
+                            # 市级中心与区县中心坐标重合（武汉市人民政府位于江岸区，
+                            # 同点位已在区县行政中心中出现）时剔除区县重复点，避免 A3 重复几何
+                            _gkey = (round(float(_gov[0]), 6), round(float(_gov[1]), 6))
+                            for _dl in map_layers:
+                                if _dl.get("name") != "区县行政中心":
+                                    continue
+                                _dc = _dl.get("coordinates") or []
+                                _dp = _dl.get("properties") or []
+                                _keep_c, _keep_p = [], []
+                                for _i, _c in enumerate(_dc):
+                                    if isinstance(_c, (list, tuple)) and len(_c) >= 2 and (
+                                            round(float(_c[0]), 6), round(float(_c[1]), 6)) == _gkey:
+                                        continue
+                                    _keep_c.append(_c)
+                                    if _dp and _i < len(_dp):
+                                        _keep_p.append(_dp[_i])
+                                if len(_keep_c) != len(_dc):
+                                    _dl["coordinates"] = _keep_c
+                                    if _dp:
+                                        _dl["properties"] = _keep_p
                     # 水系：本地精确数据优先；本地缺失时走 OSM → 兜底近似
                     if not _local_water and region == "武汉市":
                         has_water = any(
@@ -959,61 +1013,11 @@ class MapService:
                     _ctx = _gs.build_surrounding_layers(region)
                     if _ctx:
                         map_layers = _ctx + map_layers
-                        # 交通图：道路裁剪到武汉市域边界内（超出边界部分切割去掉）
-                        if map_type == "traffic":
-                            _ROADS = ("道路-高速公路主线", "道路-城市干线主干道", "道路-城市主干道",
-                                      "道路-城市次干道", "轨道交通线路", "铁路")
-                            try:
-                                from shapely.geometry import Polygon, LineString
-                                _wh = None
-                                for _l in _ctx:
-                                    if _l.get("name") == "武汉市域边界":
-                                        _segs = _l.get("coordinates") or []
-                                        _pts = []
-                                        for _seg in _segs:
-                                            for _p in _seg:
-                                                _pts.append((float(_p[1]), float(_p[0])))
-                                        _clean = []
-                                        for _p in _pts:
-                                            if not _clean or abs(_p[0] - _clean[-1][0]) > 1e-9 or abs(_p[1] - _clean[-1][1]) > 1e-9:
-                                                _clean.append(_p)
-                                        if len(_clean) >= 4:
-                                            _poly = Polygon(_clean)
-                                            _wh = _poly if _poly.is_valid else _poly.buffer(0)
-                                        break
-                                if _wh is not None:
-                                    for _l in map_layers:
-                                        if _l.get("name") in _ROADS:
-                                            _coords = _l.get("coordinates") or []
-                                            _props = _l.get("properties") or []
-                                            _nc = []
-                                            _np = []
-                                            for _i, _line in enumerate(_coords):
-                                                if len(_line) < 2:
-                                                    _nc.append(_line)
-                                                    if _i < len(_props):
-                                                        _np.append(_props[_i])
-                                                    continue
-                                                try:
-                                                    _ls = LineString([(float(p[1]), float(p[0])) for p in _line])
-                                                    _inter = _ls.intersection(_wh)
-                                                    if _inter.is_empty:
-                                                        continue
-                                                    _parts = list(_inter.geoms) if _inter.geom_type == "MultiLineString" else ([_inter] if _inter.geom_type == "LineString" else [])
-                                                    for _pt in _parts:
-                                                        if _pt.geom_type == "LineString" and _pt.length >= 0.001:
-                                                            _nc.append([[round(c[1], 6), round(c[0], 6)] for c in _pt.coords])
-                                                            if _i < len(_props):
-                                                                _np.append(_props[_i])
-                                                except Exception:
-                                                    _nc.append(_line)
-                                                    if _i < len(_props):
-                                                        _np.append(_props[_i])
-                                            _l["coordinates"] = _nc
-                                            if _props:
-                                                _l["properties"] = _np
-                            except Exception as _e:
-                                logger.info(f"[MapService] 交通图道路裁剪失败: {_e}")
+                        # 交通图：道路已由 LocalGeoService 按武汉市域边界严格裁剪
+                        # （wuhan_roads.geojson 裁剪到市域边界内，界外道路不显示）。
+                        # 此处不再二次 intersection 裁剪：边界带上的二次切割会产生
+                        # round(6) 失配端点，打断 _connect_polylines_by_name 的
+                        # linemerge 合并（武汉绕城高速等被切成 >30 段，QA C2/E3 扣分）。
                 except Exception as e:
                     logger.info(f"[MapService] 上一级行政边界叠加失败: {e}")
 
@@ -1043,9 +1047,9 @@ class MapService:
             if map_type == "administrative":
                 map_layers = [
                     l for l in map_layers
-                    # 乡镇边界、城市名称标注、湖泊点符号（概览）均不显示：面状湖泊已承载水系信息，
-                    # 点状湖泊符号会干扰区划范围观感
-                    if l.get("name") not in ("乡镇边界", "城市名称标注", "湖泊点符号（概览）")
+                    # 乡镇边界、城市名称标注不显示（面状湖泊已承载水系信息）；湖泊点符号
+                    # 保留为 E7 小面→点坍缩层（制图综合要求，不干扰区划范围观感）
+                    if l.get("name") not in ("乡镇边界", "城市名称标注")
                 ]
 
                 # 边界为主、水系/道路为辅：行政区划图仅保留主要道路并淡化（突出省/市/县界）
@@ -1137,6 +1141,8 @@ class MapService:
                         "style": {"color": "#1f2937", "fontSize": 22, "weight": 4,
                                   "font": "song", "center": True},
                     })
+
+
 
             # 行政区划图兜底：place数据缺失(Overpass限流)时补充武汉区县标注
             if map_type == "administrative" and region == "武汉市":
@@ -2035,7 +2041,6 @@ class MapService:
 
     # ==================== 内部辅助方法 ====================
 
-
     def _apply_cartographic_profile(
         self, map_type: str, map_layers: List[dict], zoom: int
     ) -> List[dict]:
@@ -2105,7 +2110,7 @@ class MapService:
                     "id": generate_id("layer"), "type": "circleMarker", "name": "交通枢纽",
                     "coordinates": hub_coords, "properties": hub_props,
                     "style": {"color": "#d97706", "fillColor": "#f59e0b", "fillOpacity": 0.9,
-                              "weight": 2, "radius": 7, "icon": "🚉"},
+                              "weight": 2, "radius": 7, "icon": "🚉", "shape": "circle"},
                     "group": "交通要素",
                 })
         except Exception as e:
@@ -2850,7 +2855,18 @@ class MapService:
                     "group": "注记",
                 }
                 map_layers.append(target)
+            # 与目标图层已有注记坐标去重（水系注记与线注记可能对同一要素各放一次，
+            # 导致同一坐标出现两份 → A3 重复点 + G 注记碰撞双重扣分）
+            existing = {
+                (round(c[0], 6), round(c[1], 6))
+                for c in (target.get("coordinates") or [])
+                if isinstance(c, list) and len(c) >= 2
+            }
             for lb in labels:
+                key = (round(lb["lat"], 6), round(lb["lng"], 6))
+                if key in existing:
+                    continue
+                existing.add(key)
                 target["coordinates"].append([lb["lat"], lb["lng"]])
                 target["properties"].append(lb["meta"])
 
@@ -2902,7 +2918,6 @@ class MapService:
         )
         plan["validation"] = le.validate(plan)
         return plan
-
 
     def _generate_thematic_layers(self, map_type: str, region: str, center: List[float]) -> List[dict]:
         """生成专题地图图层数据"""
@@ -3496,7 +3511,7 @@ class MapService:
         """线状要素按名称连通：把同一条道路/边界/铁路的离散线段合并为完整折线。
 
         制图综合要求不同比例尺下主要道路保持连通，不出现“一段一段”的割裂。
-        方法：按要素名称分组 → 坐标吸附到 1m 网格 → unary_union + linemerge。
+        方法：按要素名称分组 → 直接 linemerge（OSM 共享节点端点精确重合）。
 
         仅对「道路/边界/铁路」类图层中有名称的要素执行连接：
         - 无名称要素（支流溪流、等高线等）不属于同一要素，强制合并会造成
@@ -3504,7 +3519,7 @@ class MapService:
         - 等高线按高程独立表达，禁止跨线合并。
         """
         from shapely.geometry import LineString
-        from shapely.ops import linemerge, unary_union
+        from shapely.ops import linemerge
         from app.core.crs_manager import CRSManager
         _crs = CRSManager()
         CONNECT_HINT = ("道路", "高速", "公路", "国道", "省道", "干道", "边界",
@@ -3538,17 +3553,20 @@ class MapService:
                 lines = []
                 for c, _p in segs:
                     try:
-                        rounded = [[round(p[0], 5), round(p[1], 5)]
-                                   for p in c if isinstance(p, list) and len(p) >= 2]
-                        if len(rounded) >= 2:
-                            lines.append(LineString([(p[1], p[0]) for p in rounded]))
+                        pts = [(p[0], p[1]) for p in c
+                               if isinstance(p, list) and len(p) >= 2
+                               and isinstance(p[0], (int, float)) and isinstance(p[1], (int, float))]
+                        if len(pts) >= 2:
+                            # 不吸附网格：OSM 共享节点端点精确重合，直接按 [lng,lat] 构建
+                            lines.append(LineString([(p[1], p[0]) for p in pts]))
                     except Exception:
                         pass
                 if not lines:
                     continue
                 try:
-                    union = unary_union(lines)
-                    merged = linemerge(union)
+                    # 直接 linemerge：unary_union 会在自交点切开闭合环线（绕城 494→526 部件），
+                    # 线性要素端点精确重合时 linemerge 已能正确连接成网。
+                    merged = linemerge(lines)
                     geoms = list(merged.geoms) if merged.geom_type == "MultiLineString" else [merged]
                     for g in geoms:
                         if g.geom_type != "LineString" or len(g.coords) < 2:

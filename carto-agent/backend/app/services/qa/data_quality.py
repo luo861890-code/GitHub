@@ -101,6 +101,9 @@ class DataQuality:
         seen = set()
         dup = 0
         for l in layers:
+            # 注记层跳过：点符号与同名注记共位是规范要求，不属重复几何
+            if l.get("type") in ("textLabel", "label"):
+                continue
             for c in (l.get("coordinates") or []):
                 if isinstance(c, list) and c and isinstance(c[0], (int, float)):
                     key = repr([round(float(x), 6) for x in c[:2]])

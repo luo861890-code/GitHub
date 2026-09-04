@@ -38,12 +38,15 @@ class SymbolLabelQuality:
         total += hierarchy
 
         # 色彩：主色 ≤5（规范 §F）
+        # 主色统计口径：只统计面图层 fillColor（面主色）。点符号分类色（POI 类别色、
+        # 景点分级色等）与线图层分级色（道路等级）一样属符号语义系统，由
+        # 符号注册表统一管理，不构成"主色调"；注记文字色属文字排版，同样不计入。
         colors = set()
         for l in layers:
+            t = l.get("type")
             st = l.get("style") or {}
-            for k in ("color", "fillColor"):
-                if st.get(k):
-                    colors.add(str(st[k]).lower())
+            if t in ("polygon", "area") and st.get("fillColor"):
+                colors.add(str(st["fillColor"]).lower())
         color = 20 if len(colors) <= 8 else 12
         if len(colors) > 8:
             issues["C2"].append(f"F 色彩：使用 {len(colors)} 种颜色，建议主色≤5")

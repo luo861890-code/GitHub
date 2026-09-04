@@ -39,7 +39,9 @@ class GeneralizationQuality:
         # ---- E3 聚合 25：同名道路分段（可聚合性） ----
         # 仅统计道路图层；边界/水系/铁路多要素同名属正常结构，不计入聚合性判定。
         ROAD_HINT = ("道路", "高速", "公路", "国道", "省道", "干道", "快速路", "环线", "匝道")
-        seg_groups: Dict[str, int] = {}
+        # 按 (图层, 道路名) 分组统计：与 C2 口径一致，同一图层内同名分段过多才判定。
+        # 跨等级图层（主干道/次干道/干线）的同名道路段拓扑不连续，不跨图层累计。
+        seg_groups: Dict[Tuple[str, str], int] = {}
         for l in layers:
             if l.get("type") not in ("polyline", "line"):
                 continue
@@ -56,7 +58,8 @@ class GeneralizationQuality:
             for p in (l.get("properties") or []):
                 nm = p.get("name") or ""
                 if nm:
-                    seg_groups[nm] = seg_groups.get(nm, 0) + 1
+                    key = (lname, nm)
+                    seg_groups[key] = seg_groups.get(key, 0) + 1
         fragmented = sum(1 for c in seg_groups.values() if c > 30)
         agg = max(0, 25 - 2 * fragmented)
         if fragmented:

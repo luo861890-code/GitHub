@@ -42,3 +42,33 @@ frontend/vue-app/dev.pid
 .idea/
 .vscode/
 *.log
+
+# 用户数据与备份（体积大，不入库；data/users 含 1.8GB 用户地图与历史备份 zip）
+data/users/
+data/_backup/
+data/maps_backup/
+data/road_quality_check.json
+data/_roads_*.json
+
+# 排查/调试临时脚本与中间产物
+_tmp_scripts/
+_tmp_idx/
+_cleanup_backup_20260830/
+_gen_all.py
+_gen_traffic.py
+_patch_*.py
+_verify_*.py
+_repro_tourism.json
+backend/_pytest*.txt
+backend/backend.err
+backend/app/core/_lk.py
+backend/kg_expand*.py
+backend/kg_survey.py
+backend/kg_geo.py
+backend/kg_kb_expand.py
+backend/kg_rag_sync.py
+backend/runtime_*.py
+frontend/vue-app/probe.py
+
+# 系统杂项
+*.lnk

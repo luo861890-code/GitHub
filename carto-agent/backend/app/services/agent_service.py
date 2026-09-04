@@ -58,13 +58,15 @@ class AgentService:
     """
 
     # 制图相关关键词
-    MAP_KEYWORDS = ["画", "制图", "地图", "生成", "绘制", "做个", "制作", "创建"]
+    MAP_KEYWORDS = ["画", "制图", "地图", "生成", "绘制", "做个", "制作", "创建",
+                       "地形", "地势", "地貌", "高程", "等高线", "山体阴影"]
     MODIFY_KEYWORDS = ["修改", "改", "换", "调整", "变", "设置", "更新", "添加", "删除", "移除"]
     QUESTION_MARKERS = [
         "是什么", "什么是", "啥是", "有哪些", "有什么", "为什么", "为何",
         "如何", "怎么", "怎样", "区别", "差异", "解释", "定义", "含义",
         "介绍一下", "介绍", "说明一下", "告诉我", "了解", "原则",
-        "几个", "多少", "哪些",
+        "几个", "多少", "哪些", "哪里", "哪儿", "什么地方", "在哪",
+        "有什么好玩的",
     ]
     STRONG_GENERATION_KEYWORDS = [
         "生成", "画", "绘制", "制作", "创建", "做个", "做一张", "做一份",
@@ -393,10 +395,11 @@ class AgentService:
         is_map = self._is_map_request(message)
         is_modify = self._is_modify_request(message)
 
-        if is_map and not is_modify:
-            return "map_generation"
-        if is_modify and not is_map:
+        if is_modify:
+            # 修改优先：含修改动词且无强生成词即视为修改（"把地图上的道路改成红色"）
             return "map_modification"
+        if is_map:
+            return "map_generation"
 
         # ===== 2. 关键词无法明确判断时，使用 LLM 兜底 =====
         if not self.llm_service:
@@ -1884,8 +1887,17 @@ class AgentService:
         ))
 
     def _is_modify_request(self, message: str) -> bool:
-        """判断是否为地图修改请求"""
-        return any(kw in message for kw in self.MODIFY_KEYWORDS) and not self._is_map_request(message)
+        """判断是否为地图修改请求
+
+        含修改动词（改/换/调整/添加/删除等）且无强生成动词时判为修改；
+        不再因语句同时含'地图'二字而误判为生成（如'把地图上的道路改成红色'）。
+        """
+        if not any(kw in message for kw in self.MODIFY_KEYWORDS):
+            return False
+        strong_gen = any(kw in message for kw in self.STRONG_GENERATION_KEYWORDS)
+        if strong_gen:
+            return False
+        return True
 
     def _is_question_request(self, message: str) -> bool:
         """判断是否为知识问答请求（问句优先，避免“什么是专题地图”被误判为制图）"""

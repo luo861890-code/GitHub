@@ -2,7 +2,7 @@
 import os
 from typing import List, Optional
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, field_validator
 from dotenv import load_dotenv
 
 
@@ -10,6 +10,17 @@ from dotenv import load_dotenv
 _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _ENV_FILE = os.path.join(_BACKEND_ROOT, ".env")
 load_dotenv(_ENV_FILE)
+
+
+def _resolve_data_dir() -> str:
+    """解析数据目录：DATA_DIR 绝对路径直接用；相对路径锚定到 backend/ 目录。
+    未设置 DATA_DIR 时默认仓库根目录 data/（与 CWD 无关）。"""
+    env_val = (os.getenv("DATA_DIR") or "").strip()
+    if env_val:
+        if os.path.isabs(env_val):
+            return env_val
+        return os.path.normpath(os.path.join(_BACKEND_ROOT, env_val))
+    return os.path.join(os.path.dirname(_BACKEND_ROOT), "data")
 
 
 class Settings(BaseSettings):
@@ -60,11 +71,18 @@ class Settings(BaseSettings):
     debug: bool = False
     # 数据目录（maps.json/sessions.json/kg 知识库）。默认锚定到仓库根目录的 data/，
     # 与 CWD 无关；可通过环境变量 DATA_DIR 覆盖。
-    data_dir: str = Field(
-        default_factory=lambda: os.path.join(
-            os.path.dirname(_BACKEND_ROOT), "data"
-        )
-    )
+    # DATA_DIR 相对路径一律锚定到 backend/ 目录解析（如 .env 中 DATA_DIR=../data
+    # → 仓库根/data），避免 CWD 不同导致路径漂移。
+    data_dir: str = Field(default_factory=_resolve_data_dir)
+
+    @field_validator("data_dir", mode="before")
+    @classmethod
+    def _anchor_data_dir(cls, v: object) -> object:
+        """DATA_DIR 相对路径锚定到 backend/ 目录（.env 中 DATA_DIR=../data
+        → 仓库根/data），与 CWD 无关；绝对路径原样保留。"""
+        if isinstance(v, str) and v.strip() and not os.path.isabs(v):
+            return os.path.normpath(os.path.join(_BACKEND_ROOT, v.strip()))
+        return v
 
     # ========== 数据分层存储 ==========
     # 无登录系统，本地默认用户标识。用户聊天记录 / 生成地图 / 操作数据存于

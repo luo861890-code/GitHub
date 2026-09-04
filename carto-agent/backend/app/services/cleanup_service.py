@@ -1,4 +1,4 @@
-"""地图几何质量清洗服务
+﻿"""地图几何质量清洗服务
 
 针对 QA / 质量检查发现的拓扑几何硬伤提供清洗：
 - 安全清洗（生成时自动执行）：
@@ -153,7 +153,7 @@ class MapCleanupService:
         kept_p = []
         removed = 0
         for i, c in enumerate(coords):
-            if not isinstance(c, list) or not c:
+            if not isinstance(c, (list, tuple)) or not c:
                 removed += 1
                 continue
             if ltype in ("polygon", "area"):
@@ -334,3 +334,4 @@ def _shapely_to_ring(poly) -> Optional[List[list]]:
     if len(ring) > 2 and ring[0] == ring[-1]:
         ring = ring[:-1]
     return ring if len(ring) >= 3 else None
+

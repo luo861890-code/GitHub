@@ -111,6 +111,8 @@ def resolve_by_category(category: str, geometry: str = "") -> Optional[Dict[str,
         "major_water": None,   # 水系按几何类型细分（线=河流，面=湖泊）
         "minor_water": "water.river",
         "core_poi": "poi.attraction",
+        "normal_poi": "poi.attraction",
+        "service_poi": "poi.attraction",
         "contour_major": "terrain.contour",
         "contour_minor": "terrain.contour",
         "peak": "terrain.peak",

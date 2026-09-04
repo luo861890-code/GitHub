@@ -188,7 +188,7 @@ class GeoService:
                     "name": "武汉市域底图",
                     "coordinates": sig_rings,
                     "properties": [{"name": "武汉市域底图", "subtype": "city"} for _ in sig_rings],
-                    "style": {"fillColor": "#FFFFFF", "fillOpacity": 0.7,
+                    "style": {"fillColor": "#f2ead7", "fillOpacity": 0.7,
                               "color": "#FFD6D6", "weight": 1, "opacity": 0.85},
                 })
                 break
@@ -432,6 +432,6 @@ class GeoService:
                 "properties": [{"name": c["name"]} for c in centers],
                 "style": {"color": cfg["color"], "fillColor": cfg["fillColor"],
                           "fillOpacity": cfg["fillOpacity"], "weight": cfg["weight"],
-                          "radius": cfg["radius"]},
+                          "radius": cfg["radius"], "shape": cfg.get("shape", "circle")},
             })
         return layers
